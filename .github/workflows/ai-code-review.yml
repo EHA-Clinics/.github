@@ -27,6 +27,14 @@ on:
         type: string
         default: 'canonical-openrouter-deepseek-v4pro'
         description: 'Databricks serving endpoint name (e.g., canonical-openrouter-deepseek-v4pro)'
+      trigger_phrase:
+        type: string
+        default: '@ai-review'
+        description: >
+          Phrase in the PR body or a comment that triggers a review. elek's own
+          default is "@pi"; EHA standardizes on "@ai-review" (used in PR templates
+          and the on-demand workflow gate). Without this, elek looks for "@pi",
+          finds nothing, and exits "No trigger detected" — posting no review.
       thinking:
         type: string
         default: 'high'
@@ -63,7 +71,10 @@ jobs:
   review:
     name: AI Code Review (${{ inputs.model }})
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 10 min was too tight: dual-model thinking:high reviews of large diffs were
+    # killed mid-run (job cancelled before posting), leaving stuck "analyzing…"
+    # tracking comments. 20 gives headroom for the full-history checkout + review.
+    timeout-minutes: 20
     steps:
       - name: Checkout PR
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -82,11 +93,14 @@ jobs:
         with:
           provider: openai
           model: ${{ inputs.model }}
+          trigger_phrase: ${{ inputs.trigger_phrase }}
           thinking: ${{ inputs.thinking }}
           max_turns: ${{ inputs.max_turns }}
           mode: ${{ inputs.mode }}
-          exclude_patterns: ${{ inputs.exclude_patterns }}
-          include_patterns: ${{ inputs.include_patterns }}
           sticky_comment: true
+          # NOTE: elek 090437c does not accept exclude_patterns/include_patterns —
+          # forwarding them raised "Unexpected input(s)" warnings and the values were
+          # silently ignored. The workflow_call inputs are retained for forward-compat;
+          # re-wire them here once a supporting elek release is pinned.
           # Structural safety: elek's MCP server only exposes create_inline_comment
           # and update_tracking_comment. No approve/merge/close code paths exist.
