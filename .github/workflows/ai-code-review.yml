@@ -83,7 +83,7 @@ jobs:
           persist-credentials: false
 
       - name: AI Code Review via Databricks AI Gateway
-        uses: selimozten/elek@090437c49c5fce4148d3b97efa7f3507e67e9dba # v1.x - pinned
+        uses: selimozten/elek@deb542d934255860ef588a58e41b8bd76e64cafa # v1.1.2 - pinned
         env:
           # Databricks Model Serving endpoints are OpenAI-compatible.
           # The base URL points to the serving-endpoints root; the model input
