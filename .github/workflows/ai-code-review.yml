@@ -1,6 +1,13 @@
 # EHA Clinics - AI Code Review Reusable Workflow
-# Uses elek (model-agnostic AI code review) via Databricks AI Gateway.
-# Supports DeepSeek V4-Pro and MIMO V2.5-Pro endpoints.
+# Uses elek (model-agnostic AI code review) via OpenRouter (pi's native adapter).
+# Supports DeepSeek V4-Pro and MIMO V2.5-Pro via OpenRouter model ids.
+#
+# NOTE: We previously routed through the Databricks AI Gateway (provider: openai,
+# OpenAI-compatible). elek's pi client hung indefinitely on tool-enabled
+# reasoning-model requests through that generic-adapter path — independent of
+# thinking level, max_turns, and elek version. OpenRouter is elek's tested path.
+# PII note: the gateway did input-PII masking; direct OpenRouter does not, but the
+# diff already egressed to the same OpenRouter providers via the gateway.
 #
 # Security:
 # - Actions pinned to full commit SHAs.
@@ -13,10 +20,9 @@
 #     review:
 #       uses: EHA-Clinics/.github/.github/workflows/ai-code-review.yml@<SHA-PIN>
 #       secrets:
-#         DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
-#         DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
+#         OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 #       with:
-#         model: 'canonical-openrouter-deepseek-v4pro'
+#         model: 'deepseek/deepseek-v4-pro'
 
 name: AI Code Review
 
@@ -25,8 +31,8 @@ on:
     inputs:
       model:
         type: string
-        default: 'canonical-openrouter-deepseek-v4pro'
-        description: 'Databricks serving endpoint name (e.g., canonical-openrouter-deepseek-v4pro)'
+        default: 'deepseek/deepseek-v4-pro'
+        description: 'OpenRouter model id (e.g., deepseek/deepseek-v4-pro, xiaomi/mimo-v2.5-pro)'
       trigger_phrase:
         type: string
         default: '@ai-review'
@@ -56,12 +62,9 @@ on:
         default: 'review'
         description: 'review (read-only) or review+edit (pushes fixes to pi/* branch)'
     secrets:
-      DATABRICKS_TOKEN:
+      OPENROUTER_API_KEY:
         required: true
-        description: 'Databricks personal access token with CAN_QUERY on the endpoint'
-      DATABRICKS_WORKSPACE_URL:
-        required: true
-        description: 'Databricks workspace URL, e.g., https://dbc-xxx.cloud.databricks.com'
+        description: 'OpenRouter API key (same key that backs the Databricks AI Gateway external-model endpoints)'
 
 permissions:
   contents: read
@@ -82,16 +85,14 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: AI Code Review via Databricks AI Gateway
+      - name: AI Code Review via OpenRouter
         uses: selimozten/elek@deb542d934255860ef588a58e41b8bd76e64cafa # v1.1.2 - pinned
-        env:
-          # Databricks Model Serving endpoints are OpenAI-compatible.
-          # The base URL points to the serving-endpoints root; the model input
-          # specifies the endpoint name (e.g., canonical-openrouter-deepseek-v4pro).
-          OPENAI_BASE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}/serving-endpoints
-          OPENAI_API_KEY: ${{ secrets.DATABRICKS_TOKEN }}
         with:
-          provider: openai
+          # pi's native openrouter adapter — elek's tested path. The OpenAI-compatible
+          # Databricks AI Gateway (provider: openai) hung pi indefinitely on tool-enabled
+          # reasoning-model requests, regardless of thinking/max_turns/elek version.
+          provider: openrouter
+          openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           model: ${{ inputs.model }}
           trigger_phrase: ${{ inputs.trigger_phrase }}
           thinking: ${{ inputs.thinking }}
