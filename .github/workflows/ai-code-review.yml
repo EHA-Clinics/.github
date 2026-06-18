@@ -63,12 +63,16 @@ on:
         description: 'elek review strategy. council = multi-lens review + validator reconciliation.'
       review_models:
         type: string
-        default: 'deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,z-ai/glm-5.1'
+        # GLM is provider-qualified as `openrouter/z-ai/glm-5.1`: in council mode elek omits
+        # `--provider` for slashed ids (src/pi.ts), and pi self-routes a bare `z-ai/*` id to
+        # NVIDIA (no key -> hang). The `openrouter/` prefix forces OpenRouter. deepseek/* and
+        # xiaomi/* already resolve to OpenRouter, so only GLM needs the explicit prefix.
+        default: 'deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,openrouter/z-ai/glm-5.1'
         description: 'Comma-separated OpenRouter model ids for the council lenses (round-robin assigned).'
       validator_model:
         type: string
-        default: 'z-ai/glm-5.1'
-        description: 'Model that reconciles/validates lens findings before posting.'
+        default: 'openrouter/z-ai/glm-5.1'
+        description: 'Model that reconciles/validates lens findings before posting (openrouter/ prefix forces OpenRouter routing for the GLM id).'
       severity_threshold:
         type: string
         default: 'important'
@@ -79,7 +83,7 @@ on:
         description: 'Per-review USD budget cap (string; elek expects a string, not a number).'
       cost_rates:
         type: string
-        default: 'z-ai/glm-5.1=0.98:3.08,xiaomi/mimo-v2.5-pro=0.435:0.87'
+        default: 'openrouter/z-ai/glm-5.1=0.98:3.08,xiaomi/mimo-v2.5-pro=0.435:0.87'
         description: 'Per-model cost rates as model=inputPerMillion:outputPerMillion, comma-separated.'
       mode:
         type: string
