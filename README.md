@@ -25,12 +25,12 @@ jobs:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
     with:
       review_strategy: 'council'
-      review_models: 'deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,z-ai/glm-5.1'
-      validator_model: 'z-ai/glm-5.1'
+      review_models: 'deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,openrouter/z-ai/glm-5.1'
+      validator_model: 'openrouter/z-ai/glm-5.1'
       thinking: 'high'
       severity_threshold: 'important'
       max_cost_usd: '0.25'
-      cost_rates: 'z-ai/glm-5.1=0.98:3.08,xiaomi/mimo-v2.5-pro=0.435:0.87'
+      cost_rates: 'openrouter/z-ai/glm-5.1=0.98:3.08,xiaomi/mimo-v2.5-pro=0.435:0.87'
 ```
 
 **Inputs:**
@@ -38,13 +38,13 @@ jobs:
 | Input | Type | Default | Description |
 |-------|------|---------|-------------|
 | `review_strategy` | string | `council` | Review strategy: `council` (4 lenses + validator), `crosscheck`, or `solo`. |
-| `review_models` | string | `deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,z-ai/glm-5.1` | Comma-separated OpenRouter model IDs round-robined across the 4 lenses. |
-| `validator_model` | string | `z-ai/glm-5.1` | Model that synthesizes lens findings and posts the single deduplicated review. |
+| `review_models` | string | `deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,openrouter/z-ai/glm-5.1` | Comma-separated OpenRouter model IDs round-robined across the 4 lenses. |
+| `validator_model` | string | `openrouter/z-ai/glm-5.1` | Model that synthesizes lens findings and posts the single deduplicated review. |
 | `thinking` | string | `high` | Reasoning effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. |
 | `max_turns` | number | `20` | Max conversation turns per reviewer. |
 | `severity_threshold` | string | `important` | Minimum severity to post (`info`, `important`, `critical`). |
 | `max_cost_usd` | string | `0.25` | Per-PR cost guardrail; elek auto-downgrades council → crosscheck → solo on large diffs to stay within budget. |
-| `cost_rates` | string | `z-ai/glm-5.1=0.98:3.08,xiaomi/mimo-v2.5-pro=0.435:0.87` | `model=input:output` USD-per-million-token overrides for models without built-in OpenRouter pricing. DeepSeek uses OpenRouter's built-in rates. |
+| `cost_rates` | string | `openrouter/z-ai/glm-5.1=0.98:3.08,xiaomi/mimo-v2.5-pro=0.435:0.87` | `model=input:output` USD-per-million-token overrides for models without built-in OpenRouter pricing. DeepSeek uses OpenRouter's built-in rates. |
 | `mode` | string | `review` | `review` (read-only) or `review+edit` (pushes fixes). |
 | `model` | string | (unset) | Single-model override for `solo` strategy; ignored under `council`. |
 | `trigger_phrase` | string | `@ai-review` | Comment phrase that triggers an on-demand review. |
