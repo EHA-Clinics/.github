@@ -1,6 +1,14 @@
 # EHA Clinics - AI Code Review Reusable Workflow
 # Uses elek (model-agnostic AI code review) via OpenRouter (pi's native adapter).
-# Supports DeepSeek V4-Pro and MIMO V2.5-Pro via OpenRouter model ids.
+#
+# Council strategy: a multi-lens review (4 read-only lenses) with z-ai/glm-5.1 as the
+# validator that reconciles findings before posting. Cost is bounded by max_cost_usd
+# using per-model cost_rates. The elek pin below is an UNTAGGED main commit (2026-06-16),
+# deliberately chosen because no release tag yet exposes the council+cost-control inputs
+# (cost_rates / severity_threshold / max_cost_usd) — Plan 05 human-verifies its action.yml
+# input surface before any caller bumps to the merged SHA.
+# Structural safety: elek's MCP server only exposes create_inline_comment and
+# update_tracking_comment — there are no approve/merge/close code paths.
 #
 # NOTE: We previously routed through the Databricks AI Gateway (provider: openai,
 # OpenAI-compatible). elek's pi client hung indefinitely on tool-enabled
@@ -22,7 +30,7 @@
 #       secrets:
 #         OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 #       with:
-#         model: 'deepseek/deepseek-v4-pro'
+#         review_strategy: 'council'
 
 name: AI Code Review
 
@@ -49,14 +57,30 @@ on:
         type: number
         default: 20
         description: 'Maximum conversation turns per review'
-      exclude_patterns:
+      review_strategy:
         type: string
-        default: 'pnpm-lock.yaml,package-lock.json,*.lock,dist/,node_modules/,*.min.js,*.min.css,.next/,coverage/,__snapshots__/,*.generated.ts,*.generated.tsx'
-        description: 'Comma-separated file patterns to exclude from review'
-      include_patterns:
+        default: 'council'
+        description: 'elek review strategy. council = multi-lens review + validator reconciliation.'
+      review_models:
         type: string
-        default: ''
-        description: 'Comma-separated file patterns to include (empty = all except excludes)'
+        default: 'deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,z-ai/glm-5.1'
+        description: 'Comma-separated OpenRouter model ids for the council lenses (round-robin assigned).'
+      validator_model:
+        type: string
+        default: 'z-ai/glm-5.1'
+        description: 'Model that reconciles/validates lens findings before posting.'
+      severity_threshold:
+        type: string
+        default: 'important'
+        description: 'Minimum severity to surface: critical | important | minor.'
+      max_cost_usd:
+        type: string
+        default: '0.25'
+        description: 'Per-review USD budget cap (string; elek expects a string, not a number).'
+      cost_rates:
+        type: string
+        default: 'z-ai/glm-5.1=0.98:3.08,xiaomi/mimo-v2.5-pro=0.435:0.87'
+        description: 'Per-model cost rates as model=inputPerMillion:outputPerMillion, comma-separated.'
       mode:
         type: string
         default: 'review'
@@ -72,7 +96,7 @@ permissions:
 
 jobs:
   review:
-    name: AI Code Review (${{ inputs.model }})
+    name: AI Code Review (${{ inputs.review_strategy }})
     runs-on: ubuntu-latest
     # 10 min was too tight: dual-model thinking:high reviews of large diffs were
     # killed mid-run (job cancelled before posting), leaving stuck "analyzing…"
@@ -86,22 +110,32 @@ jobs:
           persist-credentials: false
 
       - name: AI Code Review via OpenRouter
-        uses: selimozten/elek@deb542d934255860ef588a58e41b8bd76e64cafa # v1.1.2 - pinned
+        # Untagged main commit (2026-06-16) — the only ref that exposes the council+cost
+        # inputs (review_strategy/review_models/validator_model/severity_threshold/
+        # max_cost_usd/cost_rates) AND .elek.yml support (commit cc70184). No release tag
+        # carries these yet; Plan 05 human-verifies this action.yml input surface before merge.
+        uses: selimozten/elek@88813716bf744e2666c078d655abef990b7d82aa
         with:
           # pi's native openrouter adapter — elek's tested path. The OpenAI-compatible
           # Databricks AI Gateway (provider: openai) hung pi indefinitely on tool-enabled
           # reasoning-model requests, regardless of thinking/max_turns/elek version.
           provider: openrouter
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          # Council strategy + per-model cost control.
+          review_strategy: ${{ inputs.review_strategy }}
+          review_models: ${{ inputs.review_models }}
+          validator_model: ${{ inputs.validator_model }}
+          severity_threshold: ${{ inputs.severity_threshold }}
+          max_cost_usd: ${{ inputs.max_cost_usd }}
+          cost_rates: ${{ inputs.cost_rates }}
+          # Primary/fallback model + reasoning knobs.
           model: ${{ inputs.model }}
           trigger_phrase: ${{ inputs.trigger_phrase }}
           thinking: ${{ inputs.thinking }}
           max_turns: ${{ inputs.max_turns }}
           mode: ${{ inputs.mode }}
           sticky_comment: true
-          # NOTE: elek 090437c does not accept exclude_patterns/include_patterns —
-          # forwarding them raised "Unexpected input(s)" warnings and the values were
-          # silently ignored. The workflow_call inputs are retained for forward-compat;
-          # re-wire them here once a supporting elek release is pinned.
           # Structural safety: elek's MCP server only exposes create_inline_comment
           # and update_tracking_comment. No approve/merge/close code paths exist.
+          # Path exclusion is no longer a workflow input — it lives in .elek.yml
+          # ignore_paths (elek does not accept file-pattern inputs at this SHA).
