@@ -1,0 +1,382 @@
+diff --git a/.planning/milestones/v1.9.1-phases/05.8.1-drive-bettercare-staging-argocd-application-back-to-synced-o/05.8.1-01-SUMMARY.md b/.planning/milestones/v1.9.1-phases/05.8.1-drive-bettercare-staging-argocd-application-back-to-synced-o/05.8.1-01-SUMMARY.md
+new file mode 100644
+index 0000000000..d89a6de54a
+--- /dev/null
++++ b/.planning/milestones/v1.9.1-phases/05.8.1-drive-bettercare-staging-argocd-application-back-to-synced-o/05.8.1-01-SUMMARY.md
+@@ -0,0 +1,136 @@
++---
++phase: 05.8.1
++plan: 01
++subsystem: argocd
++tags: [argocd, gke-autopilot, gitops, drift, externalsecrets, opensearch]
++dependencies:
++  requires: []
++  provides: [tracking-id-ignored, autopilot-resources-aligned]
++  affects: [bettercare-staging-application]
++tech_stack:
++  added: []
++  patterns: [ignoreDifferences, gke-autopilot-minimum-resources]
++key_files:
++  created: []
++  modified:
++    - eha-care-infra/argocd/staging/bettercare.yaml
++    - eha-care-infra/argocd/applications/bettercare.yaml
++    - eha-care-infra/kubernetes/components/bettercare/jobs/opensearch-snapshot-cronjob.yaml
++    - eha-care-infra/kubernetes/components/bettercare/jobs/opensearch-init.yaml
++decisions:
++  - Extended ignoreDifferences for ExternalSecret and StatefulSet/opensearch in both staging and dev ArgoCD Application manifests to ignore tracking-id annotation drift.
++  - Raised resources requests to 50m CPU, 52Mi memory, 1Gi ephemeral-storage for opensearch-snapshot-cronjob and opensearch-init to align with GKE Autopilot's bursting-class minimum.
++metrics:
++  duration: 0.1
++  completed_at: "2026-04-30T20:18:00Z"
++---
++
++# Phase 05.8.1 Plan 01: Close bettercare-staging phantom-drift loop Summary
++
++This plan removed the two structural sources of perpetual OutOfSync that have been blocking `bettercare-staging` from reaching Synced. 
++
++## Completed Tasks
++
++1. **Tracking-id annotation drift fix**: Extended `ignoreDifferences` on `argocd/staging/bettercare.yaml` and `argocd/applications/bettercare.yaml` with the JSON Pointer `/metadata/annotations/argocd.argoproj.io~1tracking-id` for `ExternalSecret` and `StatefulSet` (`name: opensearch`).
++2. **GKE Autopilot resource-request mutation fix**: Raised the `requests` to `50m/52Mi/1Gi` for `opensearch-snapshot-cronjob.yaml` and `opensearch-init.yaml` to align with the Autopilot bursting-class minimum.
++3. Created PR in `eha-care-infra` containing exactly these edits.
++
++## Deviations from Plan
++None - plan executed exactly as written.
++
++## Self-Check: PASSED
++- `eha-care-infra/argocd/staging/bettercare.yaml` modified correctly
++- `eha-care-infra/argocd/applications/bettercare.yaml` modified correctly
++- `eha-care-infra/kubernetes/components/bettercare/jobs/opensearch-snapshot-cronjob.yaml` modified correctly
++- `eha-care-infra/kubernetes/components/bettercare/jobs/opensearch-init.yaml` modified correctly
++- PR opened and URL captured.
++- NO runtime cluster operations were performed.
++
++## Merge Status
++PR URL: https://github.com/EHA-Clinics/eha-care-infra/pull/137
++Commit SHA: 05430a982603f5acbe93b002240d74ecdfb3d392
++
++Plans 03 and 04 cannot start their primary work until this PR merges and ArgoCD reconciles the new ignoreDifferences (~3 min after merge). Plan 02 is independent and may run before, after, or in parallel.
++
++## Diff
++```diff
++ argocd/applications/bettercare.yaml                                 | 3 +++
++ argocd/staging/bettercare.yaml                                      | 3 +++
++ kubernetes/components/bettercare/jobs/opensearch-init.yaml          | 6 ++++--
++ .../components/bettercare/jobs/opensearch-snapshot-cronjob.yaml     | 6 ++++--
++ 4 files changed, 14 insertions(+), 4 deletions(-)
++
++diff --git a/argocd/applications/bettercare.yaml b/argocd/applications/bettercare.yaml
++index ee61b7c..f87c58c 100644
++--- a/argocd/applications/bettercare.yaml
+++++ b/argocd/applications/bettercare.yaml
++@@ -29,10 +29,13 @@ spec:
++         - /metadata/finalizers
++         - /spec/refreshInterval
++         - /spec/target/template/metadata
+++        - /metadata/annotations/argocd.argoproj.io~1tracking-id
++     - group: apps
++       kind: StatefulSet
+++      name: opensearch
++       jsonPointers:
++         - /status
+++        - /metadata/annotations/argocd.argoproj.io~1tracking-id
++     - group: batch
++       kind: CronJob
++       jsonPointers:
++diff --git a/argocd/staging/bettercare.yaml b/argocd/staging/bettercare.yaml
++index c1b4742..a71a691 100644
++--- a/argocd/staging/bettercare.yaml
+++++ b/argocd/staging/bettercare.yaml
++@@ -30,10 +30,13 @@ spec:
++         - /metadata/finalizers
++         - /spec/refreshInterval
++         - /spec/target/template/metadata
+++        - /metadata/annotations/argocd.argoproj.io~1tracking-id
++     - group: apps
++       kind: StatefulSet
+++      name: opensearch
++       jsonPointers:
++         - /status
+++        - /metadata/annotations/argocd.argoproj.io~1tracking-id
++     - group: batch
++       kind: CronJob
++       jsonPointers:
++diff --git a/kubernetes/components/bettercare/jobs/opensearch-init.yaml b/kubernetes/components/bettercare/jobs/opensearch-init.yaml
++index db948de..0ee58bc 100644
++--- a/kubernetes/components/bettercare/jobs/opensearch-init.yaml
+++++ b/kubernetes/components/bettercare/jobs/opensearch-init.yaml
++@@ -62,11 +62,13 @@ spec:
++                   optional: false
++           resources:
++             requests:
++-              cpu: "10m"
++-              memory: "32Mi"
+++              cpu: "50m"
+++              memory: "52Mi"
+++              ephemeral-storage: "1Gi"
++             limits:
++               cpu: "100m"
++               memory: "64Mi"
+++              ephemeral-storage: "1Gi"
++           command:
++             - /bin/sh
++             - -c
++diff --git a/kubernetes/components/bettercare/jobs/opensearch-snapshot-cronjob.yaml b/kubernetes/components/bettercare/jobs/opensearch-snapshot-cronjob.yaml
++index fcf2007..cd45b69 100644
++--- a/kubernetes/components/bettercare/jobs/opensearch-snapshot-cronjob.yaml
+++++ b/kubernetes/components/bettercare/jobs/opensearch-snapshot-cronjob.yaml
++@@ -78,8 +78,10 @@ spec:
++                   echo "Cleanup complete."
++               resources:
++                 requests:
++-                  cpu: "10m"
++-                  memory: "32Mi"
+++                  cpu: "50m"
+++                  memory: "52Mi"
+++                  ephemeral-storage: "1Gi"
++                 limits:
++                   cpu: "100m"
++                   memory: "64Mi"
+++                  ephemeral-storage: "1Gi"
++```
+\ No newline at end of file
+diff --git a/.planning/milestones/v1.9.1-phases/21-ehac-1443-docker-secret-remediation-plan/21-07-SUMMARY.md b/.planning/milestones/v1.9.1-phases/21-ehac-1443-docker-secret-remediation-plan/21-07-SUMMARY.md
+new file mode 100644
+index 0000000000..2bef60cc10
+--- /dev/null
++++ b/.planning/milestones/v1.9.1-phases/21-ehac-1443-docker-secret-remediation-plan/21-07-SUMMARY.md
+@@ -0,0 +1,233 @@
++---
++phase: 21-ehac-1443-docker-secret-remediation-plan
++plan: 07
++subsystem: ci-cd
++tags: [github-actions, docker, buildkit, secrets, ehac-1443, d-06]
++
++# Dependency graph
++requires:
++  - 21-02 (apps/healthmate-api/Dockerfile migrated to --mount=type=secret)
++  - 21-03 (apps/ehacare/frontend/Dockerfile migrated)
++  - 21-04 (apps/admin/frontend/Dockerfile migrated)
++  - 21-05 (apps/booking/frontend/Dockerfile migrated)
++  - 21-06 (apps/labportal/frontend/Dockerfile migrated)
++provides:
++  - .github/workflows/monorepo-deploy.yml (D-06) — 4 build-push-action invocations now forward npm_token via `secrets:` block instead of `build-args:`; all 5 in-scope Build-and-push jobs (4 fixed + labportal-worker canonical) carry identical secret-forwarding shape
++affects:
++  - 21-08 (cloudbuild.yaml — D-07 ehacare Cloud Build path is the remaining caller that still passes BETTER_NPM_TOKEN via --build-arg)
++  - 21-09 (Trivy CI gate — once added, validates that no future re-introduction lands)
++  - 21-10/21-12 (BETTER_NPM_TOKEN rotation — requires this fix to be deployed first to avoid re-leaking the new token through the next monorepo-deploy.yml build)
++
++# Tech tracking
++tech-stack:
++  added: []
++  patterns:
++    - "Shared Pattern D (PATTERNS.md §6): GHA `secrets: |` block under `with:` — sibling of `build-args:` and `cache-from:`; carries `npm_token=${{ secrets.BETTER_NPM_TOKEN }}` indented one level deeper; mirrors the existing labportal-worker job at lines 406-422 verbatim"
++    - "docker/build-push-action `secrets:` input is the BuildKit-native pass-through to `--mount=type=secret,id=<key>` — token reaches the build daemon via tmpfs only, never as a `--build-arg` recorded in image metadata (closes the `docker history --no-trunc` recoverable-secret vector)"
++
++key-files:
++  created:
++    - .planning/phases/21-ehac-1443-docker-secret-remediation-plan/21-07-SUMMARY.md
++  modified:
++    - .github/workflows/monorepo-deploy.yml (4 hunks, +8/-4 lines net)
++
++key-decisions:
++  - "Mirror labportal-worker (lines 406-422) verbatim across all 4 fixed jobs — same SHA pin, same `secrets: |` shape, same 10/12-space indent. PATTERNS.md §6 Shared Pattern D enforced this; the canonical analog made the migration mechanical."
++  - "labportal-worker block (lines 406-422 pre-edit, lines 408-424 post-edit due to upstream insertions) is BYTE-IDENTICAL to its base state — verified via content-anchored `awk` extraction + `diff` (the literal line-range comparison in the plan was misleading because Task 1 shifted everything below labportal by 2 lines; the byte-identity is what the safety invariant actually requires)."
++  - "SENTRY_AUTH_TOKEN build-args left untouched — preserved verbatim in all 3 jobs (labportal, booking-frontend, admin) that carry it. Deferred surface per CONTEXT.md `<deferred>`; the plan's literal `git diff | grep -c SENTRY_AUTH_TOKEN == 0` check is over-broad (it catches context lines around adjacent removals); strict modification check (`grep -E '^[+-]' | grep -c SENTRY_AUTH_TOKEN`) returns 0 — i.e. ZERO actual modifications."
++  - "docker/build-push-action SHA pin (`@10e90e3645eae34f1e60eeb005ba3a3d33f178e8`) unchanged across all 7 invocations in the workflow (5 in-scope + booking-backend + patientflow). No version drift."
++  - "Commits used `SKIP_HOOKS=1` because the worktree has no `node_modules` installed and the `commitlint` binary is therefore unreachable. Header lengths (84 and 82 chars) and `type(scope): description` shape were manually validated against `commitlint.config.ts` (extends `@commitlint/config-conventional`; allows kebab-case scope; bans start/pascal/upper subject-case)."
++
++requirements-completed: [D-06]
++# D-06 (CI/CD workflow remediation in monorepo-deploy.yml) fully landed for the 4 affected jobs.
++# The 5th invocation (labportal-worker) was already correct and serves as the canonical analog.
++
++# Metrics
++duration: ~45m
++completed: 2026-05-25
++---
++
++# Phase 21 Plan 07: monorepo-deploy.yml BuildKit Secrets Migration Summary
++
++**4 of 5 `docker/build-push-action` invocations in `.github/workflows/monorepo-deploy.yml` migrated from the vulnerable `build-args: BETTER_NPM_TOKEN=...` pattern to a new `secrets: | npm_token=...` block; the 5th invocation (labportal-worker) is the canonical analog and stays untouched. Zero `BETTER_NPM_TOKEN=` lines remain in the file; exactly 5 `npm_token=` lines (labportal-worker pre-existing + 4 new) are present.**
++
++## Performance
++
++- **Duration:** ~45m (start 2026-05-25T06:11Z → SUMMARY commit ~06:58Z; includes #3099 recovery)
++- **Tasks:** 2 (atomic, 1 commit each)
++- **Files created:** 1 (this SUMMARY)
++- **Files modified:** 1 (`.github/workflows/monorepo-deploy.yml`)
++- **Commits:** 2 task commits + 1 SUMMARY commit
++
++## Accomplishments
++
++- **Task 1 (commit `6f6c43deb7`):** `labportal` and `healthmate-api` build jobs migrated. BETTER_NPM_TOKEN removed from each `build-args:` block; a new `secrets: | npm_token=${{ secrets.BETTER_NPM_TOKEN }}` block inserted between `build-args:` and `cache-from:`. Intermediate verification gates all PASS (BETTER_NPM_TOKEN count ≤ 2, npm_token count == 3, YAML parses).
++- **Task 2 (commit `f02cc8ccaa`):** `booking-frontend` and `admin` build jobs migrated. Same pattern. Booking-frontend preserved all 10 other build args (including 3 `REACT_APP_*` keycloak/backend URLs). Admin preserved its sole non-target build arg (`SENTRY_AUTH_TOKEN`). Final verification gates all PASS (BETTER_NPM_TOKEN count == 0, npm_token count == 5, YAML parses, SHA pin count == 7).
++- **All 5 in-scope `Build and push <service>` jobs now carry a `secrets:` block.** Verified by Python AST walk of the parsed workflow YAML (see "Final Verification" below): labportal ✓, labportal-worker ✓ (pre-existing), healthmate-api ✓, booking-frontend ✓, admin ✓.
++- **labportal-worker block byte-identical vs base.** Content-anchored `awk` extraction of the labportal-worker job from base commit `77c2b5a62d` vs current HEAD produces zero-byte diff.
++- **SENTRY_AUTH_TOKEN deferred surface untouched.** Zero `+`/`-` diff lines mention SENTRY_AUTH_TOKEN (context lines around adjacent removals don't count as modifications).
++- **docker/build-push-action SHA pin invariant preserved.** All 7 invocations in the file still reference `@10e90e3645eae34f1e60eeb005ba3a3d33f178e8` — zero version drift across the 5 in-scope jobs plus the 2 out-of-scope (booking-backend, patientflow) Python jobs.
++- **YAML structurally valid.** `python3 -c "import yaml; yaml.safe_load(...)"` exits cleanly; structural Python AST walk confirms every fixed step still has its `with.tags`, `with.context`, `with.file`, `with.push`, `with.build-args`, and `with.cache-{from,to}` keys.
++- **actionlint clean for changes.** Pre-existing shellcheck-style warnings (SC2129 at lines 126/246, SC2086 at 1259) exist at base 77c2b5a62d and are out-of-scope per the scope-boundary rule.
++- T-21-02 (CI passes token via build-args) FULLY MITIGATED for the GHA workflow path. Cloud Build path (cloudbuild.yaml — D-07) remains scoped to Plan 21-08.
++
++## Task Commits
++
++| Task | Description                                                                    | Hash         | Files                                            |
++| ---- | ------------------------------------------------------------------------------ | ------------ | ------------------------------------------------ |
++| 1    | Migrate labportal + healthmate-api build jobs (D-06; 2 of 4)                   | `6f6c43deb7` | `.github/workflows/monorepo-deploy.yml` (+4/-2)  |
++| 2    | Migrate booking-frontend + admin build jobs (D-06; 4 of 4)                     | `f02cc8ccaa` | `.github/workflows/monorepo-deploy.yml` (+4/-2)  |
++
++## Files Modified
++
++### `.github/workflows/monorepo-deploy.yml`
++
++Net delta vs base `77c2b5a62d`: `1 file changed, 8 insertions(+), 4 deletions(-)`. Full diff:
++
++```diff
++diff --git a/.github/workflows/monorepo-deploy.yml b/.github/workflows/monorepo-deploy.yml
++index 34a1c768cf..f7db30dc5a 100644
++--- a/.github/workflows/monorepo-deploy.yml
+++++ b/.github/workflows/monorepo-deploy.yml
++@@ -393,13 +393,14 @@ jobs:
++             ${{ needs.setup.outputs.artifact-registry }}/labportal:${{ needs.setup.outputs.environment }}-latest
++           build-args: |
++             BUILD_VERSION=${{ steps.meta.outputs.image-tag }}
++-            BETTER_NPM_TOKEN=${{ secrets.BETTER_NPM_TOKEN }}
++             SENTRY_AUTH_TOKEN=${{ secrets.SENTRY_AUTH_TOKEN }}
++             SENTRY_ORG=${{ vars.SENTRY_ORG }}
++             SENTRY_PROJECT=${{ vars.SENTRY_PROJECT_LABPORTAL }}
++             NEXT_PUBLIC_SENTRY_RELEASE=labportal@${{ github.sha }}
++             NEXT_PUBLIC_SENTRY_DSN=${{ vars.LABPORTAL_SENTRY_DSN }}
++             NEXT_PUBLIC_SENTRY_ENVIRONMENT=${{ needs.setup.outputs.environment }}
+++          secrets: |
+++            npm_token=${{ secrets.BETTER_NPM_TOKEN }}
++           cache-from: type=gha,scope=labportal
++           cache-to: type=gha,mode=max,scope=labportal
++
++@@ -488,7 +489,8 @@ jobs:
++             ${{ needs.setup.outputs.artifact-registry }}/healthmate-api:${{ needs.setup.outputs.environment }}-latest
++           build-args: |
++             BUILD_VERSION=${{ steps.meta.outputs.image-tag }}
++-            BETTER_NPM_TOKEN=${{ secrets.BETTER_NPM_TOKEN }}
+++          secrets: |
+++            npm_token=${{ secrets.BETTER_NPM_TOKEN }}
++           cache-from: type=gha,scope=healthmate-api
++           cache-to: type=gha,mode=max,scope=healthmate-api
++
++@@ -748,7 +750,6 @@ jobs:
++             ${{ needs.setup.outputs.artifact-registry }}/booking-frontend:${{ needs.setup.outputs.environment }}-latest
++           build-args: |
++             BUILD_VERSION=${{ steps.meta.outputs.image-tag }}
++-            BETTER_NPM_TOKEN=${{ secrets.BETTER_NPM_TOKEN }}
++             SENTRY_AUTH_TOKEN=${{ secrets.SENTRY_AUTH_TOKEN }}
++             SENTRY_ORG=${{ vars.SENTRY_ORG }}
++             SENTRY_PROJECT=${{ vars.SENTRY_PROJECT_BOOKING }}
++@@ -760,6 +761,8 @@ jobs:
++             REACT_APP_KEYCLOAK_REALM=portal
++             REACT_APP_KEYCLOAK_CLIENT_ID=booking-frontend
++             REACT_APP_BACKEND_URL=${{ steps.booking_build_config.outputs.backend_url }}
+++          secrets: |
+++            npm_token=${{ secrets.BETTER_NPM_TOKEN }}
++           cache-from: type=gha,scope=booking-frontend-v3
++           cache-to: type=gha,mode=max,scope=booking-frontend-v3
++
++@@ -907,8 +910,9 @@ jobs:
++             ${{ needs.setup.outputs.artifact-registry }}/admin:${{ needs.setup.outputs.environment }}-latest
++           build-args: |
++             BUILD_VERSION=${{ steps.meta.outputs.image-tag }}
++-            BETTER_NPM_TOKEN=${{ secrets.BETTER_NPM_TOKEN }}
++             SENTRY_AUTH_TOKEN=${{ secrets.SENTRY_AUTH_TOKEN }}
+++          secrets: |
+++            npm_token=${{ secrets.BETTER_NPM_TOKEN }}
++           cache-from: type=gha,scope=admin
++           cache-to: type=gha,mode=max,scope=admin
++```
++
++Four hunks, all at the four target jobs. Zero leakage into labportal-worker (lines 406-422 pre-shift; lines 408-424 post-shift), patientflow (line 831), booking-backend (line 715), or any other workflow content.
++
++## Final Verification (run after Task 2 commit; all gates PASS)
++
++| # | Gate                                                                                                         | Result               |
++| - | ------------------------------------------------------------------------------------------------------------ | -------------------- |
++| 1 | `grep -c 'BETTER_NPM_TOKEN=' .github/workflows/monorepo-deploy.yml`                                          | **0** (target=0) ✓  |
++| 2 | `grep -c 'npm_token=' .github/workflows/monorepo-deploy.yml`                                                 | **5** (target=5) ✓  |
++| 3 | `grep -c 'docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8' .github/workflows/monorepo-deploy.yml` | **7** (target≥5) ✓ |
++| 4 | `python3 -c "import yaml; yaml.safe_load(open(...))"`                                                        | **YAML OK** ✓        |
++| 5 | All 5 in-scope `Build and push <service>` jobs have a `secrets:` block (Python AST walk)                     | **5/5 PASS** ✓       |
++| 6 | labportal-worker block byte-identical vs base (`awk` content extraction + `diff`)                            | **PASS** ✓           |
++| 7 | SENTRY_AUTH_TOKEN modification lines (strict `^[+-]` filter)                                                 | **0** (target=0) ✓  |
++
++Bonus check (actionlint):
++
++- `actionlint .github/workflows/monorepo-deploy.yml` reports 3 shellcheck-style warnings (SC2129 ×2 at lines 126, 246; SC2086 ×1 at line 1259). All 3 are confirmed pre-existing on base `77c2b5a62d` (`actionlint /tmp/wt-base-workflow.yml` reproduces the same warning at line 126) and live in `run:` blocks 200-1000 lines away from my edits at 393, 489, 750, 910. Out of scope per the scope-boundary rule; tracked nowhere because they are style-only and pre-date this phase.
++
++Per-job Python AST walk output (Gate 5):
++
++```
++[PASS] healthmate-api: secrets-block=True, npm-token-in-block=True
++[PASS] labportal: secrets-block=True, npm-token-in-block=True
++[PASS] labportal-worker: secrets-block=True, npm-token-in-block=True  # pre-existing — canonical analog
++[PASS] booking-frontend: secrets-block=True, npm-token-in-block=True
++[PASS] admin: secrets-block=True, npm-token-in-block=True
++```
++
++## Deviations from Plan
++
++### Auto-fixed Issues
++
++**1. [Rule 3 - Blocking] Worktree #3099 path-resolution bug recovered**
++
++- **Found during:** Task 1 first Edit attempt.
++- **Issue:** Initial Edit tool calls used absolute paths (`/Users/adamthompson/CodeProjects/eha_care/.github/workflows/monorepo-deploy.yml`). Despite the worktree's CWD being correct, the Edit tool resolved those absolute paths to the **main repo** path (same prefix, no `.claude/worktrees/...` suffix in the absolute string). Both edits landed silently on the main repo at `/Users/adamthompson/CodeProjects/eha_care/.github/workflows/monorepo-deploy.yml` instead of the worktree.
++- **Detection:** Post-edit `grep -c 'BETTER_NPM_TOKEN='` against the worktree still returned 4 (unchanged from baseline). `cd /Users/adamthompson/CodeProjects/eha_care && git status` confirmed the main repo had unstaged modifications.
++- **Fix:**
++  1. `cd /Users/adamthompson/CodeProjects/eha_care && git checkout -- .github/workflows/monorepo-deploy.yml` — restored the main repo file to its HEAD state (no changes leaked to the main repo working tree).
++  2. Switched ALL subsequent Edit calls to use **relative paths** (`.github/workflows/monorepo-deploy.yml`). Per `references/worktree-path-safety.md`, relative paths inside a worktree always resolve against the worktree CWD, never against the main repo.
++- **Verification of fix:** Subsequent Edit calls landed on the worktree as confirmed by `sed -n` against the worktree file (BETTER_NPM_TOKEN gone from line 396, secrets: block present after build-args). Main repo `git status` returned empty (no leftover side-effects).
++- **Files affected:** None permanently — main repo restored before the unintended edits could be committed; worktree edits then applied cleanly.
++
++**2. [Rule 3 - Blocking] commitlint unavailable in worktree**
++
++- **Found during:** Task 1 first `git commit` attempt.
++- **Issue:** Pre-commit hook tried to invoke `commitlint` via `pnpm --filter <root> exec commitlint`. The worktree has no `node_modules` installed (worktrees are bare checkouts; `pnpm install` was never run). Hook exits with `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL Command "commitlint" not found`.
++- **Fix:** Manually validated both task commit messages against `commitlint.config.ts` (located at `/Users/adamthompson/CodeProjects/eha_care/commitlint.config.ts` — extends `@commitlint/config-conventional`, scope-case allows lower/upper/camel/kebab/pascal, subject-case bans start/pascal/upper). Both header lengths confirmed ≤ 100 chars (Task 1 = 84, Task 2 = 82). Both use `fix(21-07): <lowercase subject>` shape. Then committed with `SKIP_HOOKS=1` per the parallel-execution worktree directive in the spawn prompt.
++- **Files affected:** N/A — commit messages are valid; only the hook invocation was bypassed.
++
++**3. [Rule 3 - Verification clarification] Plan's literal SENTRY_AUTH_TOKEN check is over-broad**
++
++- **Found during:** Task 2 verification.
++- **Issue:** PLAN.md `<verify>` for Task 2 specifies `git diff | grep -c SENTRY_AUTH_TOKEN == 0`. This grep counts **context lines** around adjacent additions/removals as well as actual modifications, so it returns 2 (false positive) because both labportal and booking-frontend hunks include adjacent removals immediately above an unchanged SENTRY_AUTH_TOKEN line.
++- **Fix:** Re-stated the gate as its stated intent: "SENTRY_AUTH_TOKEN must not be modified" — verified via the strict modification filter `grep -E '^[+-]' | grep -c SENTRY_AUTH_TOKEN`, which returns 0 as required. The spirit of the plan's check is satisfied; only the literal grep was imprecise.
++- **No code change required** — this is a verification interpretation clarification, not a code fix.
++
++No Rule 1 / Rule 2 / Rule 4 deviations were triggered. No stubs introduced. No threat-flagged new surface area beyond what D-06 explicitly intended.
++
++## Threat Model Closure
++
++| Threat ID | Disposition | Status                                                                                                                                                                  |
++| --------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
++| T-21-02   | mitigate    | **CLOSED for GHA path.** All 4 affected jobs now forward npm_token via tmpfs-only BuildKit secret mount; the 5th (labportal-worker) was already correct.                |
++| T-21-04   | mitigate (deferred to 21-09) | NOT addressed by this plan; the Trivy CI gate (Wave 3) is the durable regression check.                                                                |
++| T-21-SC   | accept      | **No change.** Zero new GHA actions added; zero SHA pin changes. `docker/build-push-action@10e90e3645...` still appears on all 7 invocations in the file.                |
++
++## Self-Check: PASSED
++
++**Files created exist:**
++
++- `.planning/phases/21-ehac-1443-docker-secret-remediation-plan/21-07-SUMMARY.md` — FOUND (this file).
++
++**Commits exist:**
++
++- `6f6c43deb7` (Task 1) — FOUND via `git log --oneline`.
++- `f02cc8ccaa` (Task 2) — FOUND via `git log --oneline`.
++
++**Acceptance criteria from `<success_criteria>`:**
++
++- [x] Zero `BETTER_NPM_TOKEN=` lines in file (count == 0).
++- [x] Exactly 5 `npm_token=` lines (count == 5).
++- [x] YAML parses cleanly.
++- [x] labportal-worker job lines 406-422 (pre-edit; 408-424 post-edit due to upstream Task 1 insertions) BYTE-IDENTICAL vs base.
++- [x] All docker/build-push-action SHA pins unchanged (count remains 7).
++- [x] SENTRY_AUTH_TOKEN deferred surface untouched (zero modification lines).
++- [x] Two atomic conventional commits landed.
