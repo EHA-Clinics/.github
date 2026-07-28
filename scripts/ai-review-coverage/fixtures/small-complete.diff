@@ -1,0 +1,251 @@
+diff --git a/.github/workflows/ai-code-review.yml b/.github/workflows/ai-code-review.yml
+index 31df89d..771d1da 100644
+--- a/.github/workflows/ai-code-review.yml
++++ b/.github/workflows/ai-code-review.yml
+@@ -1,6 +1,21 @@
+ # EHA Clinics - AI Code Review Reusable Workflow
+-# Uses elek (model-agnostic AI code review) via Databricks AI Gateway.
+-# Supports DeepSeek V4-Pro and MIMO V2.5-Pro endpoints.
++# Uses elek (model-agnostic AI code review) via OpenRouter (pi's native adapter).
++#
++# Council strategy: a multi-lens review (4 read-only lenses) with z-ai/glm-5.1 as the
++# validator that reconciles findings before posting. Cost is bounded by max_cost_usd
++# using per-model cost_rates. The elek pin below is an UNTAGGED main commit (2026-06-16),
++# deliberately chosen because no release tag yet exposes the council+cost-control inputs
++# (cost_rates / severity_threshold / max_cost_usd) — Plan 05 human-verifies its action.yml
++# input surface before any caller bumps to the merged SHA.
++# Structural safety: elek's MCP server only exposes create_inline_comment and
++# update_tracking_comment — there are no approve/merge/close code paths.
++#
++# NOTE: We previously routed through the Databricks AI Gateway (provider: openai,
++# OpenAI-compatible). elek's pi client hung indefinitely on tool-enabled
++# reasoning-model requests through that generic-adapter path — independent of
++# thinking level, max_turns, and elek version. OpenRouter is elek's tested path.
++# PII note: the gateway did input-PII masking; direct OpenRouter does not, but the
++# diff already egressed to the same OpenRouter providers via the gateway.
+ #
+ # Security:
+ # - Actions pinned to full commit SHAs.
+@@ -13,10 +28,9 @@
+ #     review:
+ #       uses: EHA-Clinics/.github/.github/workflows/ai-code-review.yml@<SHA-PIN>
+ #       secrets:
+-#         DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+-#         DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
++#         OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+ #       with:
+-#         model: 'canonical-openrouter-deepseek-v4pro'
++#         review_strategy: 'council'
+ 
+ name: AI Code Review
+ 
+@@ -25,8 +39,8 @@ on:
+     inputs:
+       model:
+         type: string
+-        default: 'canonical-openrouter-deepseek-v4pro'
+-        description: 'Databricks serving endpoint name (e.g., canonical-openrouter-deepseek-v4pro)'
++        default: 'deepseek/deepseek-v4-pro'
++        description: 'OpenRouter model id (e.g., deepseek/deepseek-v4-pro, xiaomi/mimo-v2.5-pro)'
+       trigger_phrase:
+         type: string
+         default: '@ai-review'
+@@ -43,25 +57,42 @@ on:
+         type: number
+         default: 20
+         description: 'Maximum conversation turns per review'
+-      exclude_patterns:
++      review_strategy:
++        type: string
++        default: 'council'
++        description: 'elek review strategy. council = multi-lens review + validator reconciliation.'
++      review_models:
++        type: string
++        # GLM is provider-qualified as `openrouter/z-ai/glm-5.1`: in council mode elek omits
++        # `--provider` for slashed ids (src/pi.ts), and pi self-routes a bare `z-ai/*` id to
++        # NVIDIA (no key -> hang). The `openrouter/` prefix forces OpenRouter. deepseek/* and
++        # xiaomi/* already resolve to OpenRouter, so only GLM needs the explicit prefix.
++        default: 'deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,openrouter/z-ai/glm-5.1'
++        description: 'Comma-separated OpenRouter model ids for the council lenses (round-robin assigned).'
++      validator_model:
+         type: string
+-        default: 'pnpm-lock.yaml,package-lock.json,*.lock,dist/,node_modules/,*.min.js,*.min.css,.next/,coverage/,__snapshots__/,*.generated.ts,*.generated.tsx'
+-        description: 'Comma-separated file patterns to exclude from review'
+-      include_patterns:
++        default: 'openrouter/z-ai/glm-5.1'
++        description: 'Model that reconciles/validates lens findings before posting (openrouter/ prefix forces OpenRouter routing for the GLM id).'
++      severity_threshold:
+         type: string
+-        default: ''
+-        description: 'Comma-separated file patterns to include (empty = all except excludes)'
++        default: 'important'
++        description: 'Minimum severity to surface: critical | important | minor.'
++      max_cost_usd:
++        type: string
++        default: '0.25'
++        description: 'Per-review USD budget cap (string; elek expects a string, not a number).'
++      cost_rates:
++        type: string
++        default: 'openrouter/z-ai/glm-5.1=0.98:3.08,xiaomi/mimo-v2.5-pro=0.435:0.87'
++        description: 'Per-model cost rates as model=inputPerMillion:outputPerMillion, comma-separated.'
+       mode:
+         type: string
+         default: 'review'
+         description: 'review (read-only) or review+edit (pushes fixes to pi/* branch)'
+     secrets:
+-      DATABRICKS_TOKEN:
+-        required: true
+-        description: 'Databricks personal access token with CAN_QUERY on the endpoint'
+-      DATABRICKS_WORKSPACE_URL:
++      OPENROUTER_API_KEY:
+         required: true
+-        description: 'Databricks workspace URL, e.g., https://dbc-xxx.cloud.databricks.com'
++        description: 'OpenRouter API key (same key that backs the Databricks AI Gateway external-model endpoints)'
+ 
+ permissions:
+   contents: read
+@@ -69,7 +100,7 @@ permissions:
+ 
+ jobs:
+   review:
+-    name: AI Code Review (${{ inputs.model }})
++    name: AI Code Review (${{ inputs.review_strategy }})
+     runs-on: ubuntu-latest
+     # 10 min was too tight: dual-model thinking:high reviews of large diffs were
+     # killed mid-run (job cancelled before posting), leaving stuck "analyzing…"
+@@ -82,25 +113,33 @@ jobs:
+           fetch-depth: 0
+           persist-credentials: false
+ 
+-      - name: AI Code Review via Databricks AI Gateway
+-        uses: selimozten/elek@deb542d934255860ef588a58e41b8bd76e64cafa # v1.1.2 - pinned
+-        env:
+-          # Databricks Model Serving endpoints are OpenAI-compatible.
+-          # The base URL points to the serving-endpoints root; the model input
+-          # specifies the endpoint name (e.g., canonical-openrouter-deepseek-v4pro).
+-          OPENAI_BASE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}/serving-endpoints
+-          OPENAI_API_KEY: ${{ secrets.DATABRICKS_TOKEN }}
++      - name: AI Code Review via OpenRouter
++        # Untagged main commit (2026-06-16) — the only ref that exposes the council+cost
++        # inputs (review_strategy/review_models/validator_model/severity_threshold/
++        # max_cost_usd/cost_rates) AND .elek.yml support (commit cc70184). No release tag
++        # carries these yet; Plan 05 human-verifies this action.yml input surface before merge.
++        uses: selimozten/elek@88813716bf744e2666c078d655abef990b7d82aa
+         with:
+-          provider: openai
++          # pi's native openrouter adapter — elek's tested path. The OpenAI-compatible
++          # Databricks AI Gateway (provider: openai) hung pi indefinitely on tool-enabled
++          # reasoning-model requests, regardless of thinking/max_turns/elek version.
++          provider: openrouter
++          openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
++          # Council strategy + per-model cost control.
++          review_strategy: ${{ inputs.review_strategy }}
++          review_models: ${{ inputs.review_models }}
++          validator_model: ${{ inputs.validator_model }}
++          severity_threshold: ${{ inputs.severity_threshold }}
++          max_cost_usd: ${{ inputs.max_cost_usd }}
++          cost_rates: ${{ inputs.cost_rates }}
++          # Primary/fallback model + reasoning knobs.
+           model: ${{ inputs.model }}
+           trigger_phrase: ${{ inputs.trigger_phrase }}
+           thinking: ${{ inputs.thinking }}
+           max_turns: ${{ inputs.max_turns }}
+           mode: ${{ inputs.mode }}
+           sticky_comment: true
+-          # NOTE: elek 090437c does not accept exclude_patterns/include_patterns —
+-          # forwarding them raised "Unexpected input(s)" warnings and the values were
+-          # silently ignored. The workflow_call inputs are retained for forward-compat;
+-          # re-wire them here once a supporting elek release is pinned.
+           # Structural safety: elek's MCP server only exposes create_inline_comment
+           # and update_tracking_comment. No approve/merge/close code paths exist.
++          # Path exclusion is no longer a workflow input — it lives in .elek.yml
++          # ignore_paths (elek does not accept file-pattern inputs at this SHA).
+diff --git a/README.md b/README.md
+index cf5cfd9..f4ea0ee 100644
+--- a/README.md
++++ b/README.md
+@@ -6,7 +6,14 @@ This repository contains organization-wide defaults and reusable workflows for t
+ 
+ ### `ai-code-review.yml`
+ 
+-Model-agnostic AI code review workflow using Databricks AI Gateway. Supports DeepSeek V4-Pro and MIMO V2.5-Pro via OpenRouter endpoints.
++AI code review workflow powered by [elek](https://github.com/selimozten/elek)'s **council strategy** over **OpenRouter direct**.
++
++A council run has two phases:
++
++1. **4 read-only lens reviewers** — Risk, Design, Tests, and Operations — run in parallel with no MCP access. Each lens is round-robined onto a model (Risk → DeepSeek V4-Pro, Design → MiMo V2.5-Pro, Tests → GLM 5.1, Operations → DeepSeek V4-Pro), giving 3-lab model diversity.
++2. **A single GLM 5.1 validator/synthesizer** treats every lens finding as a hypothesis, drops speculative/cosmetic/duplicate/stale items, requires severity + confidence + evidence + impact + fix, and posts **one** deduplicated tracking comment plus inline comments on changed lines.
++
++The engine talks to models through **OpenRouter direct** (`provider: openrouter`), not the Databricks AI Gateway. OpenRouter is elek's tested path for tool-enabled reasoning models.
+ 
+ **Usage:**
+ 
+@@ -15,35 +22,56 @@ jobs:
+   review:
+     uses: EHA-Clinics/.github/.github/workflows/ai-code-review.yml@<SHA-PIN>
+     secrets:
+-      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+-      DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
++      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+     with:
+-      model: 'canonical-openrouter-deepseek-v4pro'
++      review_strategy: 'council'
++      review_models: 'deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,openrouter/z-ai/glm-5.1'
++      validator_model: 'openrouter/z-ai/glm-5.1'
++      thinking: 'high'
++      severity_threshold: 'important'
++      max_cost_usd: '0.25'
++      cost_rates: 'openrouter/z-ai/glm-5.1=0.98:3.08,xiaomi/mimo-v2.5-pro=0.435:0.87'
+ ```
+ 
+ **Inputs:**
+ 
+ | Input | Type | Default | Description |
+ |-------|------|---------|-------------|
+-| `model` | string | `canonical-openrouter-deepseek-v4pro` | Databricks serving endpoint name |
+-| `thinking` | string | `high` | Reasoning effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` |
+-| `max_turns` | number | `20` | Max conversation turns |
+-| `exclude_patterns` | string | `pnpm-lock.yaml,package-lock.json,*.lock,dist/,node_modules/` | Comma-separated exclude patterns |
+-| `include_patterns` | string | (empty) | Comma-separated include patterns |
+-| `mode` | string | `review` | `review` (read-only) or `review+edit` (pushes fixes) |
++| `review_strategy` | string | `council` | Review strategy: `council` (4 lenses + validator), `crosscheck`, or `solo`. |
++| `review_models` | string | `deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,openrouter/z-ai/glm-5.1` | Comma-separated OpenRouter model IDs round-robined across the 4 lenses. |
++| `validator_model` | string | `openrouter/z-ai/glm-5.1` | Model that synthesizes lens findings and posts the single deduplicated review. |
++| `thinking` | string | `high` | Reasoning effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. |
++| `max_turns` | number | `20` | Max conversation turns per reviewer. |
++| `severity_threshold` | string | `important` | Minimum severity to post (`info`, `important`, `critical`). |
++| `max_cost_usd` | string | `0.25` | Per-PR cost guardrail; elek auto-downgrades council → crosscheck → solo on large diffs to stay within budget. |
++| `cost_rates` | string | `openrouter/z-ai/glm-5.1=0.98:3.08,xiaomi/mimo-v2.5-pro=0.435:0.87` | `model=input:output` USD-per-million-token overrides for models without built-in OpenRouter pricing. DeepSeek uses OpenRouter's built-in rates. |
++| `mode` | string | `review` | `review` (read-only) or `review+edit` (pushes fixes). |
++| `model` | string | (unset) | Single-model override for `solo` strategy; ignored under `council`. |
++| `trigger_phrase` | string | `@ai-review` | Comment phrase that triggers an on-demand review. |
+ 
+ **Secrets:**
+ 
+ | Secret | Required | Description |
+ |--------|----------|-------------|
+-| `DATABRICKS_TOKEN` | Yes | Databricks personal access token |
+-| `DATABRICKS_WORKSPACE_URL` | Yes | Databricks workspace URL (e.g., `https://dbc-xxx.cloud.databricks.com`) |
++| `OPENROUTER_API_KEY` | Yes | OpenRouter API key. Set once as an org-level secret to cover all repos. |
++
++## Adopting in a New Repo
++
++1. **Set the secret.** Add `OPENROUTER_API_KEY` as an org-level GitHub Actions secret (Settings → Secrets and variables → Actions → New organization secret), scoped to all repos, or as a repo-level secret.
++2. **Add a caller workflow.** Create `.github/workflows/ai-code-review.yml` in your repo with a single `review` job that references the shared workflow at a full commit SHA pin (`@<SHA-PIN>`) and passes the council `with:` inputs above.
++3. **(Optional) Add `.elek.yml`.** Drop a repo-local `.elek.yml` to set `knowledge_paths`, `ignore_paths`, and `instructions` so the council reads your standards and skips generated/fixture files.
++4. **Open a test PR.** Open a small PR and confirm the council posts one tracking comment with the four lenses running in parallel before finalizing the SHA pin org-wide.
++
++## Cost
++
++A council run costs roughly **~$0.15–0.20/PR** (up from ~$0.04 for the old dual-solo setup). The `max_cost_usd` guardrail auto-downgrades the strategy on large diffs to keep cost bounded.
+ 
+ ## Security
+ 
+ - All actions are pinned to full commit SHAs.
+ - Workflows run with least privilege: `contents: read`, `pull-requests: write` only.
+-- The AI reviewer cannot approve, merge, or close PRs (structural guarantee via MCP server).
++- The AI reviewer cannot approve, merge, or close PRs (structural guarantee via the MCP server).
++- Only the secret **name** `OPENROUTER_API_KEY` is referenced here; no secret value ever appears in a workflow or this README.
+ 
+ ## See Also
+ 

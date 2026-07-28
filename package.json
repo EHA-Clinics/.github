@@ -1,0 +1,13 @@
+{
+  "name": "eha-clinics-dot-github",
+  "private": true,
+  "type": "module",
+  "description": "Org-level GitHub configuration for EHA-Clinics, plus the canonical AI review coverage gate (EHAC-2057).",
+  "packageManager": "pnpm@10.34.2",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "4.1.9"
+  }
+}

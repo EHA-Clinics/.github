@@ -1,0 +1,2840 @@
+diff --git a/apps/ehacare/frontend/src/__tests__/helpers/tenantIsolationFixtures.ts b/apps/ehacare/frontend/src/__tests__/helpers/tenantIsolationFixtures.ts
+new file mode 100644
+index 0000000000..558d12e9f4
+--- /dev/null
++++ b/apps/ehacare/frontend/src/__tests__/helpers/tenantIsolationFixtures.ts
+@@ -0,0 +1,49 @@
++/**
++ * Shared synthetic tenant-isolation fixtures (EHAC-1986 REPRO-01).
++ *
++ * A single, dependency-free, SYNTHETIC roster + mixed-tenant sentinel set imported
++ * by the three clinical-list `*.isolation.test.ts` RED specs (encounters, lab tests,
++ * prescriptions). Authored as a shareable helper so adr-008 EHAC-1796 can import it
++ * rather than duplicate a second drifting isolation harness (Key Decision #5).
++ *
++ * SECURITY (ASVS V7): every identifier here is SYNTHETIC — no real PHI ever crosses
++ * into a committed test artifact. Owned patient ids use the `HP-EHAC-*` namespace;
++ * the leaked (foreign-tenant) id uses `HP-OTHER-*`; the leaked prescriptions name is
++ * a collision-proof `LEAKED_`-prefixed sentinel.
++ *
++ * Why a sentinel NAME as well as a sentinel ID: the prescriptions report SELECT has
++ * NO `Patient_id` column (Landmine C), so its oracle must key on the non-unique
++ * `Patient_name` column. A common/shared name would false-green the leak, so the
++ * leaked name is a UUID-suffixed `LEAKED_` sentinel provably disjoint from every
++ * roster name (Review Item 2).
++ */
++
++/** Two synthetic patient ids owned by the caller org (Test-Admin EHAClinics' roster). */
++export const ORG_ROSTER: string[] = ['HP-EHAC-001', 'HP-EHAC-002'];
++
++/**
++ * The two matching synthetic patient NAMES. Plain synthetic names carrying NO
++ * `LEAKED_` prefix, so the LEAKED_PATIENT_NAME sentinel below stays provably disjoint
++ * (used by the prescriptions spec, which has no Patient_id column to key on).
++ */
++export const ORG_ROSTER_NAMES: string[] = [
++  'Synthetic Roster One',
++  'Synthetic Roster Two',
++];
++
++/** A synthetic OTHER-tenant patient id that is NOT a member of ORG_ROSTER (the leaked id). */
++export const LEAKED_PATIENT_ID = 'HP-OTHER-777';
++
++/**
++ * Collision-proof leaked patient NAME: a `LEAKED_`-prefixed sentinel with a hardcoded
++ * UUID suffix, guaranteed disjoint from ORG_ROSTER_NAMES. This makes the LEAK (not an
++ * incidental name collision) the reason the prescriptions `Patient_name` oracle fails.
++ */
++export const LEAKED_PATIENT_NAME =
++  'LEAKED_7f3ab21c-4e6d-4c9a-9b2e-0a1f5d3c8e42';
++
++/**
++ * One synthetic branch/Facility value carried by BOTH the owned and the leaked rows,
++ * so the lists' default branch filter cannot explain the leak (Landmine D).
++ */
++export const SHARED_BRANCH = 'SYNTH-BRANCH-01';
+diff --git a/apps/ehacare/frontend/src/ambulatory/features/encounter/services/encounterService.isolation.test.ts b/apps/ehacare/frontend/src/ambulatory/features/encounter/services/encounterService.isolation.test.ts
+new file mode 100644
+index 0000000000..416f14d75f
+--- /dev/null
++++ b/apps/ehacare/frontend/src/ambulatory/features/encounter/services/encounterService.isolation.test.ts
+@@ -0,0 +1,286 @@
++/**
++ * encounters list — tenant-isolation RED oracle (EHAC-1986 REPRO-01 → Phase 2).
++ *
++ * WHAT THIS PROVES (app-layer contract — Landmine B): the Phase-2 fix scopes the
++ * clinical list by emitting a roster-membership predicate into the AQL —
++ * `… items[at0007,'Patient ID']/value matches { '<roster id>', … }` — where the
++ * roster is fetched from the org-scoped Demographics `searchPatients` (mirroring
++ * the patient list; demography.ts:36-42 + PatientList.tsx:183 — Key Decision #2).
++ * This oracle simulates the openEHR server applying that predicate: a canned,
++ * mixed-tenant row SURVIVES iff its `Patient_id` value appears as a single-quoted
++ * literal in the EMITTED AQL string. The spec then asserts (a) the foreign-tenant
++ * row is absent, (b) the OWNED row SURVIVES (guards the empty-roster false-green —
++ * Landmine 2 / Pitfall 4), and (c) the emitted AQL carries the roster `matches {}`
++ * clause on the exact patient-id path with the roster ids and NOT the leaked id.
++ *
++ * WHAT THIS DOES NOT PROVE: a mocked `executeRaw` runs no AQL engine, so this spec
++ * cannot prove the openEHR SERVER scopes rows — only that the APP emits a
++ * roster-scoped query. Server-side scoping is confirmed separately by the
++ * Playwright E2E (Phase 1).
++ *
++ * DO NOT make this green here. Injecting the roster predicate into
++ * encounterService.ts is Phase 2's job (EHAC-1986, 02-02). This oracle is expected
++ * to be RED until then — pre-fix the emitted AQL carries no patient-id literals, so
++ * every canned row drops and the owned-survives / emitted-AQL assertions FAIL.
++ */
++
++import { describe, it, expect, vi, beforeEach } from 'vitest';
++
++vi.mock('@sentry/nextjs', () => ({
++  default: {},
++  addBreadcrumb: vi.fn(),
++  captureException: vi.fn(),
++}));
++
++vi.mock('@services/sdkClientAdapter', () => ({
++  getSDKClientOrThrow: vi.fn(),
++}));
++
++// fetchAllDiagnosisByName is invoked by getAllEncounters' diagnosis filter path.
++vi.mock('./diagnosisService', () => ({
++  fetchAllDiagnosisByName: vi.fn(async () => [{ Encounter_id: 'E1' }]),
++}));
++
++import { getSDKClientOrThrow } from '@services/sdkClientAdapter';
++import { getAllEncounters, getEncounter } from './encounterService';
++import { createMockSDKClient } from '../../../../__tests__/helpers/sdkMockFactory';
++import {
++  ORG_ROSTER,
++  LEAKED_PATIENT_ID,
++  SHARED_BRANCH,
++} from '../../../../__tests__/helpers/tenantIsolationFixtures';
++
++const mockGetSDKClientOrThrow = vi.mocked(getSDKClientOrThrow);
++let client: ReturnType<typeof createMockSDKClient>;
++
++// Two canned, mixed-tenant rows: one owned (roster) + one foreign-tenant, BOTH
++// carrying SHARED_BRANCH so the default branch filter cannot explain the outcome
++// (Landmine D). Roster key is `Patient_id` (encounterService.ts:236).
++const CANNED_ROWS = [
++  {
++    Encounter_id: { value: 'EN-EHAC-001' },
++    Patient_id: { value: ORG_ROSTER[0] },
++    Facility_name: { value: SHARED_BRANCH },
++  },
++  {
++    Encounter_id: { value: 'EN-OTHER-999' },
++    Patient_id: { value: LEAKED_PATIENT_ID }, // ← foreign tenant, leaked today
++    Facility_name: { value: SHARED_BRANCH },
++  },
++];
++
++// Roster-aware executeRaw: simulate the server applying `… matches {roster}` — a
++// row survives iff its Patient_id literal is single-quoted in the emitted AQL.
++const rosterAwareExecuteRaw = (aql: string) =>
++  Promise.resolve({
++    resultSet: CANNED_ROWS.filter((row) =>
++      aql.includes(`'${row.Patient_id.value}'`),
++    ),
++  });
++
++beforeEach(() => {
++  vi.clearAllMocks();
++  client = createMockSDKClient();
++  client.aql().executeRaw.mockResolvedValue({ resultSet: [] });
++  // The Phase-2 fix fetches the org roster via the Demographics leaf; stub it to a
++  // non-empty bundle (identifier[0].value = ORG_ROSTER) so the roster fetch cannot
++  // false-green as "isolated but empty" (Landmine 2). Inert against today's service.
++  client.demographics.patients.searchPatients.mockResolvedValue({
++    entry: ORG_ROSTER.map((id) => ({
++      resource: { identifier: [{ value: id }] },
++    })),
++  });
++  mockGetSDKClientOrThrow.mockReturnValue(client as never);
++});
++
++describe('encounters list — tenant isolation (EHAC-1986 REPRO-01)', () => {
++  it('emits a roster-scoped AQL so only owned Patient_id rows survive (RED until Phase 2)', async () => {
++    client.aql().executeRaw.mockImplementation(rosterAwareExecuteRaw as never);
++
++    // undefined filter reaches the verbatim-return / export path (Landmine 1).
++    const rows = await getAllEncounters(0, 50, undefined, '');
++    const patientIds = rows.map((r: any) => r?.Patient_id?.value);
++    const leaked = patientIds.filter((id: string) => !ORG_ROSTER.includes(id));
++
++    // No foreign-tenant row, AND the owned row SURVIVES (guards empty-roster false-green).
++    expect(leaked).toEqual([]);
++    expect(patientIds).toContain(ORG_ROSTER[0]);
++
++    // Load-bearing: the emitted AQL carries a roster `matches {}` membership on the
++    // exact patient-id PATH, enumerating both roster ids and NOT the leaked id.
++    const emittedAql = client.aql().executeRaw.mock.calls[0][0] as string;
++    expect(emittedAql).toMatch(
++      /items\[at0007,'Patient ID'\]\/value\s+matches\s*\{/,
++    );
++    ORG_ROSTER.forEach((id) => {
++      expect(emittedAql).toContain(`'${id}'`);
++    });
++    expect(emittedAql).not.toContain(`'${LEAKED_PATIENT_ID}'`);
++  });
++
++  it('keeps the branch predicate additive to the roster clause (SCOPE-02, RED until Phase 2)', async () => {
++    client.aql().executeRaw.mockImplementation(rosterAwareExecuteRaw as never);
++
++    // Minimal valid filter whose branch value = SHARED_BRANCH.
++    const filter = {
++      branch: {
++        value: SHARED_BRANCH,
++        code: SHARED_BRANCH,
++        label: SHARED_BRANCH,
++      },
++      dateRange: { from: '', to: '' },
++    };
++    await getAllEncounters(0, 50, filter as never, '');
++
++    const emittedAql = client.aql().executeRaw.mock.calls[0][0] as string;
++    const emittedParams = client.aql().executeRaw.mock.calls[0][1] as {
++      branchName?: string;
++    };
++
++    // Roster clause AND the branch predicate/param both present — additive, not a
++    // replacement of the branch sub-filter.
++    expect(emittedAql).toMatch(
++      /items\[at0007,'Patient ID'\]\/value\s+matches\s*\{/,
++    );
++    expect(emittedAql).toContain(':branchName');
++    expect(emittedParams.branchName).toBe(SHARED_BRANCH);
++  });
++});
++
++/**
++ * PHASE-3 DETAIL + SEARCH oracle (EHAC-1986, DETAIL-01 / SEARCH-01).
++ *
++ * getEncounter TODAY calls `client.views.execute('getEncounter', {encounterId})` and
++ * returns the resultSet VERBATIM (encounterService.ts:163-171) — no roster predicate,
++ * so opening a FOREIGN encounter id leaks the foreign-tenant row. The DETAIL case stubs
++ * that pre-fix `views.execute` path to return BOTH a canned owned row and a canned
++ * leaked row, so pre-fix the leaked id is present and `expect(leaked).toEqual([])` FAILS
++ * (clean RED, leaked-present). 03-02 rewrites getEncounter to inline roster-scoped AQL
++ * (Option A': `… items[at0014,'Encounter ID']/value/id = :encounterId AND
++ * items[at0007,'Patient ID']/value matches {roster}`) reading `aql().executeRaw`
++ * (roster-aware) — then only the owned row survives and the emitted-AQL assertions pass.
++ * DO NOT edit encounterService.ts here: the DETAIL case is RED until 03-02.
++ *
++ * The SEARCH case is a GREEN regression lock: getAllEncounters is already Phase-2-scoped
++ * (roster splice, encounterService.ts:232-242), so a search filter targeting a LEAKED id
++ * cannot bypass the roster clause — search is ADDITIVE.
++ */
++
++// getEncounter is scoped via GUARD-THEN-FETCH (BLOCKER 3, review): the stored view
++// returns a projection (Is_final, Is_assisted, Assessment_id, Patient_membership_*, Tag, …)
++// that no in-repo sibling reproduces, so an inline SELECT rewrite would drop columns
++// consumers read non-optionally (crash). Instead a roster-scoped GUARD query (patient-id
++// path + :encounterId key) runs via aql().executeRaw FIRST — a foreign encounterId → 0 guard
++// rows → return [] and the stored view (views.execute) is NEVER called (no foreign PHI on the
++// wire). An owned encounterId → guard passes → the stored view supplies its full projection.
++
++// The stored view's owned projection (returned once the guard confirms ownership). `Is_final`
++// is a field an inline rewrite would have dropped — its presence proves guard-then-fetch keeps
++// the full projection reaching consumers.
++const DETAIL_ROWS = [
++  {
++    Encounter_id: { value: 'EN-EHAC-001' },
++    Patient_id: { value: ORG_ROSTER[0] },
++    Facility_name: { value: SHARED_BRANCH },
++    Is_final: { value: true },
++  },
++];
++
++// Guard rows for the roster-scoped GUARD query: one owned + one foreign. A guard row survives
++// iff BOTH the queried encounterId (bound `:encounterId` param) equals its encounter_id AND its
++// Patient_id literal is inlined in the emitted roster `matches {…}`. So a foreign encounterId's
++// guard row is dropped (its patient is not in the roster), and the owned row is dropped for a
++// foreign query (encounter_id ≠ queried id) → 0 rows → the stored view is never called.
++const CANNED_GUARD_ROWS = [
++  { encounter_id: 'EN-EHAC-001', Patient_id: { value: ORG_ROSTER[0] } },
++  { encounter_id: 'EN-OTHER-999', Patient_id: { value: LEAKED_PATIENT_ID } },
++];
++
++// Guard-aware executeRaw: the queried encounterId travels as the `:encounterId` bound param
++// (calls[i][1]); the roster ids are inlined literals in the AQL. Mirror the server: a row
++// survives iff its encounter_id equals the queried param AND its Patient_id literal is present.
++const guardAwareExecuteRaw = (aql: string, params: { encounterId?: string }) =>
++  Promise.resolve({
++    resultSet: CANNED_GUARD_ROWS.filter(
++      (row) =>
++        row.encounter_id === params?.encounterId &&
++        aql.includes(`'${row.Patient_id.value}'`),
++    ),
++  });
++
++describe('encounters detail — tenant isolation (EHAC-1986 DETAIL-01)', () => {
++  it('guards getEncounter(foreignId): the guard returns 0 rows so the stored view is NEVER called (no foreign PHI on the wire)', async () => {
++    // The stored view WOULD leak if reached — prove it is never reached for a foreign id.
++    client.views.execute.mockResolvedValue({ resultSet: DETAIL_ROWS });
++    client.aql().executeRaw.mockImplementation(guardAwareExecuteRaw as never);
++
++    const rows = (await getEncounter('EN-OTHER-999')) as any[];
++    const ids = rows.map((r) => r?.Patient_id?.value);
++    const leaked = ids.filter((id: string) => !ORG_ROSTER.includes(id));
++
++    // Foreign guard → 0 rows → natural-empty; the stored view was never called.
++    expect(rows).toEqual([]);
++    expect(leaked).toEqual([]);
++    // SECURITY PROOF: no foreign PHI is fetched.
++    expect(client.views.execute).not.toHaveBeenCalled();
++
++    // Load-bearing: the emitted GUARD AQL carries the roster `matches {}` on the patient-id
++    // PATH plus the encounter-id key predicate, with the LEAKED id absent.
++    const emittedAql = client.aql().executeRaw.mock.calls[0][0] as string;
++    expect(emittedAql).toMatch(
++      /items\[at0007,'Patient ID'\]\/value\s+matches\s*\{/,
++    );
++    expect(emittedAql).toMatch(
++      /items\[at0014,'Encounter ID'\]\/value\/id\s*=\s*:encounterId/,
++    );
++    ORG_ROSTER.forEach((id) => {
++      expect(emittedAql).toContain(`'${id}'`);
++    });
++    expect(emittedAql).not.toContain(`'${LEAKED_PATIENT_ID}'`);
++  });
++
++  it('fetches getEncounter(ownedId): the guard passes so the stored view supplies the full projection (owned-survives, no column drift)', async () => {
++    client.views.execute.mockResolvedValue({ resultSet: DETAIL_ROWS });
++    client.aql().executeRaw.mockImplementation(guardAwareExecuteRaw as never);
++
++    const rows = (await getEncounter('EN-EHAC-001')) as any[];
++    const ids = rows.map((r) => r?.Patient_id?.value);
++
++    // Guard passed → the stored view was called and its owned projection returned, INCLUDING
++    // Is_final — the column class an inline SELECT rewrite dropped (BLOCKER 3).
++    expect(client.views.execute).toHaveBeenCalledWith('getEncounter', {
++      encounterId: 'EN-EHAC-001',
++    });
++    expect(ids).toContain(ORG_ROSTER[0]);
++    expect(rows[0]?.Is_final?.value).toBe(true);
++    expect(ids.filter((id: string) => !ORG_ROSTER.includes(id))).toEqual([]);
++  });
++});
++
++describe('encounters search — tenant isolation (EHAC-1986 SEARCH-01)', () => {
++  it('keeps the roster clause when a search filter targets a leaked id (GREEN lock)', async () => {
++    client.aql().executeRaw.mockImplementation(rosterAwareExecuteRaw as never);
++
++    // A search filter whose encounter-id term targets the FOREIGN record.
++    const filter = {
++      encounterId: 'EN-OTHER-999',
++      branch: {
++        value: SHARED_BRANCH,
++        code: SHARED_BRANCH,
++        label: SHARED_BRANCH,
++      },
++      dateRange: { from: '', to: '' },
++    };
++    const rows = await getAllEncounters(0, 50, filter as never, '');
++    const ids = rows.map((r: any) => r?.Patient_id?.value);
++    const leaked = ids.filter((id: string) => !ORG_ROSTER.includes(id));
++
++    // Search is ADDITIVE — the roster clause is STILL emitted alongside the search term.
++    const emittedAql = client.aql().executeRaw.mock.calls[0][0] as string;
++    expect(emittedAql).toMatch(
++      /items\[at0007,'Patient ID'\]\/value\s+matches\s*\{/,
++    );
++    expect(leaked).toEqual([]);
++    expect(ids).toContain(ORG_ROSTER[0]);
++  });
++});
+diff --git a/apps/ehacare/frontend/src/ambulatory/features/encounter/services/encounterService.test.ts b/apps/ehacare/frontend/src/ambulatory/features/encounter/services/encounterService.test.ts
+index f675ee6bb1..3622bdd684 100644
+--- a/apps/ehacare/frontend/src/ambulatory/features/encounter/services/encounterService.test.ts
++++ b/apps/ehacare/frontend/src/ambulatory/features/encounter/services/encounterService.test.ts
+@@ -150,24 +150,45 @@ describe('safeGetLatestEncounterId', () => {
+   });
+ });
+ 
+-describe('getEncounter (migrated, array shape preserved)', () => {
++describe('getEncounter (guard-then-fetch, array shape preserved)', () => {
+   let client: MockSDKClient;
+ 
+   beforeEach(() => {
+     vi.clearAllMocks();
+     client = createMockSDKClient();
++    // EHAC-1986: getEncounter now runs a roster-scoped GUARD (aql().executeRaw) BEFORE the
++    // stored view. Stub a non-empty roster; the roster-scoping proof lives in the isolation
++    // spec, so this sibling contract spec just drives the guard pass/miss branches directly.
++    client.demographics.patients.searchPatients.mockResolvedValue({
++      entry: [{ resource: { identifier: [{ value: 'HP-OWNED' }] } }],
++    });
+     mockGetSDKClientOrThrow.mockReturnValue(client as never);
+   });
+ 
+-  it('calls generic views.execute with the getEncounter view name + encounterId', async () => {
++  it('runs a roster-scoped guard via aql().executeRaw keyed on :encounterId, then fetches the stored view when the guard passes', async () => {
++    client.aql().executeRaw.mockResolvedValue({
++      resultSet: [{ Patient_id: 'HP-OWNED' }],
++    }); // guard passes → the stored view is reached
+     client.views.execute.mockResolvedValue({ resultSet: [] });
+     await getEncounter('enc-1');
++    const [aql, params] = client.aql().executeRaw.mock.calls[0] as [
++      string,
++      Record<string, unknown>,
++    ];
++    expect(aql).toContain(
++      "items[at0014,'Encounter ID']/value/id = :encounterId",
++    );
++    expect(aql).toMatch(/matches\s*\{/);
++    expect(params).toEqual({ encounterId: 'enc-1' });
+     expect(client.views.execute).toHaveBeenCalledWith('getEncounter', {
+       encounterId: 'enc-1',
+     });
+   });
+ 
+-  it('unwraps .resultSet, returning the array the prior response.data did', async () => {
++  it('returns the stored view resultSet as an array (shape preserved)', async () => {
++    client.aql().executeRaw.mockResolvedValue({
++      resultSet: [{ Patient_id: 'HP-OWNED' }],
++    }); // guard passes
+     const rows = [{ Encounter_id: 'enc-1', Encounter_type: 'Consult' }];
+     client.views.execute.mockResolvedValue({ resultSet: rows });
+     const result = await getEncounter('enc-1');
+@@ -175,6 +196,14 @@ describe('getEncounter (migrated, array shape preserved)', () => {
+     expect(Array.isArray(result)).toBe(true);
+     expect(result[0]).toEqual(rows[0]);
+   });
++
++  it('refuses (empty array, stored view never fetched) when the guard finds no owned row', async () => {
++    // Guard miss on both the cached and the force-refresh retry (H4) → fail-closed empty.
++    client.aql().executeRaw.mockResolvedValue({ resultSet: [] });
++    const result = await getEncounter('enc-1');
++    expect(result).toEqual([]);
++    expect(client.views.execute).not.toHaveBeenCalled();
++  });
+ });
+ 
+ describe('getEncountersByAssessmentId (migrated, generic execute)', () => {
+diff --git a/apps/ehacare/frontend/src/ambulatory/features/encounter/services/encounterService.ts b/apps/ehacare/frontend/src/ambulatory/features/encounter/services/encounterService.ts
+index 7d885aa4a4..38582737a3 100644
+--- a/apps/ehacare/frontend/src/ambulatory/features/encounter/services/encounterService.ts
++++ b/apps/ehacare/frontend/src/ambulatory/features/encounter/services/encounterService.ts
+@@ -3,6 +3,10 @@ import * as Sentry from '@sentry/nextjs';
+ import { AxiosError } from 'axios';
+ import { getSDKClientOrThrow } from '@services/sdkClientAdapter';
+ import { toApiException } from '@services/toApiException';
++import {
++  getOrgPatientRoster,
++  buildRosterMatchClause,
++} from '@services/tenantRoster';
+ import { fetchAllDiagnosisByName } from './diagnosisService';
+ 
+ import { IEncounter } from '../interfaces/encounter';
+@@ -157,13 +161,51 @@ export const getBMGFStudiesCountByEhrId = async (ehrId: string) => {
+ };
+ 
+ export const getEncounter = async (encounterId: string) => {
+-  const client = getSDKClientOrThrow();
+-  // Generic execute (not the typed getById, which returns a single object) to
+-  // preserve the array shape callers read, e.g. `(await getEncounter(id))[0]`.
+-  const result = await client.views.execute<IEncounter>('getEncounter', {
+-    encounterId,
+-  });
+-  return result.resultSet as unknown as [IEncounter];
++  try {
++    const client = getSDKClientOrThrow();
++    // TENANT SCOPING (EHAC-1986, S1 — DETAIL-01, GUARD-THEN-FETCH). The stored
++    // `getEncounter` view returns a projection this app depends on (Is_final,
++    // Is_assisted, Is_created_by_chew, Assessment_id, Patient_membership_*, Tag, …)
++    // that no in-repo sibling reproduces — an inline rewrite would drop columns
++    // `activeEncounter` consumers read non-optionally (crash, not blank; review
++    // BLOCKER 3). So instead of reproducing the projection, a roster-scoped GUARD
++    // query confirms the encounter id belongs to a roster patient BEFORE the stored
++    // view is called: a foreign id never reaches the view (no foreign PHI on the
++    // wire), and the stored view still supplies its full projection for owned rows.
++    // Guard fetched INSIDE the try (fail-closed: empty roster → matches {''} → 0
++    // rows; over-cap → RosterTooLargeError). A foreign id → natural-empty [], never 403.
++    const isOwned = async (forceRefresh: boolean): Promise<boolean> => {
++      const roster = await getOrgPatientRoster('patient_id', { forceRefresh });
++      const guardAql = `SELECT h/data[at0001]/items[at0007,'Patient ID']/value AS Patient_id
++        FROM EHR e
++        CONTAINS COMPOSITION c[openEHR-EHR-COMPOSITION.encounter.v1]
++        CONTAINS ADMIN_ENTRY h[openEHR-EHR-ADMIN_ENTRY.episode_institution.v0,'Patient Encounter']
++        WHERE h/data[at0001]/items[at0014,'Encounter ID']/value/id = :encounterId and ${buildRosterMatchClause(
++          "h/data[at0001]/items[at0007,'Patient ID']/value",
++          roster,
++        )}
++        LIMIT 1`;
++      const guard: any = await client
++        .aql()
++        .executeRaw(guardAql, { encounterId });
++      return Boolean(guard?.resultSet?.length);
++    };
++    // H4 (EHAC-1986): a ≤5-min-old cached roster can miss a just-registered patient, so a
++    // guard miss retries ONCE with a force-refreshed roster before refusing — register-then-
++    // open-encounter (AddEncounter.tsx) must not wrongly return [] for the caller's own new row.
++    if (!(await isOwned(false)) && !(await isOwned(true))) {
++      return [] as unknown as [IEncounter];
++    }
++
++    // Ownership confirmed — the stored view supplies the full projection unchanged.
++    const result = await client.views.execute<IEncounter>('getEncounter', {
++      encounterId,
++    });
++    return (result.resultSet ?? []) as unknown as [IEncounter];
++  } catch (error: unknown) {
++    Sentry.captureException(error);
++    throw toApiException(error);
++  }
+ };
+ export const getEncountersByAssessmentId = async (assessmentId: string) => {
+   const client = getSDKClientOrThrow();
+@@ -214,8 +256,31 @@ export const getAllEncounters = async (
+     );
+   }
+ 
+-  const query = {
+-    aql: `SELECT e/ehr_id/value AS Ehr_id,
++  try {
++    const client = getSDKClientOrThrow();
++
++    // TENANT SCOPING (EHAC-1986, S1): fetch the caller org's OWN patient roster
++    // (org-scoped Demographics — mirrors the patient list, Key Decision #2) and inject
++    // it as an ADDITIVE `Patient ID matches {roster}` predicate into the base WHERE
++    // UNCONDITIONALLY — including the undefined-filter/export path used by
++    // getAllEncounterExcel (Landmine 1). Match on the PATH (as the diagnosis filter
++    // does at :493), not the `Patient_id` SELECT alias. An empty roster fails CLOSED to
++    // `matches {''}` (0 rows), and an over-cap roster throws RosterTooLargeError — both
++    // surface through the try/catch below as errors, NEVER as an unscoped read.
++    const roster = await getOrgPatientRoster();
++    const rosterExpr = buildRosterMatchClause(
++      "h/data[at0001]/items[at0007,'Patient ID']/value",
++      roster,
++    );
++    // Compose the effective WHERE so the roster clause is ALWAYS present. When
++    // createAQLFilter produced a WHERE (it begins with `WHERE Encounter_type != …`),
++    // splice the roster clause in as the first ANDed term; otherwise seed a fresh WHERE.
++    const scopedWhere = aqlFilter
++      ? aqlFilter.replace(/^\s*WHERE\s+/, `WHERE ${rosterExpr} and `)
++      : `WHERE ${rosterExpr}`;
++
++    const query = {
++      aql: `SELECT e/ehr_id/value AS Ehr_id,
+         c/name/value AS Composition_name,
+         c/uid/value AS Composition_id,
+         h/data[at0001]/items[at0014,'Encounter ID']/value/id AS Encounter_id,
+@@ -241,27 +306,25 @@ export const getAllEncounters = async (
+       CONTAINS (CLUSTER v[openEHR-EHR-CLUSTER.episode_of_care.v0]
+       and CLUSTER f[openEHR-EHR-CLUSTER.organisation.v1]
+       and CLUSTER m[openEHR-EHR-CLUSTER.person.v1,'Attending Clinician'])
+-      ${aqlFilter}
++      ${scopedWhere}
+       ORDER BY Encounter_date DESCENDING
+       ${limit ? 'LIMIT :limit' : ''} ${offset ? 'OFFSET :offset' : ''}`,
+-    aqlParameters: {
+-      branchName: filter?.branch?.value || undefined,
+-      encounterType: filter?.encounterType,
+-      service: filter?.service,
+-      encounterId: filter?.encounterId,
+-      provider: filter?.serviceProvider,
+-      nurse: filter?.nurse,
+-      diagnosis: filter?.diagnosis,
+-      startDate: filter?.dateRange.from,
+-      endDate: filter?.dateRange.to,
+-      offset: offset,
+-      limit: limit,
+-      consultingClinicianName: consultingClinicianName,
+-    },
+-  };
++      aqlParameters: {
++        branchName: filter?.branch?.value || undefined,
++        encounterType: filter?.encounterType,
++        service: filter?.service,
++        encounterId: filter?.encounterId,
++        provider: filter?.serviceProvider,
++        nurse: filter?.nurse,
++        diagnosis: filter?.diagnosis,
++        startDate: filter?.dateRange.from,
++        endDate: filter?.dateRange.to,
++        offset: offset,
++        limit: limit,
++        consultingClinicianName: consultingClinicianName,
++      },
++    };
+ 
+-  try {
+-    const client = getSDKClientOrThrow();
+     // ACCEPTED DEVIATION (directive #5 / Pitfall 6 / Open Q4): the prior
+     // memoizedAxiosPost 5-minute in-memory memo is intentionally dropped —
+     // executeRaw does no caching. Data correctness is preserved; only the
+@@ -278,6 +341,19 @@ export const getAllEncounters = async (
+   }
+ };
+ 
++// PHASE-2 DECISION NOTES (EHAC-1986):
++// (1) COUNT scope — countAllEncounters (below) builds a SEPARATE, unscoped COUNT AQL
++//     but has NO app consumer (grep-confirmed; the encounters list uses a peek-cursor
++//     at AllEncounters.tsx:140-147, not a count). It is therefore intentionally OUT of
++//     Phase-2 list scope; a scoped-count follow-up is flagged, not done here.
++// (2) BLAST RADIUS — getAllEncounters is also called by the migrations tooling
++//     (settings/features/migrations/components/Encounters.tsx:40,
++//     common/components/migrations/Encounters.tsx:40) and the chart-audit filter dialog
++//     (quality-app/.../NewReviewFilterDialog.tsx:324). Org-scoping ALL of them is the
++//     intended security posture, so NO opt-out param is added by default; if a live
++//     check (02-03) reveals a consumer that legitimately needs cross-org reads, that is
++//     surfaced as a follow-up rather than weakening the default.
++
+ export const countAllEncounters = async (consultingClinicianName?: string) => {
+   const query = {
+     aql: `
+diff --git a/apps/ehacare/frontend/src/ambulatory/features/labtest/services/labOrders.isolation.test.ts b/apps/ehacare/frontend/src/ambulatory/features/labtest/services/labOrders.isolation.test.ts
+new file mode 100644
+index 0000000000..3834ec6a7f
+--- /dev/null
++++ b/apps/ehacare/frontend/src/ambulatory/features/labtest/services/labOrders.isolation.test.ts
+@@ -0,0 +1,319 @@
++/**
++ * lab tests list — tenant-isolation RED oracle (EHAC-1986 REPRO-01 → Phase 2).
++ *
++ * WHAT THIS PROVES (app-layer contract — Landmine B): the Phase-2 fix scopes the
++ * lab list by emitting a roster-membership predicate into the AQL —
++ * `… g/items[at0006]/value matches { '<roster id>', … }` (the upper-case
++ * `Patient_ID` alias, labOrders.ts:163) — where the roster is fetched from the
++ * org-scoped Demographics `searchPatients` (mirroring the patient list;
++ * demography.ts:36-42 + PatientList.tsx:183 — Key Decision #2). This oracle
++ * simulates the openEHR server applying that predicate: a canned, mixed-tenant row
++ * SURVIVES iff its `Patient_ID` value appears as a single-quoted literal in the
++ * EMITTED AQL string. The spec then asserts (a) the foreign-tenant row is absent,
++ * (b) the OWNED row SURVIVES (guards the empty-roster false-green — Landmine 2 /
++ * Pitfall 4), and (c) the emitted AQL carries the roster `matches {}` clause on the
++ * exact patient-id path with the roster ids and NOT the leaked id.
++ *
++ * WHAT THIS DOES NOT PROVE: a mocked `executeRaw` runs no AQL engine — it proves
++ * only that the APP emits a roster-scoped query, not that the openEHR SERVER scopes
++ * the rows. Server-side scoping is confirmed separately by the Playwright E2E.
++ *
++ * DO NOT make this green here — injecting the roster predicate into labOrders.ts is
++ * Phase 2's job (EHAC-1986, 02-02). This oracle is expected to be RED until then —
++ * pre-fix the emitted AQL carries no patient-id literals, so every canned row drops
++ * and the owned-survives / emitted-AQL assertions FAIL.
++ */
++
++import { vi, describe, it, expect, beforeEach } from 'vitest';
++import {
++  createMockSDKClient,
++  type MockSDKClient,
++} from 'src/__tests__/helpers/sdkMockFactory';
++
++vi.mock('@services/sdkClientAdapter', () => ({
++  getSDKClientOrThrow: vi.fn(),
++}));
++
++vi.mock('@ehacare/bettercare-sdk', () => ({
++  createBetterCareClient: vi.fn(),
++}));
++
++vi.mock('@exceptions/ApiExceptions', () => ({
++  default: class ApiException extends Error {
++    statusCode?: number;
++    constructor(status?: number) {
++      super(`ApiException: ${status}`);
++      this.statusCode = status;
++    }
++  },
++}));
++
++import { getSDKClientOrThrow } from '@services/sdkClientAdapter';
++import { getAllLabOrders, getLabOrderByReportId } from './labOrders';
++import {
++  ORG_ROSTER,
++  LEAKED_PATIENT_ID,
++  SHARED_BRANCH,
++} from 'src/__tests__/helpers/tenantIsolationFixtures';
++
++const mockGetSDKClientOrThrow = vi.mocked(getSDKClientOrThrow);
++
++// Two canned, mixed-tenant rows: one owned (roster) + one foreign-tenant, BOTH
++// carrying SHARED_BRANCH so the branch filter cannot explain the outcome
++// (Landmine D). Roster key is the upper-case `Patient_ID` (labOrders.ts:163).
++const CANNED_ROWS = [
++  {
++    report_id: { value: 'LT-EHAC-001' },
++    Patient_ID: { value: ORG_ROSTER[0] },
++    Branch_code: { value: SHARED_BRANCH },
++    Branch_name: { value: SHARED_BRANCH },
++  },
++  {
++    report_id: { value: 'LT-OTHER-999' },
++    Patient_ID: { value: LEAKED_PATIENT_ID }, // ← foreign tenant, leaked today
++    Branch_code: { value: SHARED_BRANCH },
++    Branch_name: { value: SHARED_BRANCH },
++  },
++];
++
++// Roster-aware executeRaw: simulate the server applying `… matches {roster}` — a
++// row survives iff its Patient_ID literal is single-quoted in the emitted AQL.
++const rosterAwareExecuteRaw = (aql: string) =>
++  Promise.resolve({
++    resultSet: CANNED_ROWS.filter((row) =>
++      aql.includes(`'${row.Patient_ID.value}'`),
++    ),
++  });
++
++describe('lab tests list — tenant isolation (EHAC-1986 REPRO-01)', () => {
++  let client: MockSDKClient;
++
++  beforeEach(() => {
++    vi.clearAllMocks();
++    client = createMockSDKClient();
++    client.aql().executeRaw.mockResolvedValue({ resultSet: [] });
++    // Stub the org-roster fetch to a non-empty bundle so the Phase-2 roster fetch
++    // cannot false-green as "isolated but empty" (Landmine 2). Inert against today.
++    client.demographics.patients.searchPatients.mockResolvedValue({
++      entry: ORG_ROSTER.map((id) => ({
++        resource: { identifier: [{ value: id }] },
++      })),
++    });
++    mockGetSDKClientOrThrow.mockReturnValue(client as never);
++  });
++
++  it('emits a roster-scoped AQL so only owned Patient_ID rows survive (RED until Phase 2)', async () => {
++    client.aql().executeRaw.mockImplementation(rosterAwareExecuteRaw as never);
++
++    // undefined filter reaches the verbatim-return / export path (Landmine 1).
++    const rows = await getAllLabOrders(0, 50, undefined, false);
++    const patientIds = rows.map((r: any) => r?.Patient_ID?.value);
++    const leaked = patientIds.filter((id: string) => !ORG_ROSTER.includes(id));
++
++    // No foreign-tenant row, AND the owned row SURVIVES (guards empty-roster false-green).
++    expect(leaked).toEqual([]);
++    expect(patientIds).toContain(ORG_ROSTER[0]);
++
++    // Load-bearing: the emitted AQL carries a roster `matches {}` membership on the
++    // exact patient-id PATH, enumerating both roster ids and NOT the leaked id.
++    const emittedAql = client.aql().executeRaw.mock.calls[0][0] as string;
++    expect(emittedAql).toMatch(/g\/items\[at0006\]\/value\s+matches\s*\{/);
++    ORG_ROSTER.forEach((id) => {
++      expect(emittedAql).toContain(`'${id}'`);
++    });
++    expect(emittedAql).not.toContain(`'${LEAKED_PATIENT_ID}'`);
++  });
++
++  it('keeps the branch predicate additive to the roster clause (SCOPE-02, RED until Phase 2)', async () => {
++    client.aql().executeRaw.mockImplementation(rosterAwareExecuteRaw as never);
++
++    // Minimal valid filter whose branch code = SHARED_BRANCH.
++    const filter = {
++      searchInput: undefined,
++      branch: {
++        value: SHARED_BRANCH,
++        code: SHARED_BRANCH,
++        label: SHARED_BRANCH,
++      },
++      provider: '',
++      labProvider: '',
++      status: '',
++      flag: '',
++      dateRange: { from: '', to: '' },
++    };
++    await getAllLabOrders(0, 50, filter as never, false);
++
++    const emittedAql = client.aql().executeRaw.mock.calls[0][0] as string;
++    const emittedParams = client.aql().executeRaw.mock.calls[0][1] as {
++      branch_code?: string;
++    };
++
++    // Roster clause AND the branch predicate/param both present — additive.
++    expect(emittedAql).toMatch(/g\/items\[at0006\]\/value\s+matches\s*\{/);
++    expect(emittedAql).toContain(':branch_code');
++    expect(emittedParams.branch_code).toBe(SHARED_BRANCH);
++  });
++});
++
++/**
++ * PHASE-3 DETAIL + SEARCH oracle (EHAC-1986, DETAIL-01 / SEARCH-01).
++ *
++ * getLabOrderByReportId was scoped via GUARD-THEN-FETCH (03-02, approved checkpoint
++ * deviation 2026-07-28). Option A' (inline the stored view) was proven infeasible: the
++ * stored view returns a PER-ANALYTE projection (Analyte_* and Uom) that no in-repo sibling
++ * reproduces and that bmgf/utils/soap-note/labs.ts:48-50 reads — inlining it would drop
++ * those columns (SOAP regression) or require guessing analyte at-codes (Pitfall 4).
++ * Instead a roster-scoped GUARD query (mirrored from getAllLabOrders:190-192, keyed on
++ * `c/context/other_context[at0001]/items[at0002]/value = :reportId AND g/items[at0006]/value
++ * matches {roster}`) runs via `aql().executeRaw` FIRST — a foreign reportId → 0 guard rows
++ * → return null/[] and the stored view (`views.execute`) is NEVER called (no foreign PHI on
++ * the wire). An owned reportId → guard passes → the stored view supplies the full analyte
++ * projection unchanged (owned-survives, no column drift).
++ *
++ * The DETAIL oracle proves both: (a) a foreign reportId returns empty AND
++ * `views.execute` was NOT called (the security proof — foreign PHI never fetched), and
++ * (b) an owned reportId reaches `views.execute` and its rows survive.
++ *
++ * The SEARCH case is a GREEN regression lock: getAllLabOrders is already Phase-2-scoped
++ * (roster append, labOrders.ts:162-163), so a searchInput targeting the LEAKED id cannot
++ * bypass the roster clause — search is ADDITIVE.
++ */
++
++// The stored view's owned per-analyte projection (returned once the guard confirms
++// ownership). Labs key on the UPPER-CASE `Patient_ID` alias (labOrders.ts:183).
++const DETAIL_ROWS = [
++  {
++    report_id: { value: 'LT-EHAC-001' },
++    Patient_ID: { value: ORG_ROSTER[0] },
++    Branch_code: { value: SHARED_BRANCH },
++    Branch_name: { value: SHARED_BRANCH },
++  },
++];
++
++// Guard rows for the roster-scoped GUARD query: one owned (roster) + one foreign. A guard
++// row survives iff BOTH the queried reportId (bound `:reportId` param) matches its report_id
++// AND its Patient_ID literal is inlined in the emitted roster `matches {…}` clause. So a
++// foreign reportId's guard row is dropped (its patient is not in the roster), and the owned
++// row is dropped for a foreign query (report_id ≠ the queried id) → 0 rows → view not called.
++const CANNED_GUARD_ROWS = [
++  { report_id: 'LT-EHAC-001', Patient_ID: { value: ORG_ROSTER[0] } },
++  { report_id: 'LT-OTHER-999', Patient_ID: { value: LEAKED_PATIENT_ID } },
++];
++
++// Guard-aware executeRaw: the queried reportId travels as the `:reportId` bound param
++// (calls[i][1]); the roster ids are inlined literals in the AQL. Mirror the server: a row
++// survives iff its report_id equals the queried param AND its Patient_ID literal is present.
++const guardAwareExecuteRaw = (aql: string, params: { reportId?: string }) =>
++  Promise.resolve({
++    resultSet: CANNED_GUARD_ROWS.filter(
++      (row) =>
++        row.report_id === params?.reportId &&
++        aql.includes(`'${row.Patient_ID.value}'`),
++    ),
++  });
++
++// Build a fresh roster-stubbed client (mirrors the list describe's beforeEach) for the
++// new top-level DETAIL/SEARCH describes.
++const buildIsolationClient = (): MockSDKClient => {
++  const c = createMockSDKClient();
++  c.aql().executeRaw.mockResolvedValue({ resultSet: [] });
++  c.demographics.patients.searchPatients.mockResolvedValue({
++    entry: ORG_ROSTER.map((id) => ({
++      resource: { identifier: [{ value: id }] },
++    })),
++  });
++  mockGetSDKClientOrThrow.mockReturnValue(c as never);
++  return c;
++};
++
++describe('lab tests detail — tenant isolation (EHAC-1986 DETAIL-01)', () => {
++  let client: MockSDKClient;
++
++  beforeEach(() => {
++    vi.clearAllMocks();
++    client = buildIsolationClient();
++  });
++
++  it('guards getLabOrderByReportId(foreignId): the guard returns 0 rows so the stored view is NEVER called (no foreign PHI on the wire)', async () => {
++    // The stored view WOULD leak if reached — prove it is never reached for a foreign id.
++    client.views.execute.mockResolvedValue({ resultSet: DETAIL_ROWS });
++    // Guard-then-fetch (03-02): the roster-scoped GUARD runs via executeRaw FIRST.
++    client.aql().executeRaw.mockImplementation(guardAwareExecuteRaw as never);
++
++    // returnAllRecords=true → the empty array is returned (not resp?.[0]).
++    const rows = (await getLabOrderByReportId('LT-OTHER-999', true)) as any[];
++    const ids = rows.map((r) => r?.Patient_ID?.value);
++    const leaked = ids.filter((id: string) => !ORG_ROSTER.includes(id));
++
++    // Foreign guard → 0 rows → natural-empty; no leaked id present.
++    expect(rows).toEqual([]);
++    expect(leaked).toEqual([]);
++    // SECURITY PROOF: the stored view was never called, so foreign PHI is never fetched.
++    expect(client.views.execute).not.toHaveBeenCalled();
++
++    // Load-bearing: the emitted GUARD AQL carries the roster `matches {}` on the patient-id
++    // PATH plus the report-id key predicate, with the LEAKED id absent.
++    const emittedAql = client.aql().executeRaw.mock.calls[0][0] as string;
++    expect(emittedAql).toMatch(/g\/items\[at0006\]\/value\s+matches\s*\{/);
++    expect(emittedAql).toMatch(
++      /c\/context\/other_context\[at0001\]\/items\[at0002\]\/value\s*=\s*:reportId/,
++    );
++    ORG_ROSTER.forEach((id) => {
++      expect(emittedAql).toContain(`'${id}'`);
++    });
++    expect(emittedAql).not.toContain(`'${LEAKED_PATIENT_ID}'`);
++  });
++
++  it('fetches getLabOrderByReportId(ownedId): the guard passes so the stored view supplies the full projection (owned-survives)', async () => {
++    client.views.execute.mockResolvedValue({ resultSet: DETAIL_ROWS });
++    client.aql().executeRaw.mockImplementation(guardAwareExecuteRaw as never);
++
++    const rows = (await getLabOrderByReportId('LT-EHAC-001', true)) as any[];
++    const ids = rows.map((r) => r?.Patient_ID?.value);
++
++    // Guard passed → the stored view was called and its owned analyte projection returned.
++    expect(client.views.execute).toHaveBeenCalledWith('getLabOrderByReportId', {
++      reportId: 'LT-EHAC-001',
++    });
++    expect(ids).toContain(ORG_ROSTER[0]);
++    // No foreign row (the stored view returns only owned rows once ownership is confirmed).
++    expect(ids.filter((id: string) => !ORG_ROSTER.includes(id))).toEqual([]);
++  });
++});
++
++describe('lab tests search — tenant isolation (EHAC-1986 SEARCH-01)', () => {
++  let client: MockSDKClient;
++
++  beforeEach(() => {
++    vi.clearAllMocks();
++    client = buildIsolationClient();
++  });
++
++  it('keeps the roster clause when a searchInput targets a leaked id (GREEN lock)', async () => {
++    client.aql().executeRaw.mockImplementation(rosterAwareExecuteRaw as never);
++
++    // searchInput key 4 = patient-id search (labOrders.ts:276-277), targeting the LEAKED id.
++    const filter = {
++      searchInput: { key: 4, value: LEAKED_PATIENT_ID },
++      branch: {
++        value: SHARED_BRANCH,
++        code: SHARED_BRANCH,
++        label: SHARED_BRANCH,
++      },
++      provider: '',
++      labProvider: '',
++      status: '',
++      flag: '',
++      dateRange: { from: '', to: '' },
++    };
++    const rows = await getAllLabOrders(0, 50, filter as never, false);
++    const ids = rows.map((r: any) => r?.Patient_ID?.value);
++    const leaked = ids.filter((id: string) => !ORG_ROSTER.includes(id));
++
++    // Search is ADDITIVE — the roster clause is STILL emitted alongside the searchInput.
++    const emittedAql = client.aql().executeRaw.mock.calls[0][0] as string;
++    expect(emittedAql).toMatch(/g\/items\[at0006\]\/value\s+matches\s*\{/);
++    expect(leaked).toEqual([]);
++    expect(ids).toContain(ORG_ROSTER[0]);
++  });
++});
+diff --git a/apps/ehacare/frontend/src/ambulatory/features/labtest/services/labOrders.test.ts b/apps/ehacare/frontend/src/ambulatory/features/labtest/services/labOrders.test.ts
+index 61af32d226..8a866032a6 100644
+--- a/apps/ehacare/frontend/src/ambulatory/features/labtest/services/labOrders.test.ts
++++ b/apps/ehacare/frontend/src/ambulatory/features/labtest/services/labOrders.test.ts
+@@ -52,6 +52,19 @@ describe('labOrders Service - Tenant Isolation (SDK views.execute)', () => {
+   });
+ 
+   describe('getLabOrderByReportId', () => {
++    // Guard-then-fetch (EHAC-1986, 03-02): getLabOrderByReportId now runs a roster-scoped
++    // GUARD query via aql().executeRaw BEFORE the stored view. Make the guard PASS by
++    // default (non-empty roster + a guard row) so the 7 existing return-shape/error cases
++    // still reach the stored `views.execute` data source.
++    beforeEach(() => {
++      client.demographics.patients.searchPatients.mockResolvedValue({
++        entry: [{ resource: { identifier: [{ value: 'HP-OWNED' }] } }],
++      });
++      client.aql().executeRaw.mockResolvedValue({
++        resultSet: [{ Patient_ID: { value: 'HP-OWNED' } }],
++      });
++    });
++
+     it('should return lab order data when found', async () => {
+       const mockLabOrder = {
+         Patient_ID: 'HP123456',
+@@ -72,6 +85,21 @@ describe('labOrders Service - Tenant Isolation (SDK views.execute)', () => {
+           reportId: 'LT243616',
+         },
+       );
++      // The guard query ran first: keyed on :reportId with the roster matches {} clause.
++      const guardAql = client.aql().executeRaw.mock.calls[0][0] as string;
++      expect(guardAql).toContain(':reportId');
++      expect(guardAql).toMatch(/g\/items\[at0006\]\/value\s+matches\s*\{/);
++    });
++
++    it('should return null and NOT call the stored view when the guard finds no owned report (foreign id)', async () => {
++      // Foreign/missing reportId → the guard resultSet is empty → 404-style null and the
++      // stored view is never called (no foreign PHI fetched).
++      client.aql().executeRaw.mockResolvedValue({ resultSet: [] });
++
++      const result = await getLabOrderByReportId('LT-OTHER-999');
++
++      expect(result).toBeNull();
++      expect(client.views.execute).not.toHaveBeenCalled();
+     });
+ 
+     it('should return null when lab order is not found (cross-tenant access)', async () => {
+diff --git a/apps/ehacare/frontend/src/ambulatory/features/labtest/services/labOrders.ts b/apps/ehacare/frontend/src/ambulatory/features/labtest/services/labOrders.ts
+index cdf9a6d0f4..394fabd20b 100644
+--- a/apps/ehacare/frontend/src/ambulatory/features/labtest/services/labOrders.ts
++++ b/apps/ehacare/frontend/src/ambulatory/features/labtest/services/labOrders.ts
+@@ -1,5 +1,9 @@
+ import ApiException from '@exceptions/ApiExceptions';
+ import { getSDKClientOrThrow } from '@services/sdkClientAdapter';
++import {
++  getOrgPatientRoster,
++  buildRosterMatchClause,
++} from '@services/tenantRoster';
+ import { ILabOrder } from '../interfaces/labAdmin';
+ 
+ // Best-effort HTTP status extraction from an unknown thrown value, preserving
+@@ -64,6 +68,41 @@ export const getLabOrderByReportId = async (
+ ) => {
+   try {
+     const client = getSDKClientOrThrow();
++
++    // Guard-then-fetch (EHAC-1986): confirm the reportId belongs to a roster patient
++    // BEFORE fetching the stored view, so foreign PHI never crosses the wire (T-03-WIRE).
++    // The stored `getLabOrderByReportId` view returns a PER-ANALYTE projection
++    // (Analyte_name/Analyte_result/Analyte_result_sequence/Uom) that no in-repo sibling
++    // reproduces and that bmgf/utils/soap-note/labs.ts:48-50 reads — so an Option-A'
++    // inline rewrite would either drop those columns (SOAP regression) or require guessing
++    // analyte at-codes (Pitfall 4). Instead a roster-scoped GUARD query — its FROM/CONTAINS
++    // mirrored VERBATIM from getAllLabOrders:190-192, report_id key :166, patient-id path
++    // g/items[at0006]/value :183 — gates the fetch: a foreign/missing reportId yields 0 rows
++    // and the stored view is NEVER called. Fail-closed: empty roster → matches {''} → 0 rows;
++    // over-cap → RosterTooLargeError. Default getOrgPatientRoster() (HP-* Patient-ID, not ehr_id).
++    const isOwned = async (forceRefresh: boolean): Promise<boolean> => {
++      const roster = await getOrgPatientRoster('patient_id', { forceRefresh });
++      const guardAql = `SELECT g/items[at0006]/value AS Patient_ID
++        FROM EHR e
++        CONTAINS COMPOSITION c[openEHR-EHR-COMPOSITION.report-result.v1]
++        CONTAINS (CLUSTER g[openEHR-EHR-CLUSTER.encounter_id.v0] and OBSERVATION x[openEHR-EHR-OBSERVATION.laboratory_test_result.v1])
++        WHERE c/context/other_context[at0001]/items[at0002]/value = :reportId and ${buildRosterMatchClause(
++          'g/items[at0006]/value',
++          roster,
++        )}
++        LIMIT 1`;
++      const guard: any = await client.aql().executeRaw(guardAql, { reportId });
++      return Boolean(guard?.resultSet?.length);
++    };
++    // H4 (EHAC-1986): a ≤5-min-old cached roster can miss a just-registered patient; a guard
++    // miss retries ONCE with a force-refreshed roster before refusing (never an unscoped read).
++    if (!(await isOwned(false)) && !(await isOwned(true))) {
++      // Foreign or genuinely-missing reportId → 404-style natural-empty (never 403); the
++      // stored view is NOT called, so no foreign PHI is fetched.
++      return returnAllRecords ? [] : null;
++    }
++
++    // Ownership confirmed — the stored view supplies the full analyte projection unchanged.
+     const result = await client.views.execute<ILabOrder>(
+       'getLabOrderByReportId',
+       { reportId },
+@@ -142,8 +181,24 @@ export const getAllLabOrders = async (
+     }
+   }
+ 
+-  const query = {
+-    aql: `SELECT c/context/other_context[at0001]/items[at0002]/value AS report_id,
++  try {
++    const client = getSDKClientOrThrow();
++
++    // TENANT SCOPING (EHAC-1986, S1): fetch the caller org's OWN patient roster
++    // (org-scoped Demographics — mirrors the patient list, Key Decision #2) and append
++    // it as an ADDITIVE `Patient_ID matches {roster}` predicate on the labs patient-id
++    // PATH `g/items[at0006]/value` (labOrders.ts:163). The if/else above ALWAYS yields a
++    // WHERE (at least `g/items[at0015]/value != true`) on every branch — filtered,
++    // unfiltered, and orderIdentifier — so appending here once scopes them all,
++    // INCLUDING the undefined-filter/export "download all" path (Landmine 1). An empty
++    // roster fails CLOSED to `matches {''}` (0 rows); an over-cap roster throws
++    // RosterTooLargeError — both surface through the try/catch as errors, NEVER an
++    // unscoped read. The optional `:branch_code` sub-filter is preserved (SCOPE-02).
++    const roster = await getOrgPatientRoster();
++    aqlFilter += ` and ${buildRosterMatchClause('g/items[at0006]/value', roster)}`;
++
++    const query = {
++      aql: `SELECT c/context/other_context[at0001]/items[at0002]/value AS report_id,
+         c/context/other_context[at0001]/items[at0005]/value AS Status,
+         g/items[at0002]/value AS Encounter_Id,
+         g/items[at0013]/value AS Assessment_Id,
+@@ -173,23 +228,21 @@ export const getAllLabOrders = async (
+       ${aqlFilter}
+       ORDER BY Date_created DESCENDING
+       ${limit ? 'LIMIT :limit' : ''} ${offset ? 'OFFSET :offset' : ''}`,
+-    aqlParameters: {
+-      searchInput: filter?.searchInput?.value,
+-      branch_code: filter?.branch?.code || '',
+-      provider: filter?.provider,
+-      labProvider: filter?.labProvider,
+-      status: filter?.status,
+-      flag: filter?.flag ? true : false,
+-      startDate: filter?.dateRange.from,
+-      endDate: filter?.dateRange.to,
+-      offset: offset,
+-      limit: limit,
+-      orderIdentifier: orderIdentifier,
+-    },
+-  };
++      aqlParameters: {
++        searchInput: filter?.searchInput?.value,
++        branch_code: filter?.branch?.code || '',
++        provider: filter?.provider,
++        labProvider: filter?.labProvider,
++        status: filter?.status,
++        flag: filter?.flag ? true : false,
++        startDate: filter?.dateRange.from,
++        endDate: filter?.dateRange.to,
++        offset: offset,
++        limit: limit,
++        orderIdentifier: orderIdentifier,
++      },
++    };
+ 
+-  try {
+-    const client = getSDKClientOrThrow();
+     // executeRaw returns the server-native body verbatim. The prior raw-axios
+     // return was `(resp as any).resultSet` (untyped) and callers (e.g. the excel
+     // export helpers) rely on that loose `any` contract, so the resultSet is
+diff --git a/apps/ehacare/frontend/src/ambulatory/features/prescription/services/prescriptionService.aql.test.ts b/apps/ehacare/frontend/src/ambulatory/features/prescription/services/prescriptionService.aql.test.ts
+index 95c9b08594..cbdda6a0aa 100644
+--- a/apps/ehacare/frontend/src/ambulatory/features/prescription/services/prescriptionService.aql.test.ts
++++ b/apps/ehacare/frontend/src/ambulatory/features/prescription/services/prescriptionService.aql.test.ts
+@@ -155,6 +155,22 @@ describe('prescriptionService AQL sites → client.aql().executeRaw', () => {
+     expect(await getPrescriptionRefillsCount('PRX-1')).toEqual([{ count: 3 }]);
+   });
+ 
++  it('getPrescriptionRefills roster append is well-formed for a searchInput-only filter (no doubled `and  and`; EHAC-1986)', async () => {
++    // searchInput-only filter: createRefillAQLFilter's isAnd() emits a TRAILING
++    // dangling `and ` (searchInput is never consumed as a predicate). The roster
++    // append must strip it so the emitted AQL is not malformed `and  and matches`.
++    client.aql().executeRaw.mockResolvedValueOnce({ resultSet: [] });
++    await getPrescriptionRefills(0, 10, {
++      ...baseFilter(),
++      searchInput: { key: 1, value: 'Jane' },
++    });
++    const [aql] = client.aql().executeRaw.mock.calls.at(-1)!;
++    expect(aql).not.toContain('and  and');
++    expect(aql).toContain('and l/items[at0006]/value matches {');
++    // real validateAQLQuery must still pass on the scoped refills AQL
++    expect(validateAQLQuery(aql as string)).toBe(true);
++  });
++
+   it('error-contract (WR-01 reconciled): executeRaw rejection is captured to Sentry and rethrown as ApiException', async () => {
+     client.aql().executeRaw.mockRejectedValueOnce(new Error('boom'));
+     // Plain Error (not BetterCareError/Axios) → ApiException(undefined).
+diff --git a/apps/ehacare/frontend/src/ambulatory/features/prescription/services/prescriptionService.isolation.test.ts b/apps/ehacare/frontend/src/ambulatory/features/prescription/services/prescriptionService.isolation.test.ts
+new file mode 100644
+index 0000000000..fd72c81fbd
+--- /dev/null
++++ b/apps/ehacare/frontend/src/ambulatory/features/prescription/services/prescriptionService.isolation.test.ts
+@@ -0,0 +1,337 @@
++/**
++ * prescriptions list — tenant-isolation RED oracle (EHAC-1986 REPRO-01 → Phase 2).
++ *
++ * WHAT THIS PROVES (app-layer contract — Landmine B): the Phase-2 fix scopes the
++ * prescriptions report by emitting a roster-membership predicate into the AQL —
++ * `… n/items[at0006]/value matches { '<roster id>', … }` — on the stable
++ * `Patient_id` column that 02-03 ADDS to both report SELECT branches (the sibling
++ * getPrescriptionByEncounterIdOnly proves items[at0006] on the encounter_id cluster
++ * is the patient id). The roster is fetched from the org-scoped Demographics
++ * `searchPatients` (mirroring the patient list; demography.ts:36-42 +
++ * PatientList.tsx:183 — Key Decision #2). This oracle simulates the openEHR server
++ * applying that predicate: a canned, mixed-tenant row SURVIVES iff its `Patient_id`
++ * value appears as a single-quoted literal in the EMITTED AQL string.
++ *
++ * WHY THE ORACLE NOW KEYS ON `Patient_id`, NOT `Patient_name`: the spec controls its
++ * own canned rows, so it can key on the stable `Patient_id` (n/items[at0006]) that
++ * Phase 2 (02-03) adds — regardless of the current production SELECT — which removes
++ * the non-unique-name fragility of the Phase-1 oracle. 02-03 owns the column addition.
++ *
++ * WHAT THIS DOES NOT PROVE: a mocked `executeRaw` runs no AQL engine — it proves only
++ * that the APP emits a roster-scoped query, not that the openEHR SERVER scopes the
++ * rows. Server-side scoping is confirmed separately by the Playwright E2E.
++ *
++ * This spec deliberately does NOT mock `@ehacare/bettercare-sdk`, so the REAL
++ * `validateAQLQuery` runs (createPrescriptionAQLFilter calls it). validateAQLQuery is
++ * a PURE function (validation.ts:119-151 — string keyword/regex checks + logger.error
++ * only; no network/config/env/process side effects), so running it unmocked adds no
++ * infrastructure dependency and the spec fails on the roster oracle, not on infra.
++ *
++ * DO NOT make this green here — the fix is Phase 2's job (EHAC-1986, 02-03). This
++ * oracle is expected to be RED until then — pre-fix the prescription AQL has neither
++ * the Patient_id column nor the roster clause, so every canned row drops and the
++ * owned-survives / emitted-AQL assertions FAIL.
++ */
++
++import { describe, it, expect, vi, beforeEach } from 'vitest';
++
++vi.mock('@sentry/nextjs', () => ({
++  default: {},
++  captureException: vi.fn(),
++}));
++
++// prescriptionService imports `axios` and calls axios.isAxiosError in its catch
++// blocks; axiosInterceptor (transitively imported) calls axios.create(). Provide
++// both so the module graph + error-contract path resolve.
++vi.mock('axios', () => {
++  const isAxiosError = (e: unknown) =>
++    !!e && typeof e === 'object' && 'isAxiosError' in (e as object);
++  class AxiosError extends Error {
++    response?: { status?: number };
++    constructor(message?: string) {
++      super(message);
++      this.name = 'AxiosError';
++    }
++  }
++  const instance = {
++    get: vi.fn(),
++    post: vi.fn(),
++    put: vi.fn(),
++    delete: vi.fn(),
++    interceptors: {
++      request: { use: vi.fn() },
++      response: { use: vi.fn() },
++    },
++  };
++  const create = vi.fn(() => instance);
++  return {
++    default: { isAxiosError, create, AxiosError },
++    isAxiosError,
++    create,
++    AxiosError,
++  };
++});
++
++vi.mock('@services/sdkClientAdapter', () => ({
++  getSDKClientOrThrow: vi.fn(),
++}));
++
++vi.mock('@exceptions/ApiExceptions', () => ({
++  default: class ApiException extends Error {
++    statusCode?: number;
++    constructor(status?: number) {
++      super(`ApiException: ${status}`);
++      this.statusCode = status;
++    }
++  },
++}));
++
++import { getSDKClientOrThrow } from '@services/sdkClientAdapter';
++import {
++  getPrescriptionReport,
++  getPrescriptionById,
++  getPrescriptionByEncounterIdOnly,
++  getPrescriptionRefills,
++  type PrescriptionFilterType,
++} from './prescriptionService';
++import { createMockSDKClient } from '../../../../__tests__/helpers/sdkMockFactory';
++import {
++  ORG_ROSTER,
++  LEAKED_PATIENT_ID,
++  SHARED_BRANCH,
++} from '../../../../__tests__/helpers/tenantIsolationFixtures';
++
++const mockGetSDKClientOrThrow = vi.mocked(getSDKClientOrThrow);
++let client: ReturnType<typeof createMockSDKClient>;
++
++// A minimal VALID PrescriptionFilterType (mirrors the analog baseFilter), with a
++// branch matching SHARED_BRANCH so branch filtering cannot explain the outcome.
++const isolationFilter = (): PrescriptionFilterType => ({
++  searchInput: undefined,
++  prescriber: '',
++  dispenser: '',
++  medication: '',
++  status: '',
++  dateRange: { from: '', to: '' },
++  branch: { code: SHARED_BRANCH, value: SHARED_BRANCH, label: SHARED_BRANCH },
++});
++
++// Two canned, mixed-tenant rows keyed on the stable `Patient_id` that 02-03 adds
++// (n/items[at0006]); one owned (roster) + one foreign-tenant, BOTH carrying
++// SHARED_BRANCH so the branch filter cannot explain the outcome (Landmine D).
++const CANNED_ROWS = [
++  {
++    prescription_identifier: { value: 'PRX-EHAC-001' },
++    Patient_id: { value: ORG_ROSTER[0] },
++    Branch_code: { value: SHARED_BRANCH },
++    Branch_name: { value: SHARED_BRANCH },
++  },
++  {
++    prescription_identifier: { value: 'PRX-OTHER-999' },
++    Patient_id: { value: LEAKED_PATIENT_ID }, // ← foreign tenant, leaked today
++    Branch_code: { value: SHARED_BRANCH },
++    Branch_name: { value: SHARED_BRANCH },
++  },
++];
++
++// Roster-aware executeRaw: simulate the server applying `… matches {roster}` — a
++// row survives iff its Patient_id literal is single-quoted in the emitted AQL.
++const rosterAwareExecuteRaw = (aql: string) =>
++  Promise.resolve({
++    resultSet: CANNED_ROWS.filter((row) =>
++      aql.includes(`'${row.Patient_id.value}'`),
++    ),
++  });
++
++beforeEach(() => {
++  vi.clearAllMocks();
++  client = createMockSDKClient();
++  client.aql().executeRaw.mockResolvedValue({ resultSet: [] });
++  // Stub the org-roster fetch to a non-empty bundle so the Phase-2 roster fetch
++  // cannot false-green as "isolated but empty" (Landmine 2). Inert against today.
++  client.demographics.patients.searchPatients.mockResolvedValue({
++    entry: ORG_ROSTER.map((id) => ({
++      resource: { identifier: [{ value: id }] },
++    })),
++  });
++  mockGetSDKClientOrThrow.mockReturnValue(client as never);
++});
++
++describe('prescriptions list — tenant isolation (EHAC-1986 REPRO-01)', () => {
++  it('emits a roster-scoped AQL so only owned Patient_id rows survive (RED until Phase 2)', async () => {
++    client.aql().executeRaw.mockImplementation(rosterAwareExecuteRaw as never);
++
++    // getPrescriptionReport returns `resultSet` with NO `|| []` fallback — guard it.
++    const rows = (await getPrescriptionReport(0, 50, isolationFilter())) ?? [];
++    const patientIds = rows.map((r: any) => r?.Patient_id?.value);
++    const leaked = patientIds.filter((id: string) => !ORG_ROSTER.includes(id));
++
++    // The leaked id is provably NOT a roster id — so the leak, not a collision, is
++    // the cause of any pre-fix failure.
++    expect(ORG_ROSTER).not.toContain(LEAKED_PATIENT_ID);
++    // No foreign-tenant row, AND the owned row SURVIVES (guards empty-roster false-green).
++    expect(leaked).toEqual([]);
++    expect(patientIds).toContain(ORG_ROSTER[0]);
++
++    // Load-bearing: the emitted AQL carries a roster `matches {}` membership on the
++    // exact patient-id PATH `n/items[at0006]/value` (the column 02-03 adds),
++    // enumerating both roster ids and NOT the leaked id.
++    const emittedAql = client.aql().executeRaw.mock.calls[0][0] as string;
++    expect(emittedAql).toMatch(/n\/items\[at0006\]\/value\s+matches\s*\{/);
++    ORG_ROSTER.forEach((id) => {
++      expect(emittedAql).toContain(`'${id}'`);
++    });
++    expect(emittedAql).not.toContain(`'${LEAKED_PATIENT_ID}'`);
++  });
++
++  it('keeps the branch predicate additive to the roster clause (SCOPE-02, RED until Phase 2)', async () => {
++    client.aql().executeRaw.mockImplementation(rosterAwareExecuteRaw as never);
++
++    await getPrescriptionReport(0, 50, isolationFilter());
++
++    const emittedAql = client.aql().executeRaw.mock.calls[0][0] as string;
++
++    // Roster clause on n/items[at0006]/value AND the branch predicate both present.
++    expect(emittedAql).toMatch(/n\/items\[at0006\]\/value\s+matches\s*\{/);
++    expect(emittedAql).toContain(':branchCode');
++  });
++});
++
++/**
++ * PHASE-3 DETAIL + REFILLS + SEARCH oracle (EHAC-1986, DETAIL-01 / SEARCH-01).
++ *
++ * The by-id / refills paths use the encounter_id cluster alias `l`, so the roster
++ * id-path is `l/items[at0006]/value` (NOT the LIST's `n/items[at0006]/value`).
++ *
++ * Two RED trigger shapes:
++ *  - getPrescriptionById (Option A') leaks via `views.execute` VERBATIM
++ *    (prescriptionService.ts:685-698). The DETAIL A case stubs that pre-fix path with
++ *    owned + leaked rows → RED on LEAKED-PRESENT (`expect(leaked).toEqual([])` fails).
++ *    03-02 rewrites it to inline roster-AQL keyed on :prescriptionId via executeRaw.
++ *  - getPrescriptionByEncounterIdOnly (Pattern-1, inline AQL :403-472) and
++ *    getPrescriptionRefills (Pattern-1, the LIST Phase 2 MISSED :322-402) already reach
++ *    executeRaw. Pre-fix their AQL has NO roster literals, so the roster-aware mock drops
++ *    BOTH canned rows → RED on OWNED-ABSENT (`expect(ids).toContain(ORG_ROSTER[0])` fails).
++ *    03-02 appends `l/items[at0006]/value matches {roster}` → owned survives.
++ *
++ * The SEARCH case is a GREEN regression lock: getPrescriptionReport is already
++ * Phase-2-scoped (roster append on cluster `n`, :183-187), so a searchInput targeting a
++ * LEAKED prescription id cannot bypass the roster clause — search is ADDITIVE.
++ * DO NOT edit prescriptionService.ts here: DETAIL + REFILLS are RED until 03-02.
++ */
++
++// Two canned mixed-tenant DETAIL rows for the PRE-fix views.execute leak path
++// (getPrescriptionById), keyed on `Patient_id` so the roster-aware mock can filter them.
++const DETAIL_ROWS = [
++  {
++    Prescription_id: { value: 'PRX-EHAC-001' },
++    Patient_id: { value: ORG_ROSTER[0] },
++    Branch_code: { value: SHARED_BRANCH },
++    Branch_name: { value: SHARED_BRANCH },
++  },
++  {
++    Prescription_id: { value: 'PRX-OTHER-999' },
++    Patient_id: { value: LEAKED_PATIENT_ID }, // ← foreign tenant, leaked today
++    Branch_code: { value: SHARED_BRANCH },
++    Branch_name: { value: SHARED_BRANCH },
++  },
++];
++
++describe('prescriptions detail — tenant isolation (EHAC-1986 DETAIL-01)', () => {
++  it('scopes getPrescriptionById(foreignId) so the foreign row never returns (RED until 03-02)', async () => {
++    // PRE-fix verbatim leak path: getPrescriptionById reads views.execute as-is.
++    client.views.execute.mockResolvedValue({ resultSet: DETAIL_ROWS });
++    // POST-fix path (03-02): inline roster-AQL via executeRaw.
++    client.aql().executeRaw.mockImplementation(rosterAwareExecuteRaw as never);
++
++    const rows = (await getPrescriptionById('PRX-OTHER-999')) ?? [];
++    const ids = (rows as any[]).map((r) => r?.Patient_id?.value);
++    const leaked = ids.filter((id: string) => !ORG_ROSTER.includes(id));
++
++    // Clean RED trigger: pre-fix views.execute returns the leaked row (leaked-present).
++    expect(leaked).toEqual([]);
++    // Owned-survives — guards the id-type mismatch that would blank owned detail (Pitfall 1).
++    expect(ids).toContain(ORG_ROSTER[0]);
++
++    // Load-bearing (reached POST-fix): roster `matches {}` on the by-id cluster `l`
++    // patient-id PATH plus the :prescriptionId by-id key predicate.
++    const emittedAql = client.aql().executeRaw.mock.calls[0][0] as string;
++    expect(emittedAql).toMatch(/l\/items\[at0006\]\/value\s+matches\s*\{/);
++    expect(emittedAql).toMatch(
++      /c\/context\/other_context\[at0001\]\/items\[at0008\]\/value\/id\s*=\s*:prescriptionId/,
++    );
++    ORG_ROSTER.forEach((id) => {
++      expect(emittedAql).toContain(`'${id}'`);
++    });
++    expect(emittedAql).not.toContain(`'${LEAKED_PATIENT_ID}'`);
++  });
++
++  it('scopes getPrescriptionByEncounterIdOnly(foreignEncId) via a roster clause (RED until 03-02)', async () => {
++    // This path ALREADY reaches executeRaw with inline AQL — no views.execute stub.
++    client.aql().executeRaw.mockImplementation(rosterAwareExecuteRaw as never);
++
++    const rows =
++      (await getPrescriptionByEncounterIdOnly('ENC-OTHER-999')) ?? [];
++    const ids = (rows as any[]).map((r) => r?.Patient_id?.value);
++    const leaked = ids.filter((id: string) => !ORG_ROSTER.includes(id));
++
++    // Clean RED trigger is OWNED-ABSENT: pre-fix the emitted AQL has NO roster literals,
++    // so the roster-aware mock drops BOTH rows → the owned row is missing.
++    expect(leaked).toEqual([]);
++    expect(ids).toContain(ORG_ROSTER[0]);
++
++    // Load-bearing (reached POST-fix): roster `matches {}` on `l/items[at0006]/value`
++    // plus the existing :encounterId by-id key predicate.
++    const emittedAql = client.aql().executeRaw.mock.calls[0][0] as string;
++    expect(emittedAql).toMatch(/l\/items\[at0006\]\/value\s+matches\s*\{/);
++    expect(emittedAql).toMatch(/l\/items\[at0002\]\/value\s*=\s*:encounterId/);
++    ORG_ROSTER.forEach((id) => {
++      expect(emittedAql).toContain(`'${id}'`);
++    });
++    expect(emittedAql).not.toContain(`'${LEAKED_PATIENT_ID}'`);
++  });
++});
++
++describe('prescriptions refills — tenant isolation (EHAC-1986 DETAIL-01)', () => {
++  it('scopes getPrescriptionRefills so only owned rows survive (RED until 03-02 — the LIST Phase 2 missed)', async () => {
++    client.aql().executeRaw.mockImplementation(rosterAwareExecuteRaw as never);
++
++    const rows = (await getPrescriptionRefills(0, 50, isolationFilter())) ?? [];
++    const ids = (rows as any[]).map((r) => r?.Patient_id?.value);
++    const leaked = ids.filter((id: string) => !ORG_ROSTER.includes(id));
++
++    // Clean RED trigger is OWNED-ABSENT: pre-fix no roster clause → both rows drop.
++    expect(leaked).toEqual([]);
++    expect(ids).toContain(ORG_ROSTER[0]);
++
++    // Load-bearing (reached POST-fix): roster `matches {}` on `l/items[at0006]/value`.
++    const emittedAql = client.aql().executeRaw.mock.calls[0][0] as string;
++    expect(emittedAql).toMatch(/l\/items\[at0006\]\/value\s+matches\s*\{/);
++    ORG_ROSTER.forEach((id) => {
++      expect(emittedAql).toContain(`'${id}'`);
++    });
++    expect(emittedAql).not.toContain(`'${LEAKED_PATIENT_ID}'`);
++  });
++});
++
++describe('prescriptions search — tenant isolation (EHAC-1986 SEARCH-01)', () => {
++  it('keeps the roster clause when a searchInput targets a leaked prescription id (GREEN lock)', async () => {
++    client.aql().executeRaw.mockImplementation(rosterAwareExecuteRaw as never);
++
++    // searchInput key 2 = prescription-id search (createPrescriptionAQLFilter:540-543),
++    // targeting the FOREIGN prescription id.
++    const filter: PrescriptionFilterType = {
++      ...isolationFilter(),
++      searchInput: { key: 2, value: 'PRX-OTHER-999' },
++    };
++    const rows = (await getPrescriptionReport(0, 50, filter)) ?? [];
++    const ids = (rows as any[]).map((r) => r?.Patient_id?.value);
++    const leaked = ids.filter((id: string) => !ORG_ROSTER.includes(id));
++
++    // Search is ADDITIVE — the roster clause (cluster `n`) is STILL emitted alongside it.
++    const emittedAql = client.aql().executeRaw.mock.calls[0][0] as string;
++    expect(emittedAql).toMatch(/n\/items\[at0006\]\/value\s+matches\s*\{/);
++    expect(leaked).toEqual([]);
++    expect(ids).toContain(ORG_ROSTER[0]);
++  });
++});
+diff --git a/apps/ehacare/frontend/src/ambulatory/features/prescription/services/prescriptionService.test.ts b/apps/ehacare/frontend/src/ambulatory/features/prescription/services/prescriptionService.test.ts
+index 50e67cf078..d4b4719bb6 100644
+--- a/apps/ehacare/frontend/src/ambulatory/features/prescription/services/prescriptionService.test.ts
++++ b/apps/ehacare/frontend/src/ambulatory/features/prescription/services/prescriptionService.test.ts
+@@ -416,33 +416,44 @@ describe('getRefillByOrderId (migrated → views.execute)', () => {
+   });
+ });
+ 
+-describe('getPrescriptionById (migrated → views.execute)', () => {
++describe('getPrescriptionById (tenant-scoped inline AQL → aql().executeRaw)', () => {
+   let client: MockSDKClient;
+ 
+   beforeEach(() => {
+     vi.clearAllMocks();
+     mockAssertCanPrescribe.mockReset();
+     client = createMockSDKClient();
++    // EHAC-1986: getPrescriptionById now fetches the org roster before emitting AQL.
++    // A `[]` roster → `matches {''}`; the roster-scoping proof lives in the isolation
++    // spec, so a []-roster stub is all this sibling contract spec needs.
++    client.demographics.patients.searchPatients.mockResolvedValue({
++      entry: [],
++    });
+     mockGetSDKClientOrThrow.mockReturnValue(client as never);
+   });
+ 
+-  it('calls views.execute with the getPrescriptionById view and prescriptionId param', async () => {
+-    client.views.execute.mockResolvedValue({ resultSet: [] });
++  it('emits inline roster-scoped AQL via aql().executeRaw keyed on :prescriptionId (no views.execute)', async () => {
++    client.aql().executeRaw.mockResolvedValue({ resultSet: [] });
+     await getPrescriptionById('rx-1');
+-    expect(client.views.execute).toHaveBeenCalledWith('getPrescriptionById', {
+-      prescriptionId: 'rx-1',
+-    });
++    expect(client.views.execute).not.toHaveBeenCalled();
++    const [aql, params] = client.aql().executeRaw.mock.calls[0] as [
++      string,
++      Record<string, unknown>,
++    ];
++    expect(aql).toContain('items[at0008]/value/id = :prescriptionId');
++    expect(aql).toMatch(/matches\s*\{/);
++    expect(params).toEqual({ prescriptionId: 'rx-1' });
+   });
+ 
+   it('returns the resultSet array (preserving the prior response.data array)', async () => {
+     const rows = [{ Prescription_id: 'rx-1' }];
+-    client.views.execute.mockResolvedValue({ resultSet: rows });
++    client.aql().executeRaw.mockResolvedValue({ resultSet: rows });
+     const result = await getPrescriptionById('rx-1');
+     expect(result).toEqual(rows);
+   });
+ 
+   it('throws ApiException carrying the SDK error statusCode when the call rejects', async () => {
+-    client.views.execute.mockRejectedValue(new BetterCareError(502));
++    client.aql().executeRaw.mockRejectedValue(new BetterCareError(502));
+     await expect(getPrescriptionById('rx-1')).rejects.toMatchObject({
+       status: 502,
+     });
+diff --git a/apps/ehacare/frontend/src/ambulatory/features/prescription/services/prescriptionService.ts b/apps/ehacare/frontend/src/ambulatory/features/prescription/services/prescriptionService.ts
+index 1b9b27bf83..93f34b478f 100644
+--- a/apps/ehacare/frontend/src/ambulatory/features/prescription/services/prescriptionService.ts
++++ b/apps/ehacare/frontend/src/ambulatory/features/prescription/services/prescriptionService.ts
+@@ -8,6 +8,10 @@ import { nextRefillDate, nextRefillInterval } from '../utils/prescriptionUtils';
+ import ApiException from '@exceptions/ApiExceptions';
+ import { getSDKClientOrThrow } from '@services/sdkClientAdapter';
+ import { toApiException } from '@services/toApiException';
++import {
++  getOrgPatientRoster,
++  buildRosterMatchClause,
++} from '@services/tenantRoster';
+ import { assertCanPrescribe } from 'src/common/safety';
+ 
+ export type PrescriptionFilterType = {
+@@ -151,13 +155,43 @@ export const getPrescriptionReport = async (
+   shouldExportRecords?: boolean,
+ ) => {
+   try {
+-    const aqlFilter = createPrescriptionAQLFilter(filter, prescriberIdentifier);
++    // EHAC-1986 Phase 2 (SCOPE-01): fetch the caller org's OWN patient roster
++    // (org-scoped Demographics — mirrors the patient list, Key Decision #2) and inject
++    // it as an ADDITIVE `n/items[at0006]/value matches {roster}` predicate into the
++    // always-run createPrescriptionAQLFilter output UNCONDITIONALLY. Because BOTH the
++    // export (shouldExportRecords) branch and the default branch interpolate this same
++    // aqlFilter, this single append scopes them together (Landmine 1: the Excel export
++    // via getAllPrescriptionExcel is covered by construction). Match on the PATH
++    // `n/items[at0006]/value` (the encounter_id cluster n, proven the patient id by
++    // getPrescriptionByEncounterIdOnly:374), NOT the Patient_id SELECT alias. The
++    // `State != 'Draft'` seed is preserved (prescriptions intentionally hide drafts;
++    // SCOPE-03 draft-safety applies to ENCOUNTERS, not prescriptions) and the
++    // :branchCode clause stays additive (SCOPE-02). Fetching inside this try means an
++    // empty roster fails CLOSED to `matches {''}` (0 rows) and an over-cap roster throws
++    // RosterTooLargeError — both surface through the catch as errors, NEVER as an
++    // unscoped read.
++    //
++    // TODO(EHAC-1986 Phase 3): the new Patient_id column must be re-verified LIVE (02-03
++    // Task 2). If the report archetype does not resolve n/items[at0006], the fallback key
++    // is e/ehr_id/value (already SELECT'd at both branches) — but taking that fallback
++    // REQUIRES switching the roster fetch to getOrgPatientRoster('ehr_id') so the roster
++    // set is ehr_ids, not HP-* patient ids (review Item 2), else the predicate silently
++    // matches zero. getPrescriptionReportCount stays intentionally unscoped: it has NO app
++    // consumer (grep-confirmed; the list uses a peek-cursor — AllPrescriptionsList
++    // pageSize+1 / hasNextPage), so it is OUT of Phase-2 list scope; a scoped-count
++    // follow-up is flagged, not done.
++    const roster = await getOrgPatientRoster();
++    const aqlFilter = `${createPrescriptionAQLFilter(
++      filter,
++      prescriberIdentifier,
++    )} and ${buildRosterMatchClause('n/items[at0006]/value', roster)}`;
+     let query = {};
+     if (shouldExportRecords) {
+       query = {
+         aql: `SELECT DISTINCT e/ehr_id/value AS Ehr_id,
+               c/context/other_context[at0001]/items[at0008]/value/id AS prescription_identifier,
+               n/items[at0002]/value AS Encounter_id,
++              n/items[at0006]/value AS Patient_id,
+               c/uid/value AS Composition_uid_value,
+               c/context/other_context[at0001]/items[at0009]/value AS Prescribed_by,
+               q/activities[at0001]/description[at0002]/items[at0129]/items[at0181]/value AS Dispense_by,
+@@ -205,6 +239,7 @@ export const getPrescriptionReport = async (
+         aql: `SELECT DISTINCT e/ehr_id/value AS Ehr_id,
+         c/context/other_context[at0001]/items[at0008]/value/id AS prescription_identifier,
+         n/items[at0002]/value AS Encounter_id,
++        n/items[at0006]/value AS Patient_id,
+         c/uid/value AS Composition_uid_value,
+         c/context/other_context[at0001]/items[at0009]/value AS Prescribed_by,
+         q/activities[at0001]/description[at0002]/items[at0129]/items[at0181]/value AS Dispense_by,
+@@ -292,6 +327,20 @@ export const getPrescriptionRefills = async (
+ ) => {
+   try {
+     const aqlFilter = createRefillAQLFilter(filter, prescriberIdentifier);
++    // TENANT SCOPING (EHAC-1986, S1 — Pattern 1 append; the LIST Phase 2 MISSED):
++    // fetch the caller org's OWN roster INSIDE the try and AND an additive
++    // `matches {roster}` on the by-id cluster `l` Patient ID path onto the refill
++    // filter. createRefillAQLFilter's isAnd() emits a TRAILING dangling `and ` when
++    // filter.searchInput is set (searchInput is never consumed as a predicate), so a
++    // naive ` and <roster>` append would produce malformed `and  and matches {…}`.
++    // Strip any trailing dangling connector before appending — the base filter always
++    // begins with real WHERE predicates and no predicate legitimately ends in `and`,
++    // so the strip only removes a dangling connector. Fail-closed as elsewhere.
++    const roster = await getOrgPatientRoster();
++    const scopedFilter = `${aqlFilter.replace(
++      /\s+and\s*$/i,
++      '',
++    )} and ${buildRosterMatchClause('l/items[at0006]/value', roster)}`;
+ 
+     const query = {
+       aql: `SELECT e/ehr_id/value AS Ehr_id,
+@@ -337,7 +386,7 @@ export const getPrescriptionRefills = async (
+         FROM EHR e
+         CONTAINS COMPOSITION c[openEHR-EHR-COMPOSITION.prescription.v0]
+         CONTAINS (CLUSTER l[openEHR-EHR-CLUSTER.encounter_id.v0] and INSTRUCTION q[openEHR-EHR-INSTRUCTION.medication_order.v3] CONTAINS ( CLUSTER r[openEHR-EHR-CLUSTER.therapeutic_direction.v1] and CLUSTER u[openEHR-EHR-CLUSTER.dosage.v2] CONTAINS CLUSTER i[openEHR-EHR-CLUSTER.timing_daily.v1] and CLUSTER a[openEHR-EHR-CLUSTER.medication_authorisation.v0] and CLUSTER m[openEHR-EHR-CLUSTER.medication.v2]))
+-        ${aqlFilter}
++        ${scopedFilter}
+         ORDER BY Date_created DESCENDING
+         ${limit ? 'LIMIT :limit' : ''} ${offset ? 'OFFSET :offset' : ''}
+         `,
+@@ -367,6 +416,12 @@ export const getPrescriptionRefills = async (
+ };
+ export const getPrescriptionByEncounterIdOnly = async (encounterId: string) => {
+   try {
++    // TENANT SCOPING (EHAC-1986, S1 — Pattern 1 append): fetch the caller org's OWN
++    // roster INSIDE the try and AND an additive `matches {roster}` on the by-id
++    // cluster `l` Patient ID path onto the existing :encounterId WHERE. Fail-closed:
++    // empty → matches {''} → 0 rows; over-cap → RosterTooLargeError. aqlParameters
++    // stay { encounterId } (the roster renders as inline literals, not a bound param).
++    const roster = await getOrgPatientRoster();
+     const query = {
+       aql: `SELECT e/ehr_id/value AS Ehr_id,
+         c/uid/value AS Composition_uid_value,
+@@ -415,7 +470,10 @@ export const getPrescriptionByEncounterIdOnly = async (encounterId: string) => {
+         FROM EHR e
+         CONTAINS COMPOSITION c[openEHR-EHR-COMPOSITION.prescription.v0]
+         CONTAINS (CLUSTER l[openEHR-EHR-CLUSTER.encounter_id.v0] and INSTRUCTION q[openEHR-EHR-INSTRUCTION.medication_order.v3] CONTAINS ( CLUSTER r[openEHR-EHR-CLUSTER.therapeutic_direction.v1] and CLUSTER u[openEHR-EHR-CLUSTER.dosage.v2] CONTAINS CLUSTER i[openEHR-EHR-CLUSTER.timing_daily.v1] and CLUSTER a[openEHR-EHR-CLUSTER.medication_authorisation.v0] and CLUSTER m[openEHR-EHR-CLUSTER.medication.v2]))
+-        WHERE l/items[at0002]/value = :encounterId
++        WHERE l/items[at0002]/value = :encounterId and ${buildRosterMatchClause(
++          'l/items[at0006]/value',
++          roster,
++        )}
+         ORDER BY Date_created DESCENDING
+         `,
+       aqlParameters: {
+@@ -650,13 +708,78 @@ export const getRefillByOrderId = async (orderId: string) => {
+ export const getPrescriptionById = async (prescriptionId: string) => {
+   try {
+     const client = getSDKClientOrThrow();
+-    // EHAC-1766: view GET migrated to the generic views.execute; the `.resultSet`
+-    // unwrap preserves the prior `response.data` array callers consume.
+-    const queryResult = await client.views.execute<any>('getPrescriptionById', {
+-      prescriptionId,
+-    });
++    // TENANT SCOPING (EHAC-1986, S1 — DETAIL-01, Option A'): rewrite the stored
++    // `getPrescriptionById` view to inline AQL keyed on the prescription id AND an
++    // ADDITIVE roster `matches {roster}` predicate on the by-id cluster `l` HP-*
++    // Patient ID path `l/items[at0006]/value` (default getOrgPatientRoster — this
++    // path compares the HP-* Patient-ID column, NOT ehr_id; Pitfall 1). Fetched
++    // INSIDE the try (fail-closed): empty roster → matches {''} → 0 rows; over-cap →
++    // RosterTooLargeError; both surface through the catch, NEVER an unscoped read. A
++    // foreign prescription id therefore returns [] (natural-empty, never 403).
++    const roster = await getOrgPatientRoster();
++    // Columns mirrored verbatim from getPrescriptionByEncounterIdOnly:406-449 for
++    // consumer parity (EHAC-1986); Prescriber_identifier added (path from
++    // getPrescriptionRefillsCount:478) — getPrescriptionById()[0] feeds editPrescriptionList
++    // (preparePrescription), and the dispense/preview UI reads .Prescriber_identifier.
++    const aql = `SELECT e/ehr_id/value AS Ehr_id,
++        c/uid/value AS Composition_uid_value,
++        l/items[at0002]/value AS Encounter_id,
++        l/items[at0006]/value AS Patient_id,
++        l/items[at0007]/value AS Membership_plan,
++        l/items[at0008]/value AS Membership_status,
++        l/items[at0009]/value AS Admission_id,
++        l/items[at0012]/value AS Created_by,
++        c/context/other_context[at0001]/items[at0008]/value/id AS Prescription_id,
++        c/context/other_context[at0001]/items[at0009]/value AS Prescribed_by,
++        q/protocol[at0005]/items[openEHR-EHR-CLUSTER.person.v1,'Prescriber']/items[at0003]/value AS Prescriber_identifier,
++        c/context/other_context[at0001]/items[at0010]/value AS Prescribed_date,
++        c/context/other_context[at0001]/items[at0014]/value AS Patient_name,
++        c/context/other_context[at0001]/items[at0011]/value AS Patient_age,
++        c/context/other_context[at0001]/items[at0015]/value AS Patient_dob,
++        c/context/other_context[at0001]/items[at0012]/value AS Patient_weight,
++        c/context/other_context[at0001]/items[at0013]/value AS Prescription_state,
++        c/context/other_context[at0001]/items[at0018]/value AS Branch_name,
++        c/context/other_context[at0001]/items[at0019]/value AS Branch_code,
++        l/items[at0004]/value AS Date_created,
++        q/activities[at0001]/description[at0002]/items[at0070]/value AS Medication_item,
++        q/activities[at0001]/description[at0002]/items[at0091]/value AS Route_of_administration,
++        q/activities[at0001]/description[at0002]/items[at0018]/value AS Clinical_indication,
++        q/activities[at0001]/description[at0002]/items[at0044]/value AS Additional_instruction,
++        q/activities[at0001]/description[at0002]/items[at0129]/items[at0106]/value AS Dispense_direction,
++        q/activities[at0001]/description[at0002]/items[at0129]/items[at0155]/value AS Dispense_date,
++        q/activities[at0001]/description[at0002]/items[at0129]/items[at0181]/value AS Dispense_by,
++        q/activities[at0001]/description[at0002]/items[at0167]/value AS Comment,
++        q/protocol[at0005]/items[at0180]/value AS Prescription_item_state,
++        q/protocol[at0005]/items[at0004]/value AS Order_id,
++        m/items[at0071]/value AS Form,
++        u/items[at0144]/value AS Dose,
++        u/items[at0135]/value AS Dose_formula,
++        u/items[at0134,'Infusion rate']/value AS Infusion_rate,
++        u/items[at0102]/value AS Administration_duration,
++        i/items[at0041]/value AS Frequency,
++        i/items[at0023]/value AS Exact_timing_critical,
++        i/items[at0024]/value AS As_required,
++        a/items[at0073]/value AS Authorisation_type,
++        a/items[at0025]/value AS Maximum_number_of_refills,
++        a/items[at0078]/value AS Number_of_refills_issued,
++        a/items[at0079]/value AS Number_of_refills_remaining,
++        a/items[at0046]/value AS Minimum_interval_between_refills,
++        a/items[at0072]/value AS Authorisation_expiry_date,
++        a/items[at0081]/value AS Next_refill_date
++        FROM EHR e
++        CONTAINS COMPOSITION c[openEHR-EHR-COMPOSITION.prescription.v0]
++        CONTAINS (CLUSTER l[openEHR-EHR-CLUSTER.encounter_id.v0] and INSTRUCTION q[openEHR-EHR-INSTRUCTION.medication_order.v3] CONTAINS ( CLUSTER r[openEHR-EHR-CLUSTER.therapeutic_direction.v1] and CLUSTER u[openEHR-EHR-CLUSTER.dosage.v2] CONTAINS CLUSTER i[openEHR-EHR-CLUSTER.timing_daily.v1] and CLUSTER a[openEHR-EHR-CLUSTER.medication_authorisation.v0] and CLUSTER m[openEHR-EHR-CLUSTER.medication.v2]))
++        WHERE c/context/other_context[at0001]/items[at0008]/value/id = :prescriptionId and ${buildRosterMatchClause(
++          'l/items[at0006]/value',
++          roster,
++        )}
++        ORDER BY Date_created DESCENDING
++        `;
++    const queryResponse: any = await client
++      .aql()
++      .executeRaw(aql, { prescriptionId });
+     // Returned as `any` to preserve the prior loose `response.data` contract.
+-    return (queryResult?.resultSet ?? []) as any;
++    return (queryResponse?.resultSet ?? []) as any;
+   } catch (error: unknown) {
+     throw toApiException(error);
+   }
+diff --git a/apps/ehacare/frontend/src/common/services/sdkClientAdapter.ts b/apps/ehacare/frontend/src/common/services/sdkClientAdapter.ts
+index fcdf380209..9b3a1f91c5 100644
+--- a/apps/ehacare/frontend/src/common/services/sdkClientAdapter.ts
++++ b/apps/ehacare/frontend/src/common/services/sdkClientAdapter.ts
+@@ -101,6 +101,20 @@ export function initSDKClient(
+   return clientSingleton;
+ }
+ 
++/**
++ * Returns the caller org's active tenant id (the KC org slug set on the last
++ * session change), or null if the client has not been initialized yet.
++ *
++ * This is the synchronous accessor for the tenant/org identity the SDK client
++ * was initialized with. It exists so per-org caches (e.g. the tenant-roster
++ * cache in `tenantRoster.ts`, EHAC-1986) can key by the caller org and never
++ * serve one org's data to another. Returns null when indeterminate so callers
++ * can fail safe (skip the cache) rather than key under an ambiguous value.
++ */
++export function getSDKTenantId(): string | null {
++  return currentTenantId;
++}
++
+ /**
+  * Resets the singleton for test isolation. Not for production use.
+  */
+diff --git a/apps/ehacare/frontend/src/common/services/tenantRoster.test.ts b/apps/ehacare/frontend/src/common/services/tenantRoster.test.ts
+new file mode 100644
+index 0000000000..0327d9ae72
+--- /dev/null
++++ b/apps/ehacare/frontend/src/common/services/tenantRoster.test.ts
+@@ -0,0 +1,282 @@
++/**
++ * tenantRoster — shared org-roster primitive unit tests (EHAC-1986, 02-02 Task 1).
++ *
++ * Proves the fail-closed org-scoping primitive that the clinical-list reads inject
++ * as an additive AQL `matches {…}` predicate:
++ *  - getOrgPatientRoster('patient_id') extracts HP-* ids from the org-scoped
++ *    Demographics `searchPatients` bundle (mirrors the patient list; Key Decision #2),
++ *    fetches the COMPLETE roster (paging), de-dupes, and propagates fetch errors.
++ *  - getOrgPatientRoster('ehr_id') resolves the HP-* roster to openEHR ehr_ids via a
++ *    single cap-guarded mapping AQL; an empty/failed mapping fails CLOSED to [].
++ *  - a short-TTL per-org(+idType) cache avoids a per-request searchPatients round-trip
++ *    and NEVER serves one org's roster to another (review Item 3).
++ *  - buildRosterMatchClause renders a sanitized `path matches { '…' }` set; empty →
++ *    fail-closed `matches {''}`; over ROSTER_MATCH_CAP → RosterTooLargeError (review 1).
++ *  - escapeAqlLiteral is pinned to the SDK's sanitizeAQLParameter escape rules (review 4).
++ */
++
++import { describe, it, expect, vi, beforeEach } from 'vitest';
++
++vi.mock('@sentry/nextjs', () => ({
++  default: {},
++  addBreadcrumb: vi.fn(),
++  captureException: vi.fn(),
++}));
++
++vi.mock('@services/sdkClientAdapter', () => ({
++  getSDKClientOrThrow: vi.fn(),
++  getSDKTenantId: vi.fn(() => 'org-A'),
++}));
++
++import * as sdkClientAdapter from '@services/sdkClientAdapter';
++import { createMockSDKClient } from 'src/__tests__/helpers/sdkMockFactory';
++import {
++  getOrgPatientRoster,
++  buildRosterMatchClause,
++  RosterTooLargeError,
++  RosterFetchError,
++  ROSTER_MATCH_CAP,
++  __resetRosterCacheForTests,
++} from './tenantRoster';
++
++const mockGetSDKClientOrThrow = vi.mocked(sdkClientAdapter.getSDKClientOrThrow);
++const mockGetSDKTenantId = vi.mocked(sdkClientAdapter.getSDKTenantId);
++let client: ReturnType<typeof createMockSDKClient>;
++
++const bundleOf = (ids: string[], total?: number) => ({
++  ...(total !== undefined ? { total } : {}),
++  entry: ids.map((id) => ({ resource: { identifier: [{ value: id }] } })),
++});
++
++beforeEach(() => {
++  vi.clearAllMocks();
++  __resetRosterCacheForTests();
++  client = createMockSDKClient();
++  mockGetSDKClientOrThrow.mockReturnValue(client as never);
++  mockGetSDKTenantId.mockReturnValue('org-A');
++});
++
++describe('getOrgPatientRoster — patient_id (default)', () => {
++  it('extracts identifier[0].value (HP-*) from the searchPatients bundle', async () => {
++    client.demographics.patients.searchPatients.mockResolvedValue(
++      bundleOf(['HP-EHAC-001', 'HP-EHAC-002']),
++    );
++
++    const roster = await getOrgPatientRoster();
++
++    expect(roster).toEqual(['HP-EHAC-001', 'HP-EHAC-002']);
++    // org-scoped Demographics source, active patients (mirrors the patient list).
++    const args = client.demographics.patients.searchPatients.mock.calls[0][0];
++    expect(args).toMatchObject({ active: 'true' });
++  });
++
++  it('drops falsy ids and de-duplicates', async () => {
++    client.demographics.patients.searchPatients.mockResolvedValue({
++      entry: [
++        { resource: { identifier: [{ value: 'HP-EHAC-001' }] } },
++        { resource: { identifier: [{ value: '' }] } },
++        { resource: { identifier: [] } },
++        { resource: { identifier: [{ value: 'HP-EHAC-001' }] } }, // dup
++        { resource: { identifier: [{ value: 'HP-EHAC-002' }] } },
++      ],
++    });
++
++    expect(await getOrgPatientRoster()).toEqual(['HP-EHAC-001', 'HP-EHAC-002']);
++  });
++
++  it('fetches the COMPLETE roster across pages (never a silent partial)', async () => {
++    client.demographics.patients.searchPatients
++      .mockResolvedValueOnce(bundleOf(['HP-1', 'HP-2'], 4)) // total says more remain
++      .mockResolvedValueOnce(bundleOf(['HP-3', 'HP-4'], 4));
++
++    const roster = await getOrgPatientRoster();
++
++    expect(roster).toEqual(['HP-1', 'HP-2', 'HP-3', 'HP-4']);
++    expect(client.demographics.patients.searchPatients).toHaveBeenCalledTimes(
++      2,
++    );
++  });
++
++  it('propagates a searchPatients error as a distinguishable RosterFetchError, preserving the cause (no silent empty roster; M9)', async () => {
++    const cause = new Error('demographics down');
++    client.demographics.patients.searchPatients.mockRejectedValue(cause);
++
++    // M9: the coupling to Demographics surfaces a DISTINGUISHABLE error (so on-call sees
++    // "roster/Demographics", not a generic EHR/AQL failure), while preserving the cause.
++    const err = await getOrgPatientRoster().catch((e) => e);
++    expect(err).toBeInstanceOf(RosterFetchError);
++    expect((err as RosterFetchError).cause).toBe(cause);
++  });
++});
++
++describe('getOrgPatientRoster — ehr_id mapping (review Item 2)', () => {
++  it('resolves the HP-* roster to distinct ehr_ids via the mapping AQL', async () => {
++    client.demographics.patients.searchPatients.mockResolvedValue(
++      bundleOf(['HP-EHAC-001', 'HP-EHAC-002']),
++    );
++    client.aql().executeRaw.mockResolvedValue({
++      resultSet: [
++        { Ehr_id: { value: 'ehr-1' } },
++        { Ehr_id: { value: 'ehr-2' } },
++        { Ehr_id: { value: 'ehr-1' } }, // dup
++      ],
++    });
++
++    const roster = await getOrgPatientRoster('ehr_id');
++
++    expect(roster).toEqual(['ehr-1', 'ehr-2']);
++    // the mapping AQL is cap-guarded and carries the HP-* roster as a matches set.
++    const aql = client.aql().executeRaw.mock.calls[0][0] as string;
++    expect(aql).toMatch(/matches\s*\{/);
++    expect(aql).toContain("'HP-EHAC-001'");
++    expect(aql).toContain("'HP-EHAC-002'");
++  });
++
++  it('fails CLOSED to [] when the mapping AQL errors (never an unscoped read)', async () => {
++    client.demographics.patients.searchPatients.mockResolvedValue(
++      bundleOf(['HP-EHAC-001']),
++    );
++    client.aql().executeRaw.mockRejectedValue(new Error('aql boom'));
++
++    expect(await getOrgPatientRoster('ehr_id')).toEqual([]);
++  });
++
++  it('returns [] for an empty mapping resultSet (0-patient → 0 rows downstream)', async () => {
++    client.demographics.patients.searchPatients.mockResolvedValue(
++      bundleOf(['HP-EHAC-001']),
++    );
++    client.aql().executeRaw.mockResolvedValue({ resultSet: [] });
++
++    expect(await getOrgPatientRoster('ehr_id')).toEqual([]);
++  });
++});
++
++describe('getOrgPatientRoster — per-org caching (review Item 3)', () => {
++  it('serves a repeat same-org call from cache (one searchPatients round-trip)', async () => {
++    client.demographics.patients.searchPatients.mockResolvedValue(
++      bundleOf(['HP-EHAC-001', 'HP-EHAC-002']),
++    );
++
++    const a = await getOrgPatientRoster();
++    const b = await getOrgPatientRoster();
++
++    expect(a).toEqual(b);
++    expect(client.demographics.patients.searchPatients).toHaveBeenCalledTimes(
++      1,
++    );
++  });
++
++  it('does NOT cache a fetch error (a later call retries; M9 wraps as RosterFetchError)', async () => {
++    client.demographics.patients.searchPatients
++      .mockRejectedValueOnce(new Error('transient'))
++      .mockResolvedValueOnce(bundleOf(['HP-EHAC-001']));
++
++    await expect(getOrgPatientRoster()).rejects.toBeInstanceOf(
++      RosterFetchError,
++    );
++    expect(await getOrgPatientRoster()).toEqual(['HP-EHAC-001']);
++    expect(client.demographics.patients.searchPatients).toHaveBeenCalledTimes(
++      2,
++    );
++  });
++
++  it('keys by org id so one org never receives another org roster', async () => {
++    client.demographics.patients.searchPatients
++      .mockResolvedValueOnce(bundleOf(['HP-A-1']))
++      .mockResolvedValueOnce(bundleOf(['HP-B-1']));
++
++    mockGetSDKTenantId.mockReturnValue('org-A');
++    const orgA = await getOrgPatientRoster();
++
++    mockGetSDKTenantId.mockReturnValue('org-B');
++    const orgB = await getOrgPatientRoster();
++
++    expect(orgA).toEqual(['HP-A-1']);
++    expect(orgB).toEqual(['HP-B-1']);
++    expect(client.demographics.patients.searchPatients).toHaveBeenCalledTimes(
++      2,
++    );
++  });
++
++  it('skips the cache when the org id is indeterminate (fetch fresh, no ambiguous key)', async () => {
++    mockGetSDKTenantId.mockReturnValue(null);
++    client.demographics.patients.searchPatients.mockResolvedValue(
++      bundleOf(['HP-EHAC-001']),
++    );
++
++    await getOrgPatientRoster();
++    await getOrgPatientRoster();
++
++    expect(client.demographics.patients.searchPatients).toHaveBeenCalledTimes(
++      2,
++    );
++  });
++});
++
++describe('buildRosterMatchClause', () => {
++  it('renders a sanitized matches set on the given path', () => {
++    expect(buildRosterMatchClause('somePath', ['HP-A', 'HP-B'])).toBe(
++      "somePath matches { 'HP-A','HP-B' }",
++    );
++  });
++
++  it("fails CLOSED to matches {''} for an empty roster (0 rows, never absent)", () => {
++    expect(buildRosterMatchClause('somePath', [])).toBe(
++      "somePath matches {''}",
++    );
++  });
++
++  it("escapes a single quote to '' (AQL-injection safe)", () => {
++    expect(buildRosterMatchClause('p', ["HP'X"])).toBe("p matches { 'HP''X' }");
++  });
++
++  it('throws RosterTooLargeError over ROSTER_MATCH_CAP (fail-closed refusal, never truncated)', () => {
++    const overCap = Array.from(
++      { length: ROSTER_MATCH_CAP + 1 },
++      (_, i) => `HP-${i}`,
++    );
++    expect(() => buildRosterMatchClause('p', overCap)).toThrow(
++      RosterTooLargeError,
++    );
++    // and it does NOT emit an unscoped/absent/truncated clause
++    let emitted: string | undefined;
++    try {
++      emitted = buildRosterMatchClause('p', overCap);
++    } catch {
++      emitted = undefined;
++    }
++    expect(emitted).toBeUndefined();
++  });
++
++  it('renders (does not throw) at exactly ROSTER_MATCH_CAP', () => {
++    const atCap = Array.from({ length: ROSTER_MATCH_CAP }, (_, i) => `HP-${i}`);
++    const clause = buildRosterMatchClause('p', atCap);
++    expect(clause.startsWith('p matches { ')).toBe(true);
++    expect(clause).toContain("'HP-0'");
++    expect(clause).toContain(`'HP-${ROSTER_MATCH_CAP - 1}'`);
++  });
++});
++
++describe('escapeAqlLiteral ↔ sanitizeAQLParameter parity (review Item 4)', () => {
++  // Expected outputs transcribed from libs/bettercare-sdk/src/core/utils/validation.ts:153-164
++  // (sanitizeAQLParameter): String(value), then replace ' → '', strip ';' and '--'.
++  // The deep SDK import is avoided to keep this spec side-effect-free (barrel/interceptor);
++  // any drift in the local escapeAqlLiteral mirror breaks these pinned expectations.
++  const cases: Array<[string, string]> = [
++    ['HP-EHAC-001', 'HP-EHAC-001'],
++    ["HP'X", "HP''X"],
++    ['HP;X', 'HPX'],
++    ['HP--X', 'HPX'],
++    ['', ''],
++  ];
++
++  it.each(cases)(
++    'escapes %j via the same rules as the SDK',
++    (input, expected) => {
++      // buildRosterMatchClause wraps each id as '<escaped>' — assert the escaped body.
++      expect(buildRosterMatchClause('p', [input])).toBe(
++        `p matches { '${expected}' }`,
++      );
++    },
++  );
++});
+diff --git a/apps/ehacare/frontend/src/common/services/tenantRoster.ts b/apps/ehacare/frontend/src/common/services/tenantRoster.ts
+new file mode 100644
+index 0000000000..943b3f732c
+--- /dev/null
++++ b/apps/ehacare/frontend/src/common/services/tenantRoster.ts
+@@ -0,0 +1,353 @@
++/**
++ * tenantRoster — the single reusable org-scoping primitive for every clinical
++ * openEHR read (EHAC-1986, Phase 2). It bridges the org-scoped FHIR Demographics
++ * roster (the isolation source the patient list already trusts — Key Decision #2)
++ * onto the AQL clinical-list queries as an additive `… matches { '<id>', … }`
++ * membership predicate.
++ *
++ * `getOrgPatientRoster()` fetches the caller org's OWN patient roster from
++ * `client.demographics.patients.searchPatients` (the same org-scoped Demographics
++ * host + OAuth `organization` scope the patient list reads), mirroring the
++ * patient-list scoping rather than inventing a new mechanism. It is:
++ *   - id-type-aware ('patient_id' HP-* by default; 'ehr_id' resolves the roster to
++ *     openEHR ehr_ids so the 02-03 prescriptions ehr_id fallback keeps predicate +
++ *     roster the same id-type — review Item 2), and
++ *   - short-TTL per-org(+idType) cached so a list load does not pay a Demographics
++ *     round-trip on every page (review Item 3); the cache is keyed by the caller org
++ *     id so one org's roster can NEVER be served to another.
++ *
++ * `buildRosterMatchClause()` renders the roster as the AQL set-membership expression,
++ * mirroring the existing diagnosis `matches {…}` idiom (encounterService.ts:493). It
++ * fails CLOSED: an empty roster yields `matches {''}` (0 rows, never an absent/dropped
++ * predicate → never an unscoped read), and a roster larger than {@link ROSTER_MATCH_CAP}
++ * throws {@link RosterTooLargeError} — a loud refusal, never a truncated/oversized query.
++ *
++ * SECURITY: this module NEVER imports from the `@ehacare/bettercare-sdk` barrel (that
++ * would pull axios-interceptor side-effects and collide with the labs spec's SDK mock).
++ * The AQL id escaping is a small local mirror of the SDK's `sanitizeAQLParameter`
++ * (validation.ts:153-164); a parity unit test pins the mirror so it cannot drift.
++ */
++
++import * as sdkClientAdapter from '@services/sdkClientAdapter';
++import * as Sentry from '@sentry/nextjs';
++
++/**
++ * Hard cap on the number of ids interpolated into an AQL `matches {…}` set.
++ *
++ * WHY a fail-CLOSED cap and NOT chunk-and-merge: merging N separately
++ * LIMIT/OFFSET-paginated chunk queries cannot preserve a single global LIMIT/OFFSET
++ * without materializing the whole owned set app-side — the exact pagination-correctness
++ * defect that got the app-layer post-filter REJECTED in 02-RESEARCH § The Design Fork.
++ * So a roster over the cap must REFUSE loudly (typed error surfaced to the caller),
++ * never silently drop the predicate or truncate the roster. Prod is single-tenant per
++ * domain and dev/staging orgs are small, so this is a latent safety rail; its value is
++ * validated live in 02-03 Task 3.
++ */
++export const ROSTER_MATCH_CAP = 1000;
++
++/** Short TTL for the per-org roster cache (review Item 3). */
++const ROSTER_CACHE_TTL_MS = 5 * 60 * 1000;
++
++/** Page size requested from Demographics when fetching the complete roster. */
++const ROSTER_PAGE_SIZE = 1000;
++
++/**
++ * Encounter archetype patient-id path — the archetype whose HP-* Patient ID is known
++ * to resolve, used to translate an HP-* roster into openEHR ehr_ids ('ehr_id' mode).
++ * Mirrors getAllEncounters' SELECT/CONTAINS (encounterService.ts:191-246); re-confirmed
++ * live in 02-03 Task 2 where the prescriptions ehr_id fallback is exercised.
++ */
++const ENCOUNTER_PATIENT_ID_PATH =
++  "h/data[at0001]/items[at0007,'Patient ID']/value";
++
++export type RosterIdType = 'patient_id' | 'ehr_id';
++
++/**
++ * Thrown by {@link buildRosterMatchClause} when the roster exceeds
++ * {@link ROSTER_MATCH_CAP}. A fail-CLOSED refusal (carrying the observed `count` and
++ * the `cap`) — the caller surfaces it as an error; the AQL is NEVER emitted unscoped.
++ */
++export class RosterTooLargeError extends Error {
++  readonly count: number;
++  readonly cap: number;
++
++  constructor(count: number, cap: number) {
++    super(
++      `Org roster of ${count} patient ids exceeds the AQL match cap of ${cap}. ` +
++        `Refusing to emit an oversized/unscoped clinical-list query (fail-closed).`,
++    );
++    this.name = 'RosterTooLargeError';
++    this.count = count;
++    this.cap = cap;
++  }
++}
++
++/**
++ * Thrown by {@link fetchPatientIdRoster} when the org-scoped Demographics
++ * `searchPatients` call fails (M9, EHAC-1986). A DISTINGUISHABLE wrapper over the
++ * underlying cause so an on-call engineer can tell a Demographics/roster outage from an
++ * EHR/AQL-host failure — the clinical lists now depend on BOTH. Still fails closed via
++ * the caller's catch; the AQL is never emitted unscoped.
++ */
++export class RosterFetchError extends Error {
++  readonly cause: unknown;
++
++  constructor(cause: unknown) {
++    super(
++      'Failed to fetch the org patient roster from Demographics; clinical-list ' +
++        'tenant scoping cannot proceed (failing closed).',
++    );
++    this.name = 'RosterFetchError';
++    this.cause = cause;
++  }
++}
++
++interface RosterCacheEntry {
++  roster: string[];
++  expiresAt: number;
++}
++
++/** Module-level per-`<orgId>:<idType>` roster cache (never keyed without an org id). */
++const rosterCache = new Map<string, RosterCacheEntry>();
++
++/** Test-only: clear the module-level roster cache between cases. Not for production. */
++export function __resetRosterCacheForTests(): void {
++  rosterCache.clear();
++}
++
++/**
++ * Local mirror of the SDK's `sanitizeAQLParameter` (validation.ts:153-164):
++ * String(value), then replace `'` → `''`, strip `;` and `--`. Kept local to avoid the
++ * `@ehacare/bettercare-sdk` barrel/interceptor; a parity test pins it to the SDK fn.
++ */
++function escapeAqlLiteral(value: unknown): string {
++  if (value === null || value === undefined) {
++    return '';
++  }
++  return String(value).replace(/'/g, "''").replace(/;/g, '').replace(/--/g, '');
++}
++
++/**
++ * Reads the caller org id from the SDK session identity. Returns undefined when
++ * indeterminate (e.g. under a mock that does not expose it) so callers can fail safe
++ * and SKIP the cache rather than key one org's roster under an ambiguous value.
++ */
++function getCallerOrgId(): string | undefined {
++  // Guarded read: under a partial module mock that omits `getSDKTenantId`, accessing
++  // the export throws (vitest surfaces missing exports rather than returning undefined).
++  // Treat any indeterminate/absent identity as "skip the cache" (fail-safe) rather than
++  // keying a roster under an ambiguous value.
++  try {
++    const adapter = sdkClientAdapter as {
++      getSDKTenantId?: () => string | null | undefined;
++    };
++    const getId = adapter.getSDKTenantId;
++    if (typeof getId !== 'function') {
++      return undefined;
++    }
++    const id = getId();
++    return id ? id : undefined;
++  } catch {
++    return undefined;
++  }
++}
++
++/**
++ * Fetches the caller org's COMPLETE HP-* patient roster from the org-scoped
++ * Demographics `searchPatients` leaf, paging until exhausted. Extracts each entry's
++ * `identifier[0].value` (mirror PatientList.tsx:183), drops falsy, de-duplicates.
++ * A thrown searchPatients error PROPAGATES (fail-visible, no silent empty roster).
++ */
++async function fetchPatientIdRoster(): Promise<string[]> {
++  const client = sdkClientAdapter.getSDKClientOrThrow();
++  const ids: string[] = [];
++  const seen = new Set<string>();
++  let offset = 0;
++
++  // Fetch the COMPLETE roster — a single page is expected for the confirmed dev org,
++  // but do not assume it (Pitfall 4: a partial roster silently drops the org's rows).
++  for (;;) {
++    let bundle: {
++      entry?: Array<{ resource?: { identifier?: Array<{ value?: string }> } }>;
++      total?: number;
++    };
++    try {
++      bundle = await client.demographics.patients.searchPatients({
++        active: 'true',
++        _count: ROSTER_PAGE_SIZE,
++        // H6 (EHAC-1986): send BOTH offset params. The Demographics server honours
++        // `_getpagesoffset`; the patient list hedges on exactly this (demography.ts:88-90).
++        // Sending only `_offset` risks a truncated first-page-only roster for large orgs.
++        // `_getpagesoffset` is not in the SDK's PatientSearchParams type (the patient list
++        // passes it via an `any` searchObj) — cast the literal through `unknown` rather than
++        // widening the whole call to `any`.
++        _getpagesoffset: offset,
++        _offset: offset,
++      } as unknown as Parameters<
++        typeof client.demographics.patients.searchPatients
++      >[0]);
++    } catch (error) {
++      // M9 (EHAC-1986): the clinical lists now hard-depend on Demographics. Make the
++      // coupling DISTINGUISHABLE — a breadcrumb + a typed RosterFetchError — so an on-call
++      // engineer sees "roster/Demographics", not a generic EHR/AQL failure, on propagation.
++      Sentry.addBreadcrumb({
++        category: 'tenant-roster',
++        level: 'error',
++        message:
++          'Demographics searchPatients failed while fetching the org roster; clinical lists fail closed.',
++      });
++      throw new RosterFetchError(error);
++    }
++
++    const entries = bundle?.entry ?? [];
++    for (const entry of entries) {
++      const id = entry?.resource?.identifier?.[0]?.value;
++      if (id && !seen.has(id)) {
++        seen.add(id);
++        ids.push(id);
++      }
++    }
++
++    // nit (EHAC-1986): once the roster passes ROSTER_MATCH_CAP, buildRosterMatchClause
++    // will throw RosterTooLargeError regardless — stop paging rather than fetch wasted pages.
++    if (ids.length > ROSTER_MATCH_CAP) {
++      break;
++    }
++
++    const total = typeof bundle?.total === 'number' ? bundle.total : undefined;
++    const gotFullPage = entries.length >= ROSTER_PAGE_SIZE;
++    const moreByTotal =
++      total !== undefined && ids.length < total && entries.length > 0;
++    if (entries.length === 0 || (!gotFullPage && !moreByTotal)) {
++      break;
++    }
++    offset += entries.length;
++  }
++
++  return ids;
++}
++
++/**
++ * Resolves an HP-* roster to distinct openEHR ehr_ids via ONE cap-guarded mapping AQL
++ * over the encounter archetype (review Item 2). Fail-CLOSED: an empty HP-* roster or a
++ * mapping error yields an empty ehr_id roster (→ downstream `matches {''}` → 0 rows),
++ * never an unscoped read. Returns null ONLY on a mapping error so the caller can avoid
++ * caching an errored result; [] means a legitimately-empty (cacheable) resolution.
++ */
++async function resolveEhrIdRoster(
++  patientRoster: string[],
++): Promise<string[] | null> {
++  if (patientRoster.length === 0) {
++    return [];
++  }
++  const client = sdkClientAdapter.getSDKClientOrThrow();
++  // Reuses buildRosterMatchClause, so the mapping AQL is ALSO cap-guarded.
++  const matchClause = buildRosterMatchClause(
++    ENCOUNTER_PATIENT_ID_PATH,
++    patientRoster,
++  );
++  const aql = `SELECT DISTINCT e/ehr_id/value AS Ehr_id
++      FROM EHR e
++      CONTAINS COMPOSITION c[openEHR-EHR-COMPOSITION.encounter.v1]
++      CONTAINS ADMIN_ENTRY h[openEHR-EHR-ADMIN_ENTRY.episode_institution.v0,'Patient Encounter']
++      WHERE ${matchClause}`;
++
++  try {
++    // executeRaw returns the server-native body verbatim (typed `unknown` by the SDK);
++    // read as `any` to preserve the prior loose response contract, as the list services do.
++    const data: any = await client.aql().executeRaw(aql, {});
++    const rows: Array<Record<string, unknown>> = data?.resultSet ?? [];
++    const seen = new Set<string>();
++    const ehrIds: string[] = [];
++    for (const row of rows) {
++      const cell = row?.Ehr_id as { value?: string } | string | undefined;
++      const value = typeof cell === 'object' ? cell?.value : cell;
++      if (value && !seen.has(value)) {
++        seen.add(value);
++        ehrIds.push(value);
++      }
++    }
++    return ehrIds;
++  } catch {
++    // fail-CLOSED: an unresolvable mapping must never proceed unscoped.
++    return null;
++  }
++}
++
++/**
++ * Returns the caller org's complete roster of ids, id-type-aware and short-TTL
++ * per-org cached. Mirrors the patient-list org scoping (Key Decision #2) and is the
++ * roster SOURCE for the clinical-list `matches {…}` predicate.
++ *
++ * @param idType 'patient_id' (default) → HP-* identifier values; 'ehr_id' → openEHR
++ *   ehr_ids resolved via a cap-guarded mapping AQL (review Item 2, for the 02-03
++ *   prescriptions fallback).
++ * @param options.forceRefresh (H4, EHAC-1986) bypass the cache and re-fetch. A by-id
++ *   guard that missed a possibly-stale cached roster (e.g. a just-registered patient whose
++ *   row is not yet in a ≤5-min-old cache) retries once with this set, so it never wrongly
++ *   refuses an owned record. Still fail-closed — a fresh fetch, never an unscoped read.
++ */
++export async function getOrgPatientRoster(
++  idType: RosterIdType = 'patient_id',
++  options?: { forceRefresh?: boolean },
++): Promise<string[]> {
++  const orgId = getCallerOrgId();
++  const cacheKey = orgId ? `${orgId}:${idType}` : undefined;
++
++  if (cacheKey && !options?.forceRefresh) {
++    const cached = rosterCache.get(cacheKey);
++    if (cached && cached.expiresAt > Date.now()) {
++      return cached.roster;
++    }
++  }
++
++  // searchPatients errors propagate here (never cached — the try/catch is the caller's).
++  const patientRoster = await fetchPatientIdRoster();
++
++  let roster: string[];
++  if (idType === 'ehr_id') {
++    const resolved = await resolveEhrIdRoster(patientRoster);
++    if (resolved === null) {
++      // fail-CLOSED mapping error: return an empty (0-row) roster WITHOUT caching it.
++      return [];
++    }
++    roster = resolved;
++  } else {
++    roster = patientRoster;
++  }
++
++  // Cache only a successful complete resolution, and only under a known org key.
++  if (cacheKey) {
++    rosterCache.set(cacheKey, {
++      roster,
++      expiresAt: Date.now() + ROSTER_CACHE_TTL_MS,
++    });
++  }
++  return roster;
++}
++
++/**
++ * Renders the AQL set-membership expression `idPath matches { '<id>', … }` with each id
++ * escaped by the local sanitizer (mirrors the diagnosis idiom, encounterService.ts:531-544).
++ * The returned expression carries NO leading `WHERE`/`and` — each caller composes it into
++ * its own WHERE with the correct connective.
++ *
++ * Fail-CLOSED semantics:
++ *  - an empty roster deliberately returns `idPath matches {''}` (matches no real id → 0
++ *    rows: a 0-patient org sees nothing) rather than dropping the predicate, and
++ *  - a roster over {@link ROSTER_MATCH_CAP} throws {@link RosterTooLargeError} (a loud
++ *    refusal) rather than emitting an oversized/truncated query.
++ */
++export function buildRosterMatchClause(
++  idPath: string,
++  roster: string[],
++): string {
++  if (roster.length > ROSTER_MATCH_CAP) {
++    throw new RosterTooLargeError(roster.length, ROSTER_MATCH_CAP);
++  }
++  if (roster.length === 0) {
++    return `${idPath} matches {''}`;
++  }
++  const set = roster.map((id) => `'${escapeAqlLiteral(id)}'`).join(',');
++  return `${idPath} matches { ${set} }`;
++}
+diff --git a/e2e/bettercare/tests/clinical-list-tenant-isolation.spec.ts b/e2e/bettercare/tests/clinical-list-tenant-isolation.spec.ts
+new file mode 100644
+index 0000000000..7f7bced6e7
+--- /dev/null
++++ b/e2e/bettercare/tests/clinical-list-tenant-isolation.spec.ts
+@@ -0,0 +1,448 @@
++import { test, expect } from '@playwright/test';
++import { ApiHelper } from '../../shared/helpers/api-helper';
++import { FhirHelper } from '../helpers/fhir-helper';
++import { decodeJwtPayload } from '../../shared/helpers/jwt';
++import { assertEnvVar } from '../../shared/helpers/preflight-assertions';
++
++/**
++ * Clinical-list Tenant Isolation — LIVE server-scoping oracle (EHAC-1986, REPRO-01)
++ * ================================================================================
++ *
++ * WHAT THIS PROVES (and what it does NOT)
++ * ---------------------------------------
++ * This is the **live** oracle for the intra-domain PHI leak on the three clinical
++ * lists (`/encounters`, `/labtests`, `/prescriptions`). The count-vs-roster probes
++ * assert the leak EXISTS on the DEPLOYED server (distinctCount > rosterSize) — they
++ * query the raw openEHR AQL host directly, so an APP-LAYER fix does NOT change their
++ * result and they stay red until the fix is deployed AND per-org ehr_domain scoping
++ * lands server-side (M11 review: the fix does NOT "invert" these assertions). The
++ * separate operator-gated by-id probe below IS a passing isolation assertion — it
++ * builds the fix's own roster-scoped by-id AQL and asserts 0 rows for a foreign id.
++ *
++ * Contrast (Landmine B): the Wave-1 Vitest specs
++ * (`encounterService.isolation.test.ts`, `labOrders.isolation.test.ts`,
++ * `prescriptionService.isolation.test.ts`) stub `executeRaw`, so they can only prove
++ * **app-layer** behavior (the service returns the resultSet verbatim, unfiltered).
++ * They cannot prove the **server** returns cross-tenant rows. THIS spec exercises the
++ * real openEHR AQL server with a real token, so it is the only artifact that observes
++ * the server-side scoping gap.
++ *
++ * SINGLE-TOKEN, INTRA-DOMAIN (Landmine A — the false-green trap)
++ * -------------------------------------------------------------
++ * The leak is INTRA-`ehr_domain` (Plan 01-02, A1 CONFIRMED: multiple KC orgs resolve
++ * to the shared `eha-clinics` `ehr_domain`). We therefore use a SINGLE `eha-clinics`
++ * principal and compare that org's own Demographics roster against the distinct
++ * patients its clinical-list AQL returns. We do NOT pair `eha-clinics` vs `newtenant`
++ * — those live in DIFFERENT `ehr_domain`s and are already isolated (proven green by
++ * `ehr-tenant-isolation.spec.ts`), so that pairing would FALSE-GREEN.
++ *
++ * THE ORACLE
++ * ----------
++ * 1. Fetch the org roster DYNAMICALLY from the org-scoped Demographics (FHIR) host —
++ *    the same isolating source the patient list uses (`demography.ts:52-55`,
++ *    `attachTenantHeader=false`, org scope from the OAuth token). `rosterSize` is read
++ *    at runtime; there is NO hardcoded patient-count magic number (Review Item 1).
++ * 2. For each clinical AQL, FIRST assert a FLOOR (`>= 1` distinct patient) BEFORE the
++ *    cardinality check. An empty result set is trivially "a subset of any roster", so a
++ *    down server / bad filter / broken query would otherwise FALSE-GREEN as isolated.
++ *    The floor makes an empty result FAIL loudly (Review Item 1).
++ * 3. Then assert the distinct clinical-list patient count EXCEEDS `rosterSize` — the
++ *    leak. Because the clinical AQL is held to the SAME branch the org operates in
++ *    (see PROBE_BRANCH) while the roster spans ALL the org's branches, a branch-scoped
++ *    clinical set exceeding the org-wide roster proves branch CANNOT explain the
++ *    asymmetry (Landmine D / Pitfall 4).
++ *
++ * PHI HYGIENE (ASVS V7, Review Item 4)
++ * ------------------------------------
++ * The live AQL returns real PHI. Only AGGREGATE counts and NON-REVERSIBLE MASKED
++ * identifiers (`maskId` -> `abcd***`) are ever logged. Raw patient ids/names are never
++ * emitted to `console`, `test.step`, or Playwright traces.
++ *
++ * OPERATOR-GATED / not the phase gate
++ * -----------------------------------
++ * This spec requires live `dev-app.eha.care` creds (ROPC via `BETTERCARE_CLIENT_SECRET`
++ * + `FHIR_BASE_URL`/EHR host). It runs as CONFIRMATION, not as the deterministic gate
++ * (the Vitest specs are the gate). The live count-vs-roster reproduction was already
++ * performed manually in Plan 01-02 (50 encounters spanning 15+ patients vs a ~2–3
++ * patient org footprint).
++ *
++ * FOLLOW-UP (Phase 4 regression guard, shareable with adr-008 EHAC-1796)
++ * ---------------------------------------------------------------------
++ * A genuine SECOND same-`ehr_domain` org is NOT wired into the harness today — the
++ * `ApiHelper`/`FhirHelper` tenant union is only `'eha-clinics' | 'newtenant'` (and
++ * `newtenant` is a different domain). Extending the harness to a real second
++ * same-domain org (so the guard can assert cross-org invisibility directly, rather
++ * than via count-vs-roster) is the Phase-4 follow-up.
++ */
++
++/**
++ * Branch held constant across the org's own rows and the leaked rows (Landmine D).
++ * Default = the branch observed in Plan 01-02 live evidence, where the org's own DRAFT
++ * encounters (EN228001 / EN228000 / EN228000L) sit. Encounters filter by branch NAME;
++ * labs and prescriptions filter by branch CODE. When a value is empty the corresponding
++ * clinical AQL runs domain-wide (a SUPERSET — the leak still holds a fortiori); supply
++ * `EHAC1986_PROBE_BRANCH_CODE` to hold the labs/prescriptions probes to the same branch.
++ */
++const PROBE_BRANCH = {
++  name: process.env.EHAC1986_PROBE_BRANCH_NAME ?? 'Kano - Lamido Crescent',
++  code: process.env.EHAC1986_PROBE_BRANCH_CODE ?? '',
++};
++
++/** Escape single quotes for safe inlining of an operator-supplied branch literal. */
++const escapeAql = (value: string): string => value.replace(/'/g, "''");
++
++/** Non-reversible mask for any PHI identifier that must appear in output (ASVS V7). */
++function maskId(value: unknown): string {
++  const s = cellValue(value);
++  if (!s) return '∅';
++  return s.length <= 4 ? '***' : `${s.slice(0, 4)}***`;
++}
++
++/**
++ * openEHR AQL cells arrive either as a bare scalar or as a `{ value: ... }` wrapper
++ * (e.g. `Patient_id: { value: 'HP-EHAC-001' }`). Normalize to a string identifier.
++ */
++function cellValue(cell: unknown): string | undefined {
++  if (cell == null) return undefined;
++  if (typeof cell === 'string') return cell;
++  if (typeof cell === 'number') return String(cell);
++  if (typeof cell === 'object') {
++    const v = (cell as Record<string, unknown>).value;
++    return v == null ? undefined : String(v);
++  }
++  return undefined;
++}
++
++type AqlRow = Record<string, unknown>;
++
++interface ClinicalListProbe {
++  /** Human label used in the test title (never carries PHI). */
++  label: string;
++  /** The live AQL — mirrors the service's composition archetype + branch predicate. */
++  aql: string;
++  /** Column carrying the list-specific patient identifier (for the identity leak). */
++  identifierColumn: string;
++  /**
++   * Whether the list's SELECT exposes a stable Patient id column. Prescriptions do NOT
++   * (`getPrescriptionReport` selects `Patient_name`, not `Patient_id` —
++   * prescriptionService.ts:205-220), so a Phase-2 roster post-filter needs an added
++   * `Patient_id` SELECT column or ehr_id-based scoping. Recorded here as a live caveat.
++   */
++  hasPatientIdColumn: boolean;
++}
++
++const encounterBranchClause = PROBE_BRANCH.name
++  ? `WHERE h/data[at0001]/items[at0018]/items[openEHR-EHR-CLUSTER.organisation.v1,'Facility']/items[at0001]/value = '${escapeAql(PROBE_BRANCH.name)}'`
++  : '';
++
++const labBranchClause = PROBE_BRANCH.code
++  ? `WHERE g/items[at0010]/value = '${escapeAql(PROBE_BRANCH.code)}'`
++  : '';
++
++const prescriptionBranchClause = PROBE_BRANCH.code
++  ? `WHERE c/context/other_context[at0001]/items[at0019]/value = '${escapeAql(PROBE_BRANCH.code)}'`
++  : '';
++
++/**
++ * The three clinical-list AQL shapes, faithful to the service builders:
++ *  - encounters:    encounterService.ts:238-243 (encounter.v1), Patient id at
++ *                   h/data[at0001]/items[at0007]; branch at .../items[at0018] Facility.
++ *  - labs:          labOrders.ts:170-172 (report-result.v1 + laboratory_test_result.v1),
++ *                   Patient_ID at g/items[at0006]; branch code at g/items[at0010].
++ *  - prescriptions: prescriptionService.ts:221-223 (prescription.v0), Patient_name at
++ *                   c/context/other_context[at0001]/items[at0014] (NO Patient_id column);
++ *                   branch code at .../items[at0019].
++ * Every probe additionally selects `e/ehr_id/value AS Ehr_id` — the uniform,
++ * always-present patient-level key used for the distinct-patient CARDINALITY oracle.
++ */
++const CLINICAL_LIST_PROBES: ClinicalListProbe[] = [
++  {
++    label: 'encounters (/encounters — encounter.v1)',
++    identifierColumn: 'Patient_id',
++    hasPatientIdColumn: true,
++    aql: `SELECT DISTINCT e/ehr_id/value AS Ehr_id,
++        h/data[at0001]/items[at0007,'Patient ID']/value AS Patient_id
++      FROM EHR e
++      CONTAINS COMPOSITION c[openEHR-EHR-COMPOSITION.encounter.v1]
++      CONTAINS ADMIN_ENTRY h[openEHR-EHR-ADMIN_ENTRY.episode_institution.v0,'Patient Encounter']
++      ${encounterBranchClause}`,
++  },
++  {
++    label: 'lab tests (/labtests — report-result.v1)',
++    identifierColumn: 'Patient_ID',
++    hasPatientIdColumn: true,
++    aql: `SELECT DISTINCT e/ehr_id/value AS Ehr_id,
++        g/items[at0006]/value AS Patient_ID
++      FROM EHR e
++      CONTAINS COMPOSITION c[openEHR-EHR-COMPOSITION.report-result.v1]
++      CONTAINS (CLUSTER g[openEHR-EHR-CLUSTER.encounter_id.v0] and OBSERVATION x[openEHR-EHR-OBSERVATION.laboratory_test_result.v1])
++      ${labBranchClause}`,
++  },
++  {
++    label: 'prescriptions (/prescriptions — prescription.v0, NO Patient_id column)',
++    identifierColumn: 'Patient_name',
++    hasPatientIdColumn: false,
++    aql: `SELECT DISTINCT e/ehr_id/value AS Ehr_id,
++        c/context/other_context[at0001]/items[at0014]/value AS Patient_name
++      FROM EHR e
++      CONTAINS COMPOSITION c[openEHR-EHR-COMPOSITION.prescription.v0]
++      ${prescriptionBranchClause}`,
++  },
++];
++
++/**
++ * OPERATOR-GATED BY-ID ISOLATION PROBE (EHAC-1986, DETAIL-01 — Phase 3 live confirmation)
++ * ======================================================================================
++ * The Vitest specs (encounter/labOrders/prescription isolation + aql) are the DETERMINISTIC
++ * gate proving the 03-02 by-id fix at the app layer. THIS probe is the LIVE confirmation:
++ * a synthetic FOREIGN sentinel id (an id belonging to ANOTHER org in the SAME `eha-clinics`
++ * ehr_domain) is run through BOTH (a) an UNSCOPED by-id AQL — expected to still resolve the
++ * cross-tenant record (`>= 1` distinct patient; a 0 means a bad/own sentinel → fail loudly)
++ * and (b) the ROSTER-SCOPED by-id AQL that 03-02 shipped — expected to return `0` rows (the
++ * fix refuses the foreign id, 404-style natural-empty).
++ *
++ * OPERATOR-GATED: each domain's sentinel is read from env via assertEnvVar, which fails loud
++ * when absent (zero-skip policy — never a silent skip, never a hardcoded real id in the spec).
++ * Runs only with live creds + sentinel.
++ * PHI HYGIENE (ASVS V7): only masked ids + aggregate counts are logged; sentinels are synthetic.
++ */
++interface ByIdProbe {
++  /** Human label used in the test title (never carries PHI). */
++  label: string;
++  /** Env var carrying a SYNTHETIC foreign sentinel id (operator-supplied). */
++  sentinelEnv: string;
++  /** Record-id key path used in the by-id WHERE (mirrors the fixed service). */
++  idKey: string;
++  /** Per-domain patient-id path the roster `matches {roster}` clause scopes on. */
++  patientIdPath: string;
++  /** FROM ... CONTAINS ... faithful to the service composition archetype. */
++  fromContains: string;
++  /** SELECT alias for the patient identifier (masked in logs, never raw). */
++  identifierColumn: string;
++}
++
++/**
++ * The three by-id shapes, faithful to the 03-02-scoped services:
++ *  - encounters:    getEncounter — encounter.v1, id key items[at0014,'Encounter ID']/value/id,
++ *                   patient path items[at0007,'Patient ID']/value (encounterService.ts).
++ *  - labs:          getLabOrderByReportId — report-result.v1, report_id key
++ *                   c/context/other_context[at0001]/items[at0002]/value, patient path
++ *                   g/items[at0006]/value (labOrders.ts).
++ *  - prescriptions: getPrescriptionById — prescription.v0, id key
++ *                   c/context/other_context[at0001]/items[at0008]/value/id, patient path
++ *                   l/items[at0006]/value (prescriptionService.ts).
++ */
++const BY_ID_PROBES: ByIdProbe[] = [
++  {
++    label: 'encounters (getEncounter — encounter.v1 by Encounter ID)',
++    sentinelEnv: 'EHAC1986_FOREIGN_SENTINEL_ENCOUNTER_ID',
++    idKey: "h/data[at0001]/items[at0014,'Encounter ID']/value/id",
++    patientIdPath: "h/data[at0001]/items[at0007,'Patient ID']/value",
++    identifierColumn: 'Patient_id',
++    fromContains: `FROM EHR e
++      CONTAINS COMPOSITION c[openEHR-EHR-COMPOSITION.encounter.v1]
++      CONTAINS ADMIN_ENTRY h[openEHR-EHR-ADMIN_ENTRY.episode_institution.v0,'Patient Encounter']`,
++  },
++  {
++    label: 'lab tests (getLabOrderByReportId — report-result.v1 by report_id)',
++    sentinelEnv: 'EHAC1986_FOREIGN_SENTINEL_LAB_REPORT_ID',
++    idKey: 'c/context/other_context[at0001]/items[at0002]/value',
++    patientIdPath: 'g/items[at0006]/value',
++    identifierColumn: 'Patient_ID',
++    fromContains: `FROM EHR e
++      CONTAINS COMPOSITION c[openEHR-EHR-COMPOSITION.report-result.v1]
++      CONTAINS (CLUSTER g[openEHR-EHR-CLUSTER.encounter_id.v0] and OBSERVATION x[openEHR-EHR-OBSERVATION.laboratory_test_result.v1])`,
++  },
++  {
++    label: 'prescriptions (getPrescriptionById — prescription.v0 by Prescription id)',
++    sentinelEnv: 'EHAC1986_FOREIGN_SENTINEL_PRESCRIPTION_ID',
++    idKey: 'c/context/other_context[at0001]/items[at0008]/value/id',
++    patientIdPath: 'l/items[at0006]/value',
++    identifierColumn: 'Patient_id',
++    fromContains: `FROM EHR e
++      CONTAINS COMPOSITION c[openEHR-EHR-COMPOSITION.prescription.v0]
++      CONTAINS CLUSTER l[openEHR-EHR-CLUSTER.encounter_id.v0]`,
++  },
++];
++
++/**
++ * Render a fail-closed `<path> matches { 'a', 'b', ... }` clause from the live roster —
++ * mirrors the app's `buildRosterMatchClause` semantics (tenantRoster.ts). An empty roster
++ * fails CLOSED to `matches { '' }` (0 rows), never an unscoped read. Each id is escaped.
++ */
++function rosterMatchClause(path: string, ids: Iterable<string>): string {
++  const literals = [...ids].map((id) => `'${escapeAql(id)}'`);
++  const set = literals.length ? literals.join(', ') : "''";
++  return `${path} matches { ${set} }`;
++}
++
++test.describe('Clinical-list tenant isolation — live leak oracle (EHAC-1986)', () => {
++  let api: ApiHelper;
++  let ehrDomain: string | undefined;
++  let rosterSize = 0;
++  // Hoisted to describe scope so the operator-gated by-id probe (below) can build the
++  // roster-scoped `matches {roster}` clause from the SAME live roster the count-vs-roster
++  // oracle uses. Populated once in beforeAll.
++  const rosterIds = new Set<string>();
++
++  test.beforeAll(async () => {
++    // SINGLE eha-clinics principal — the clinical AQL reader.
++    api = await ApiHelper.create({ tenant: 'eha-clinics', role: 'doctor' });
++
++    // Premise (A1): confirm the token's ehr_domain so the intra-domain framing holds.
++    const claims = decodeJwtPayload(api.getAccessToken());
++    ehrDomain =
++      typeof claims?.ehr_domain === 'string' ? claims.ehr_domain : undefined;
++    console.info(
++      `[clinical-list-isolation] token ehr_domain = ${ehrDomain ?? 'UNKNOWN'} (A1 expects 'eha-clinics')`,
++    );
++
++    // Roster baseline — org-scoped Demographics (FHIR), SAME org principal.
++    // Org scope travels in the OAuth token, so this Bundle IS the org's roster.
++    const fhir = await FhirHelper.create({ tenant: 'eha-clinics', role: 'doctor' });
++    const bundle = await fhir.searchPatients({ _count: '1000' });
++    for (const entry of bundle.entry ?? []) {
++      // BLOCKER 2 (review): key the roster on the HP-* Patient identifier, NOT the FHIR
++      // logical resource id (a UUID). The by-id probe feeds rosterIds to a Patient-ID-path
++      // `matches {…}`, and the shipped fetchPatientIdRoster uses `identifier[0].value` — matching
++      // a UUID against the HP-* path returns 0 rows unconditionally, making the by-id probe vacuous.
++      const id = (entry.resource as fhir4.Patient | undefined)?.identifier?.[0]
++        ?.value;
++      if (id) rosterIds.add(id);
++    }
++    rosterSize = rosterIds.size;
++    console.info(
++      `[clinical-list-isolation] org Demographics roster size = ${rosterSize} (dynamic; NOT hardcoded)`,
++    );
++  });
++
++  test('intra-domain premise: token resolves to the shared eha-clinics ehr_domain (A1)', () => {
++    // Guards the reproduction framing: if the token were on its OWN domain the leak
++    // would be a provisioning bug, not an app-layer roster-scoping gap (SC#3).
++    expect(ehrDomain, 'token must carry an ehr_domain claim').toBeTruthy();
++    expect(ehrDomain).toBe('eha-clinics');
++  });
++
++  test('org Demographics roster is non-empty (baseline sanity floor)', () => {
++    // A zero roster would let any clinical count "exceed" it and false-green the leak.
++    expect(
++      rosterSize,
++      'org roster must be >= 1 or the count-vs-roster oracle is meaningless',
++    ).toBeGreaterThanOrEqual(1);
++  });
++
++  for (const probe of CLINICAL_LIST_PROBES) {
++    test(`LEAKS today: ${probe.label} returns more distinct patients than the org roster`, async () => {
++      const result = (await api.queryAql(probe.aql)) as {
++        resultSet?: AqlRow[];
++      };
++      const rows = result.resultSet ?? [];
++
++      // Distinct patients keyed on the uniform ehr_id column.
++      const distinctPatients = new Set<string>();
++      const leakedIdentifiers: string[] = [];
++      for (const row of rows) {
++        const ehrId = cellValue(row.Ehr_id);
++        if (ehrId) distinctPatients.add(ehrId);
++        const identifier = row[probe.identifierColumn];
++        if (identifier != null) leakedIdentifiers.push(maskId(identifier));
++      }
++      const distinctCount = distinctPatients.size;
++
++      // Masked, aggregate-only diagnostics (ASVS V7).
++      console.info(
++        `[clinical-list-isolation] ${probe.label}: rows=${rows.length}, ` +
++          `distinctPatients=${distinctCount}, rosterSize=${rosterSize}, ` +
++          `hasPatientIdColumn=${probe.hasPatientIdColumn}, ` +
++          `sampleMaskedIds=${leakedIdentifiers.slice(0, 5).join(',') || '∅'}`,
++      );
++
++      // FLOOR FIRST (Review Item 1): an empty/failed query must FAIL, not pass as
++      // "isolated". Only after clearing the floor is the cardinality check meaningful.
++      expect(
++        distinctCount,
++        'floor: clinical AQL must return >= 1 distinct patient (empty result would false-green as isolated)',
++      ).toBeGreaterThanOrEqual(1);
++
++      // THE LEAK (RED until Phase 2): the branch-scoped clinical list surfaces MORE
++      // distinct patients than the org's entire (all-branch) Demographics roster.
++      // Phase 2's fix makes distinctCount <= rosterSize (roster-subset holds) and
++      // inverts this assertion into the passing isolation guard.
++      expect(
++        distinctCount,
++        'LEAK: clinical-list distinct patients must exceed the org roster (intra-domain leak; Phase 2 inverts this)',
++      ).toBeGreaterThan(rosterSize);
++    });
++  }
++
++  // ── Operator-gated by-id isolation probe (DETAIL-01 live confirmation) ──────────────
++  // For each domain with a synthetic foreign sentinel env, assert the UNSCOPED by-id AQL
++  // still resolves the cross-tenant record (>= 1 distinct patient — proof the sentinel is
++  // a genuine foreign leak target) while the ROSTER-SCOPED by-id AQL (the 03-02 fix shape)
++  // returns 0 rows (the foreign id is refused). Fails loud (assertEnvVar) per-domain when the
++  // sentinel is absent — zero-skip policy: an operator-gated check that cannot run fails, never skips.
++  for (const probe of BY_ID_PROBES) {
++    test(`by-id refusal: foreign ${probe.label} sentinel returns 0 rows under the roster-scoped query`, async () => {
++      // Operator-gated: supply a synthetic foreign sentinel id (an id owned by another org in the
++      // same eha-clinics ehr_domain). assertEnvVar fails loud if unset (zero-skip compliance).
++      const resolvedSentinel = assertEnvVar(probe.sentinelEnv);
++      const escapedSentinel = escapeAql(resolvedSentinel);
++      const selectHead =
++        `SELECT DISTINCT e/ehr_id/value AS Ehr_id,\n        ` +
++        `${probe.patientIdPath} AS ${probe.identifierColumn}`;
++      const unscopedAql =
++        `${selectHead}\n      ${probe.fromContains}\n      ` +
++        `WHERE ${probe.idKey} = '${escapedSentinel}'`;
++      const scopedAql =
++        `${selectHead}\n      ${probe.fromContains}\n      ` +
++        `WHERE ${probe.idKey} = '${escapedSentinel}' and ` +
++        `${rosterMatchClause(probe.patientIdPath, rosterIds)}`;
++
++      const distinctPatients = (rows: AqlRow[]): number => {
++        const set = new Set<string>();
++        for (const row of rows) {
++          const ehrId = cellValue(row.Ehr_id);
++          if (ehrId) set.add(ehrId);
++        }
++        return set.size;
++      };
++
++      const unscoped = (await api.queryAql(unscopedAql)) as {
++        resultSet?: AqlRow[];
++      };
++      const scoped = (await api.queryAql(scopedAql)) as {
++        resultSet?: AqlRow[];
++      };
++      const unscopedRows = unscoped.resultSet ?? [];
++      const scopedRows = scoped.resultSet ?? [];
++      const unscopedDistinct = distinctPatients(unscopedRows);
++
++      // Masked, aggregate-only diagnostics (ASVS V7). The sentinel is synthetic; its owner
++      // patient id is never emitted — only the count and a masked sample.
++      const maskedSample = unscopedRows
++        .map((row) => maskId(row[probe.identifierColumn]))
++        .slice(0, 3)
++        .join(',');
++      console.info(
++        `[clinical-list-isolation] by-id ${probe.label}: sentinel=${maskId(resolvedSentinel)}, ` +
++          `unscopedRows=${unscopedRows.length}, unscopedDistinctPatients=${unscopedDistinct}, ` +
++          `scopedRows=${scopedRows.length}, rosterSize=${rosterSize}, ` +
++          `sampleMaskedIds=${maskedSample || '∅'}`,
++      );
++
++      // (a) The sentinel must be a GENUINE cross-tenant leak target: unscoped it resolves
++      // to >= 1 distinct patient. A 0 here means a bad/own sentinel — fail loudly, don't
++      // let it false-green the refusal below.
++      expect(
++        unscopedDistinct,
++        'sentinel must exist cross-tenant (>= 1 distinct patient unscoped); a 0 means a bad/own sentinel',
++      ).toBeGreaterThanOrEqual(1);
++
++      // (b) THE FIX: the roster-scoped by-id query refuses the foreign sentinel → 0 rows.
++      expect(
++        scopedRows.length,
++        'roster-scoped by-id must refuse the foreign sentinel (0 rows — the 03-02 fix)',
++      ).toBe(0);
++    });
++  }
++});
