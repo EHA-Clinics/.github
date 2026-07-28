@@ -152,4 +152,57 @@ describe('packPromptSlices — which regime elek picks', () => {
     expect(packed.omittedPaths).toEqual([]);
     expect(packed.promptChars).toBeLessThan(BUDGET.maxChars);
   });
+
+  it('reproduces upstream prompt sizes EXACTLY on all three fixtures', () => {
+    // These three numbers are not this port's opinion. Each was produced by executing the
+    // REAL elek@3748508413fb355ae696b8fa98d1075930d12106 src/review/diff-context.ts
+    // `formatChangedFilesForPrompt(diff, 200_000)` (node --experimental-strip-types) against
+    // the committed fixture, and each equals this port's output to the character. If a
+    // future elek bump changes the packer, these values move and U1 has already gone red.
+    const expected = {
+      'pr-3515.diff': 52_715,
+      'small-complete.diff': 14_751,
+      'embedded-diff-header.diff': 26_366,
+    };
+    for (const [name, promptChars] of Object.entries(expected)) {
+      const diff = read(name);
+      const packed = packPromptSlices(parseUnifiedDiffFiles(diff), diff);
+      expect(packed.promptChars, `${name} prompt size`).toBe(promptChars);
+    }
+  });
+
+  it('the packer uses only a quarter of its budget on the #3515 diff (upstream defect, recorded)', () => {
+    // 137,015 chars of diff, a 200,000-char ceiling, and yet 52,715 chars reach the prompt:
+    // the `<= 80,000` full-diff gate plus the 4,000-char per-file clamp bind first, and
+    // `fullDiffThresholdChars` is an options field no elek caller ever passes. Recorded here
+    // so the number is visible; fixing it needs a fork of diff-context.ts (Jira follow-up).
+    const diff = read('pr-3515.diff');
+    const packed = packPromptSlices(parseUnifiedDiffFiles(diff), diff);
+    expect(packed.promptChars / BUDGET.maxChars).toBeLessThan(0.3);
+  });
+});
+
+describe('attributeCoverage rollups', () => {
+  it('counts cut production source separately from cut tests on the real #3515 diff', () => {
+    const { rollup, regime } = attributeCoverage(read('pr-3515.diff'));
+    expect(regime).toBe('SLICES');
+    expect(rollup.files_total).toBe(15);
+    expect(rollup.source_partial).toBe(4);
+    expect(rollup.source_absent).toBe(0);
+    expect(rollup.unknown_paths).toBe(0);
+    // 6 of the 15 fit inside the 4,000-char clamp and are WHOLE: sdkClientAdapter.ts
+    // (the only production file small enough) plus five small test files. The remaining
+    // 9 are cut: 4 production-source and 5 test files.
+    expect(rollup.whole).toBe(6);
+    expect(rollup.non_source_partial).toBe(5);
+    expect(rollup.non_source_absent).toBe(0);
+    expect(rollup.whole + rollup.source_partial + rollup.non_source_partial).toBe(15);
+  });
+
+  it('reports every file WHOLE when the full diff is inlined', () => {
+    const { rollup, regime } = attributeCoverage(read('small-complete.diff'));
+    expect(regime).toBe('FULL');
+    expect(rollup.whole).toBe(rollup.files_total);
+    expect(rollup.source_partial + rollup.non_source_partial).toBe(0);
+  });
 });

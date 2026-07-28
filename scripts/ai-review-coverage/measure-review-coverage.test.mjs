@@ -85,9 +85,15 @@ describe('buildCoverage — the fixture-driven red', () => {
     expect(roster.patch_chars).toBe(15_215);
     expect(roster.shown_chars).toBeLessThan(roster.patch_chars);
     expect(roster.shown_chars).toBeGreaterThan(0);
-    // Measured from the committed fixture through the verbatim port of
-    // diff-context.ts slicePatch(): patch.slice(0, 4000-140).replace(/\n[^\n]*$/,'').
-    expect(roster.shown_chars).toBe(3_818);
+    // MEASURED on the committed fixture, then independently confirmed two ways:
+    //  (a) by hand: patch.slice(0, 4000-140).replace(/\n[^\n]*$/,'') — the last newline
+    //      inside the 3,860-char cut sits at index 3,822;
+    //  (b) by executing the REAL elek@3748508 src/review/diff-context.ts
+    //      formatChangedFilesForPrompt(diff, 200_000) and asserting the emitted prompt
+    //      contains exactly patch.slice(0, 3822) and no further content for this file.
+    // 74% of the tenant-isolation primitive is still outside the prompt at v1.1.4 — which
+    // is why the pin bump alone was never the fix and this gate is load-bearing.
+    expect(roster.shown_chars).toBe(3_822);
     expect(roster.pct).toBe(25);
   });
 

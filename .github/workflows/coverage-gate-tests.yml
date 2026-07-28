@@ -1,0 +1,76 @@
+# Tests for the AI review coverage gate (EHAC-2057).
+#
+# This repository is the CANONICAL home of scripts/ai-review-coverage/ — the reusable
+# ai-code-review.yml workflow checks it out at a pinned SHA and executes it inside the
+# caller's job. Both eha_care and eha-care-infra are private, so neither can be the
+# canonical source for the other's run; EHA-Clinics/.github is public, so the default
+# GITHUB_TOKEN reads it from either caller with no new secret.
+#
+# The point of running the suite HERE is that the tested copy and the executed copy are the
+# same copy. A test-only mirror in an app repo can stay green while the code that actually
+# runs is broken — precisely the vacuous-gate class EHAC-2057 exists to kill.
+#
+# There is deliberately NO error-suppression key anywhere in this file.
+
+name: Coverage Gate Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Coverage Gate Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run coverage-gate specs
+        run: pnpm test
+
+      # Belt-and-braces: prove the gate is still able to fail, from the shell, without
+      # Vitest in the loop. The real 137,015-char PR #3515 diff must drive PARTIAL_SOURCE
+      # and a non-zero assert exit. If this step ever passes trivially, the gate is vacuous.
+      - name: Prove the fixture-driven red end-to-end
+        env:
+          ELEK_REF: 3748508413fb355ae696b8fa98d1075930d12106
+          REQUESTED_STRATEGY: council
+          EXECUTED_STRATEGY: council
+          REVIEW_INPUT_TOKENS: '83000'
+        run: |
+          set -euo pipefail
+          COV="$(node scripts/ai-review-coverage/measure-review-coverage.mjs \
+                   --diff-file scripts/ai-review-coverage/fixtures/pr-3515.diff)"
+          node -e 'const c=JSON.parse(process.argv[1]);if(c.verdict!=="PARTIAL_SOURCE")throw new Error("expected PARTIAL_SOURCE, got "+c.verdict)' "$COV"
+          rc=0
+          REVIEW_RESULT=success COVERAGE_JSON="$COV" \
+            node scripts/ai-review-coverage/assert-review-coverage.mjs || rc=$?
+          if [ "$rc" -ne 1 ]; then
+            echo "::error::the coverage gate did NOT fail on a truncating diff (exit $rc) — it is vacuous"
+            exit 1
+          fi
+          echo "fixture-driven red proven (assert exited $rc)"
