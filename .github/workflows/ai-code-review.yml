@@ -3,12 +3,34 @@
 #
 # Council strategy: a multi-lens review (4 read-only lenses) with z-ai/glm-5.1 as the
 # validator that reconciles findings before posting. Cost is bounded by max_cost_usd
-# using per-model cost_rates. The elek pin below is an UNTAGGED main commit (2026-06-16),
-# deliberately chosen because no release tag yet exposes the council+cost-control inputs
-# (cost_rates / severity_threshold / max_cost_usd) — Plan 05 human-verifies its action.yml
-# input surface before any caller bumps to the merged SHA.
+# using per-model cost_rates.
 # Structural safety: elek's MCP server only exposes create_inline_comment and
 # update_tracking_comment — there are no approve/merge/close code paths.
+#
+# ─── elek pin: v1.1.4 = 3748508413fb355ae696b8fa98d1075930d12106 (EHAC-2057) ───────────
+# The previous pin was an UNTAGGED main commit (88813716, 2026-06-16), chosen when no
+# release tag exposed the council+cost-control inputs. That is no longer true: v1.1.4's
+# action.yml input surface is a strict SUPERSET of everything this workflow passes, so the
+# tag replaces the untagged commit. v1.1.4 beats the old pin on the two mechanisms that
+# produced EHAC-2057, and beats `main` (cbb7202b) because main is untagged, unreleased and
+# its `src/review/diff-context.ts` is byte-identical to v1.1.4 — zero extra gain here.
+#
+# EHAC-2057 root cause, one line: `AI Review (Council)` reported a green pass on eha_care
+# PR #3515 while the entire 298-line tenant-isolation primitive sat outside the model's
+# prompt window — a raw 60,000-char `String.slice` of the diff (old pin
+# `src/review/strategy.ts:282`) dropped it, acceptance gates converted the missing context
+# into silence, and the changed-line threshold had silently downgraded council to a 2-lens
+# crosscheck so the check name reported a strategy that never ran.
+#
+# This workflow therefore emits a SECOND, separately-named signal — `AI Review Coverage` —
+# that goes red when a production-source file was truncated out of the review prompt. The
+# `AI Review (Council)` job keeps its existing name and pass/fail meaning: "review
+# incomplete" and "review broken" stay separate signals.
+#
+# Fault 3 warning, so nobody re-derives the idea: `ignore_paths` in `.elek.yml` is PROMPT
+# TEXT ONLY at every elek ref (there is no glob matcher anywhere in elek's source). It does
+# NOT filter `data.diff` and reclaims NO prompt budget. Path-sharding a review via
+# `config_path` + generated `ignore_paths` is structurally impossible.
 #
 # NOTE: We previously routed through the Databricks AI Gateway (provider: openai,
 # OpenAI-compatible). elek's pi client hung indefinitely on tool-enabled
@@ -89,6 +111,29 @@ on:
         type: string
         default: 'review'
         description: 'review (read-only) or review+edit (pushes fixes to pi/* branch)'
+      max_council_changed_lines:
+        type: string
+        default: '0'
+        description: >
+          Changed-line warning threshold for council/thermos; '0' disables it.
+          EHAC-2057 Fault 5: at the OLD pin (88813716) the default was 1_200 and a
+          for(;;) loop silently downgraded council -> crosscheck -> solo on any large
+          PR, so the job named "AI Review (Council)" ran a 2-lens crosscheck on
+          eha_care #3515 (2,432 changed lines). At v1.1.4 the downgrade loop is gone
+          and the threshold is warn-only, but we set it explicitly so the behaviour is
+          self-documenting and pin-independent (CONTEXT D-05(i)).
+      actor_filter:
+        type: string
+        default: ''
+        description: >
+          Comma-separated usernames allowed to trigger a review. Compensating control
+          for T-2057-02/T-2057-03: at v1.1.4 an EMPTY value means *all humans* can
+          trigger a run that holds OPENROUTER_API_KEY and a pull-requests: write token,
+          while `getGitDiff` still interpolates the head branch name into execSync and
+          git refnames legally permit shell metacharacters. Callers supply an explicit
+          allowlist. An actor outside the list makes elek decline before reviewing,
+          which the coverage gate reports as NOT_REVIEWED (green + a loud warning), so
+          bot-authored PRs do not produce a red storm.
     secrets:
       OPENROUTER_API_KEY:
         required: true
@@ -114,11 +159,12 @@ jobs:
           persist-credentials: false
 
       - name: AI Code Review via OpenRouter
-        # Untagged main commit (2026-06-16) — the only ref that exposes the council+cost
-        # inputs (review_strategy/review_models/validator_model/severity_threshold/
-        # max_cost_usd/cost_rates) AND .elek.yml support (commit cc70184). No release tag
-        # carries these yet; Plan 05 human-verifies this action.yml input surface before merge.
-        uses: selimozten/elek@88813716bf744e2666c078d655abef990b7d82aa
+        # `id: review` is load-bearing (EHAC-2057 Fault 4): elek's action.yml has declared
+        # review_summary_json / review_summary_path / input_tokens / output_tokens /
+        # cost_usd / conclusion as outputs at EVERY ref, and all of them were unreachable
+        # purely for want of a step id. The coverage measurement below consumes them.
+        id: review
+        uses: selimozten/elek@3748508413fb355ae696b8fa98d1075930d12106 # v1.1.4
         with:
           # pi's native openrouter adapter — elek's tested path. The OpenAI-compatible
           # Databricks AI Gateway (provider: openai) hung pi indefinitely on tool-enabled
@@ -132,6 +178,9 @@ jobs:
           severity_threshold: ${{ inputs.severity_threshold }}
           max_cost_usd: ${{ inputs.max_cost_usd }}
           cost_rates: ${{ inputs.cost_rates }}
+          # EHAC-2057 Fault 5 mitigation + T-2057-02 compensating control.
+          max_council_changed_lines: ${{ inputs.max_council_changed_lines }}
+          actor_filter: ${{ inputs.actor_filter }}
           # Primary/fallback model + reasoning knobs.
           model: ${{ inputs.model }}
           trigger_phrase: ${{ inputs.trigger_phrase }}
