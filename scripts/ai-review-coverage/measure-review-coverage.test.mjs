@@ -1,4 +1,6 @@
-import { readFileSync, statSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -316,6 +318,61 @@ describe('buildCoverage — NOT_REVIEWED is deterministic, never inferred from e
       context: healthyContext({ actor: 'carol', changedFilesApi: 2 }),
     });
     expect(coverage.not_reviewed).toBeNull();
+  });
+});
+
+describe('CLI — --diff-file is EXPLICIT offline mode', () => {
+  // Regression lock. `--diff-file` originally inferred offline mode from GITHUB_OUTPUT
+  // being unset, but GitHub Actions ALWAYS sets GITHUB_OUTPUT, so the JSON went to the job
+  // output file and `COV="$(node measure…)"` came back empty. `Coverage Gate Tests` caught
+  // it on PR #5. Offline mode must be selected by the flag, never inferred from the env.
+  it('prints the coverage JSON to stdout even when GITHUB_OUTPUT is set', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ai-review-coverage-'));
+    const outputFile = join(dir, 'github_output');
+    const summaryFile = join(dir, 'github_step_summary');
+    writeFileSync(outputFile, '');
+    writeFileSync(summaryFile, '');
+
+    const proc = spawnSync(
+      process.execPath,
+      [
+        join(import.meta.dirname, 'measure-review-coverage.mjs'),
+        '--diff-file',
+        fixturePath('pr-3515.diff'),
+      ],
+      {
+        env: {
+          PATH: process.env.PATH,
+          ELEK_REF: ELEK_REF_VERIFIED,
+          REQUESTED_STRATEGY: 'council',
+          EXECUTED_STRATEGY: 'council',
+          REVIEW_INPUT_TOKENS: '83000',
+          GITHUB_OUTPUT: outputFile,
+          GITHUB_STEP_SUMMARY: summaryFile,
+        },
+        encoding: 'utf8',
+      },
+    );
+
+    expect(proc.status).toBe(0);
+    const parsed = JSON.parse(proc.stdout);
+    expect(parsed.verdict).toBe('PARTIAL_SOURCE');
+    // A fixture measurement is not a job output and must not masquerade as one.
+    expect(readFileSync(outputFile, 'utf8')).toBe('');
+    expect(readFileSync(summaryFile, 'utf8')).toBe('');
+  });
+
+  it('exits 0 even on a diff it cannot measure (the producer never fails the review job)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ai-review-coverage-'));
+    const empty = join(dir, 'empty.diff');
+    writeFileSync(empty, '');
+    const proc = spawnSync(
+      process.execPath,
+      [join(import.meta.dirname, 'measure-review-coverage.mjs'), '--diff-file', empty],
+      { env: { PATH: process.env.PATH, ELEK_REF: ELEK_REF_VERIFIED }, encoding: 'utf8' },
+    );
+    expect(proc.status).toBe(0);
+    expect(JSON.parse(proc.stdout).verdict).toBe('UNKNOWN');
   });
 });
 

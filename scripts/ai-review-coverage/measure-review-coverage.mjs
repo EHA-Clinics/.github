@@ -437,6 +437,11 @@ function resolvePullRequestContext(env) {
 
 async function main(argv, env) {
   const diffFile = argValue(argv, '--diff-file');
+  // `--diff-file` is EXPLICIT offline/fixture mode. It must never be inferred from
+  // `GITHUB_OUTPUT` being unset: GitHub Actions always sets GITHUB_OUTPUT, so keying off it
+  // silently swallowed the JSON when the CI proof step ran the fixture (caught by
+  // `Coverage Gate Tests` on PR #5). Offline mode prints to stdout and writes NO job output.
+  const offline = Boolean(diffFile);
   let diffText;
   let context = {};
 
@@ -484,7 +489,7 @@ async function main(argv, env) {
 
   const coverage = buildCoverage({ diffText, env, context });
 
-  if (env.GITHUB_STEP_SUMMARY) {
+  if (!offline && env.GITHUB_STEP_SUMMARY) {
     try {
       appendFileSync(env.GITHUB_STEP_SUMMARY, renderJobSummary(coverage));
     } catch (err) {
@@ -493,10 +498,11 @@ async function main(argv, env) {
   }
 
   const oneLine = JSON.stringify(coverage);
-  if (env.GITHUB_OUTPUT) {
+  if (!offline && env.GITHUB_OUTPUT) {
     appendFileSync(env.GITHUB_OUTPUT, `coverage_json=${oneLine}\n`);
   } else {
-    // Offline: stdout carries ONLY the JSON so `JSON.parse "$(...)"` works.
+    // Offline / fixture mode: stdout carries ONLY the JSON so `JSON.parse "$(...)"` works,
+    // even when GITHUB_OUTPUT is set (it always is, inside Actions).
     process.stdout.write(`${oneLine}\n`);
   }
 }
