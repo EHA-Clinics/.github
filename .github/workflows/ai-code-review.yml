@@ -126,14 +126,24 @@ on:
         type: string
         default: ''
         description: >
-          Comma-separated usernames allowed to trigger a review. Compensating control
-          for T-2057-02/T-2057-03: at v1.1.4 an EMPTY value means *all humans* can
-          trigger a run that holds OPENROUTER_API_KEY and a pull-requests: write token,
-          while `getGitDiff` still interpolates the head branch name into execSync and
-          git refnames legally permit shell metacharacters. Callers supply an explicit
-          allowlist. An actor outside the list makes elek decline before reviewing,
-          which the coverage gate reports as NOT_REVIEWED (green + a loud warning), so
-          bot-authored PRs do not produce a red storm.
+          Comma-separated usernames allowed to trigger a review.
+
+          HONEST SCOPE — verified in elek@3748508 src/github/trigger.ts:52-77. At this pin
+          an explicit actor_filter does NOT narrow the HUMAN trigger surface.
+          `isActorAllowed` checks the list and then falls through to
+          `return !actor.endsWith("[bot]")`, so every non-bot actor is allowed either way:
+          the list is ADDITIVE, not exclusive. It therefore does NOT mitigate the v1.1.4
+          `getGitDiff` surface, where the head branch name is still interpolated into
+          execSync and git refnames legally permit shell metacharacters. That is tracked in
+          EHAC-2059; the real controls today are private repositories, fork PRs receiving no
+          secrets, and mode:review. An earlier revision of this description claimed the
+          opposite and was wrong.
+
+          What setting it DOES buy: it documents intent, it is forward-compatible with the
+          post-v1.1.4 narrowing of the empty default (all humans -> owners/members/
+          collaborators), and it makes the bot deny explicit. Bots ARE declined while
+          `allowed_bots` is unset, which the coverage gate reports as NOT_REVIEWED (green +
+          a loud warning), so bot-authored PRs do not produce a red storm.
     secrets:
       OPENROUTER_API_KEY:
         required: true

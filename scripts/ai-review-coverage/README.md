@@ -200,15 +200,55 @@ Current `eha_care` `v2` required contexts are exactly `EHACare Lint Test`,
 The job `name:` is a branch-protection API contract string. **Do not rename
 `AI Review Coverage`.**
 
-### 3. Cancellation: an open question, to be measured — not guessed
+### 3. Cancellation — MEASURED, and it costs one red per superseded push
 
-All four callers set `concurrency.cancel-in-progress: true`, so cancellation is the **common
-case** on force-push. GitHub docs say `always()` returns true *"even when canceled"*, but
-whether the runner actually schedules a job of a cancelled **run** is unverified and
-community-reported both ways. The gate **fails closed** on `cancelled`.
+This started as an open question. It is now answered by direct observation on
+`EHA-Clinics/eha_care` PR #3518, run `30377721519`, deliberately superseded mid-flight by a
+force-push:
 
-Count the rate during the advisory soak before promoting. If it is high, fix the cancel branch
-honestly — detect run supersession — **never make `cancelled` exit 0**.
+```
+workflow run                                   completed / cancelled
+AI Review (Council) / AI Code Review (council)  conclusion=cancelled
+AI Review (Council) / AI Review Coverage        conclusion=failure    ← it DID get scheduled
+```
+
+So an `if: always()` job **is** scheduled on a concurrency-cancelled run, and this gate reports
+`failure` (not `cancelled`), failing closed as designed. Worth noting that the gate job sat in
+`queued` for a while first — treat "still queued" as "not yet resolved", not as "skipped".
+
+The consequence is quantified rather than feared: with `cancel-in-progress: true`, **every
+superseded force-push deterministically produces one red `AI Review Coverage` check** on the
+stale head. That is tolerable while advisory — the newer run posts a newer check under the same
+name and supersedes it in the PR UI — but it is the dominant false-red source and must be
+budgeted before promotion (EHAC-2060). If the rate is unacceptable, fix the cancel branch
+honestly by detecting run supersession. **Never make `cancelled` exit 0.**
+
+### 3b. `trigger_phrase` is a body-content precondition — and it used to fail open
+
+Found live, on this gate's own first run (`eha_care` PR #3518, run `30376963132`):
+
+```
+No trigger detected — exiting cleanly
+REVIEW_CONCLUSION: skipped
+```
+
+…while `AI Review (Council) / AI Code Review (council)` reported **✓ green in 1m0s**.
+
+elek's `trigger_phrase` is `@ai-review`, normally supplied by the repo's PR template. A PR whose
+body omits it — anyone who clears the template — gets a **green** `AI Review (Council)` check
+with **zero** review behind it. That is the EHAC-2057 defect through a different door, and it
+was invisible until a gate existed that could see it. The coverage gate now catches it as
+`UNKNOWN` / **U5** (*"review input_tokens is absent or 0 — no evidence a review prompt was ever
+built"*).
+
+**`trigger_phrase_absent` is deliberately NOT in the `NOT_REVIEWED` allowlist.** Adding it would
+turn this back into a green, which would re-create the exact fail-open. The honest report is red:
+the check claimed a review and none happened.
+
+Promotion consequence (EHAC-2060): if this check becomes *required* while the trigger phrase
+remains a body-content precondition, a template-cleared PR blocks on a permanently red check.
+Either the trigger phrase must stop being optional, or the `pull_request` path must not depend on
+body content at all. **Do not "fix" this by widening the allowlist.**
 
 ### 4. `NOT_REVIEWED` is the single exit-0-without-coverage branch
 
@@ -225,6 +265,18 @@ it would be a fail-open. It always emits a `::warning::` and a job-summary banne
 It exists because without it every Renovate PR becomes a permanent red, which is the alert
 fatigue that got the Phase-65 GHAS probe deleted. **Widening this allowlist is a promotion-time
 decision** (EHAC-2060), not an implementation detail.
+
+Two honest caveats about the allowlist as it stands:
+
+* **`actor_not_in_actor_filter` is currently unreachable for humans.** Verified in
+  `elek@3748508 src/github/trigger.ts:52-77`: `isActorAllowed` checks the list and then falls
+  through to `return !actor.endsWith("[bot]")`, so a non-bot actor off the list is still allowed
+  and *is* reviewed. The entry is kept for forward-compatibility with the post-v1.1.4 narrowing
+  of the empty default, and it is harmless — the branch is suppressed whenever a review
+  demonstrably happened (`input_tokens > 0`). The entry that does real work today is
+  `actor_is_bot_not_allowlisted`.
+* **This also means `actor_filter` is not the security control it was planned to be.** See
+  limitation 6 and EHAC-2059.
 
 ### 5. `ignore_paths` reclaims no prompt budget — do not re-derive path-sharding
 
@@ -258,8 +310,28 @@ with a clear message rather than surprising a PR author.
 The pin itself is revisited in **EHAC-2059**: `main` (`cbb7202b`, untagged) replaces `execSync`
 with `execFileSync` + `isSafeGitRefName` in `src/github/git.ts`, a genuine shell-injection fix,
 and narrows `actor_filter`'s empty default from *all humans* to *owners/members/collaborators*.
-Until that ships in a tag, the explicit `actor_filter` allowlist passed by all four callers is
-the compensating control.
+
+**Correction to the planning assumption, recorded because it changes the risk picture.** The
+plan (CONTEXT D-05) and the research it rested on both treated an explicit `actor_filter` as
+*the* compensating control for that shell-injection surface at v1.1.4. **It is not.** From
+`elek@3748508 src/github/trigger.ts:52-77`:
+
+```ts
+if (inputs.actorFilter) {
+  const allowed = inputs.actorFilter.split(",").map((s) => s.trim());
+  if (allowed.includes(actor)) return true;
+}
+if (inputs.allowedBots) { /* … */ }
+return !actor.endsWith("[bot]");     // ← every non-bot actor is allowed anyway
+```
+
+The list is **additive, not exclusive**: it does not narrow the human trigger surface at all. It
+is still set by all four callers — it documents intent, is forward-compatible with the
+post-v1.1.4 narrowing, and makes the bot deny explicit — but the mitigations actually carrying
+the risk today are that both calling repositories are private, that fork PRs receive no
+secrets, and that `mode: review` is read-only. That raises the priority of **EHAC-2059**, and it
+is the reason the caller files say so in a comment rather than shipping a claim that overstates
+a control.
 
 ---
 
