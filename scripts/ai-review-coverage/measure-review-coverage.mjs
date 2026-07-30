@@ -159,9 +159,19 @@ export function buildCoverage({ diffText, env = {}, context = {}, inventoryCap =
 
   if (!notReviewed) {
     if (inputTokens === null) {
+      // EHAC-2099: name the elek conclusion here. "no evidence a prompt was built" is true
+      // but reads as prompt-budget exhaustion, which is what it was first misdiagnosed as on
+      // eha_care #3530 — the real cause was `conclusion: skipped`, i.e. elek declined at
+      // detectTrigger and never looked at the diff. The conclusion is already in scope.
+      //
+      // Deliberately NOT routed to NOT_REVIEWED, however loudly `skipped` invites it:
+      // computeNotReviewed above is derived from OUR OWN inputs and never from an empty elek
+      // output precisely because that would be a fail-open. `skipped` is elek's own output,
+      // so trusting it here would convert a correctly-red gate into a green one — the exact
+      // inversion this gate exists to prevent. Exit code stays 1; only the message improves.
       addUnknown(
         'U5',
-        'review input_tokens is absent or 0 — no evidence a review prompt was ever built.',
+        `review input_tokens is absent or 0 — no evidence a review prompt was ever built (elek reported conclusion "${conclusion ?? 'unset'}"${conclusion === 'skipped' ? '; "skipped" means elek declined at trigger detection and never read the diff' : ''}).`,
       );
     }
     if (!executed) {
