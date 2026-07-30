@@ -71,6 +71,21 @@ on:
           default is "@pi"; EHA standardizes on "@ai-review" (used in PR templates
           and the on-demand workflow gate). Without this, elek looks for "@pi",
           finds nothing, and exits "No trigger detected" — posting no review.
+
+          EHAC-2099 — this description previously stopped at the sentence above, which
+          names only HALF the failure mode. Setting the phrase is necessary but NOT
+          sufficient: `detectTrigger` (elek src/github/trigger.ts:24) searches for it in
+          `triggerText`, and on a `pull_request` event that text is the PR BODY. So a
+          correctly-configured phrase still yields "No trigger detected" whenever the body
+          does not happen to contain it. Auto-review therefore worked only because
+          eha_care's .github/pull_request_template.md carries "@ai-review" in its footer;
+          any hand-written body silently skipped review while this job reported pass
+          (observed on eha_care #3530: elek exited in 1.98s, conclusion "skipped").
+
+          As of EHAC-2099 this input NO LONGER governs the pull_request path at all — the
+          `prompt` passed to the elek step below short-circuits trigger detection for PR
+          events. It still governs the comment paths (issue_comment /
+          pull_request_review_comment) used by ai-review-on-demand.yml.
       thinking:
         type: string
         default: 'high'
@@ -201,6 +216,36 @@ jobs:
           # Primary/fallback model + reasoning knobs.
           model: ${{ inputs.model }}
           trigger_phrase: ${{ inputs.trigger_phrase }}
+          # EHAC-2099: make the PR-event trigger EXPLICIT instead of incidental.
+          #
+          # `detectTrigger` (elek src/github/trigger.ts:11-46) fires only on a non-empty
+          # `prompt`, on the trigger phrase appearing in `triggerText`, or on a `pi` label.
+          # On a pull_request event `triggerText` is the PR BODY, so before this line
+          # auto-review depended entirely on the caller repo's PR template happening to
+          # contain "@ai-review". A hand-written body meant elek exited in ~2s with
+          # `conclusion: skipped` while this job still reported pass (eha_care #3530; 12 of
+          # its 15 preceding merged PRs also had no phrase in the body). A non-empty prompt
+          # short-circuits detection at run.ts:16-18, before it can return null.
+          #
+          # It is also load-bearing that detection runs at run.ts:108 — BEFORE resolveMode
+          # (205) and resolveReviewPlan (217) — so `mode: review` never bypassed this.
+          #
+          # THE CONDITIONAL IS LOAD-BEARING; DO NOT MAKE THIS UNCONDITIONAL. On the
+          # issue_comment / pull_request_review_comment paths (ai-review-on-demand.yml) a
+          # non-empty prompt wins at run.ts:16-18 and would DISCARD the reviewer's own
+          # words — the comment text is what becomes `userRequest` -> buildPrompt
+          # (run.ts:463). "@ai-review focus only on the SQL in ehr-db.ts" would silently
+          # become this generic sentence. workflow-invariants.test.mjs asserts both that
+          # the prompt exists AND that it stays gated on pull_request.
+          #
+          # The sentence is copied verbatim from eha_care's PR template footer, so a forced
+          # review is byte-identical to a template-kept one: this RESTORES the intended
+          # behaviour rather than changing what the reviewer is asked to do.
+          #
+          # Bots are unaffected: isActorAllowed runs AFTER trigger detection (run.ts:116),
+          # so an unlisted bot still declines and the NOT_REVIEWED path that keeps Renovate
+          # from becoming a permanent red is untouched.
+          prompt: ${{ github.event_name == 'pull_request' && 'Please review this PR for correctness, security, and potential issues.' || '' }}
           thinking: ${{ inputs.thinking }}
           max_turns: ${{ inputs.max_turns }}
           mode: ${{ inputs.mode }}

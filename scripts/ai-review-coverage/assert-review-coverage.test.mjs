@@ -172,6 +172,51 @@ describe('UNKNOWN branches — every one exits non-zero', () => {
     expectUnknown({ COVERAGE_JSON: JSON.stringify(base) }, 'U5');
   });
 
+  // EHAC-2099 — the eha_care #3530 shape: elek declined at detectTrigger, so it exited 0
+  // with conclusion "skipped", no input tokens and no cost, having never read the diff.
+  describe('U5: elek declined at trigger detection (conclusion "skipped")', () => {
+    const declined = () => {
+      const base = JSON.parse(payload());
+      base.review = { conclusion: 'skipped', input_tokens: null, cost_usd: 0 };
+      base.strategy = { requested: 'council', executed: null, match: null };
+      return JSON.stringify(base);
+    };
+
+    it('exits 1 — a review that never started cannot certify anything', () => {
+      // The point of the case: `skipped` must NOT be mistaken for a deliberate decline and
+      // routed to NOT_REVIEWED (exit 0). That would be a fail-open on elek's own output.
+      expectUnknown({ COVERAGE_JSON: declined() }, 'U5');
+    });
+
+    it('names the conclusion in the message instead of only "no evidence"', () => {
+      const result = run({ COVERAGE_JSON: declined() });
+      expect(result.stdout).toContain('conclusion "skipped"');
+      // The actionable half: say what "skipped" means, so the next reader does not spend the
+      // investigation on prompt-budget truncation the way #3530's did.
+      expect(result.stdout).toMatch(/declined at trigger detection/);
+    });
+
+    it('reports "unset" rather than "undefined" when no conclusion was recorded', () => {
+      const base = JSON.parse(payload());
+      base.review = { input_tokens: null };
+      const result = run({ COVERAGE_JSON: JSON.stringify(base) });
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('conclusion "unset"');
+      expect(result.stdout).not.toContain('undefined');
+    });
+
+    it('still exits 0 when an allowlisted NOT_REVIEWED reason accompanies it', () => {
+      // A bot PR also yields no input tokens. The existing precheck must keep winning, so
+      // the sharper message does not turn Renovate into a permanent red.
+      const base = JSON.parse(payload());
+      base.review = { conclusion: 'skipped', input_tokens: 0, cost_usd: 0 };
+      base.not_reviewed = { reason: 'actor_is_bot_not_allowlisted', actor: 'renovate[bot]' };
+      const result = run({ COVERAGE_JSON: JSON.stringify(base) });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('NOT_REVIEWED');
+    });
+  });
+
   it('U6: a changed-file path parsed as (unknown)', () => {
     expectUnknown({ COVERAGE_JSON: withRollup({ unknown_paths: 1 }) }, 'U6');
   });

@@ -180,6 +180,58 @@ describe('the elek step matches the verified budget model', () => {
   });
 });
 
+/**
+ * EHAC-2099 — the trigger must not depend on PR-description prose.
+ *
+ * `detectTrigger` (elek src/github/trigger.ts:11-46) returns null unless `prompt` is
+ * non-empty, the phrase is in `triggerText` (the PR BODY on a pull_request event), or a `pi`
+ * label is present. Auto-review therefore rode on the caller's PR template containing
+ * "@ai-review"; a hand-written body silently skipped review while the job reported pass.
+ *
+ * These assertions read the YAML because the defect is invisible from the JavaScript: there
+ * is no unit test of elek, and the only artefact that decides whether a review happens at
+ * all is this one expression.
+ */
+describe('the elek step forces a trigger on PR events without hijacking comment requests', () => {
+  /** The single `prompt:` line passed to the elek step. */
+  const promptLine = () => {
+    const match = source().match(/^ {10}prompt: (.+?)\s*$/m);
+    if (!match) throw new Error('no `prompt:` input is passed to the elek step');
+    return match[1];
+  };
+
+  it('passes a prompt to elek at all', () => {
+    // Without this, a PR whose body lacks the trigger phrase is never reviewed and the
+    // check still reports pass. This is the assertion that would have caught #3530.
+    expect(() => promptLine()).not.toThrow();
+  });
+
+  it('gates the prompt on pull_request, so a reviewer’s own comment text survives', () => {
+    // NOT cosmetic. An unconditional prompt wins at run.ts:16-18 on the issue_comment and
+    // pull_request_review_comment paths, discarding the words the reviewer actually typed —
+    // "@ai-review focus only on X" would silently become the generic sentence, with no
+    // symptom anywhere. This is the guard against "simplifying" the conditional away.
+    const line = promptLine();
+    expect(line).toContain("github.event_name == 'pull_request'");
+    // A ternary/`||` fallback, so non-PR events resolve to empty rather than to the sentence.
+    expect(line).toMatch(/\|\|\s*''\s*\}\}$/);
+  });
+
+  it('asks for a review rather than some unrelated instruction', () => {
+    expect(promptLine()).toMatch(/review this pr/i);
+  });
+
+  it('still passes trigger_phrase, which continues to govern the comment paths', () => {
+    expect(source()).toMatch(/^ {10}trigger_phrase: \$\{\{ inputs\.trigger_phrase \}\}\s*$/m);
+  });
+
+  it('documents that setting trigger_phrase is necessary but not sufficient', () => {
+    // The old description named only the "you forgot to set trigger_phrase" half, which is
+    // how the body-text dependency stayed invisible through two EHAC-2057 passes.
+    expect(source()).toMatch(/necessary but NOT\s*\n?\s*#?\s*sufficient/);
+  });
+});
+
 describe('the tests workflow is itself unsuppressed', () => {
   it('has no error-suppression key', () => {
     const text = withoutComments(readFileSync(TESTS_WORKFLOW, 'utf8'));

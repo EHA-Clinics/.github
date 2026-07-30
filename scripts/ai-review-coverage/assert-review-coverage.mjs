@@ -75,9 +75,23 @@ export function deriveUnknownBranches(coverage) {
   if (!notReviewed) {
     const inputTokens = num(coverage?.review?.input_tokens);
     if (inputTokens === null || inputTokens <= 0) {
+      // EHAC-2099: include the elek conclusion the record already carries. The bare message
+      // reads as prompt-budget exhaustion and was misdiagnosed that way on eha_care #3530,
+      // where the true cause was `conclusion: "skipped"` — elek declined at detectTrigger
+      // and never read the diff. Naming it turns a ~40-minute investigation into one line.
+      //
+      // Still UNKNOWN, still exit 1. `skipped` is elek's OWN output, and treating an empty
+      // elek output as a deliberate decline is the fail-open that computeNotReviewed
+      // (measure-review-coverage.mjs) exists to avoid; routing it to NOT_REVIEWED would turn
+      // this correctly-red gate green.
+      const conclusion = coverage?.review?.conclusion ?? null;
+      const hint =
+        conclusion === 'skipped'
+          ? ' — "skipped" means elek declined at trigger detection (no trigger phrase in the PR body, or the actor was not allowed) and never read the diff'
+          : '';
       add(
         'U5',
-        'U5 review input_tokens is absent or 0 — there is no evidence a review prompt was ever built.',
+        `U5 review input_tokens is absent or 0 — there is no evidence a review prompt was ever built (elek reported conclusion "${conclusion ?? 'unset'}"${hint}).`,
       );
     }
   }
