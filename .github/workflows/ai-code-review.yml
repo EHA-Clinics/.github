@@ -512,11 +512,36 @@ jobs:
           # code change underneath a pinned caller — the exact pin-drift class EHAC-2057 is
           # about. EHA-Clinics/.github is PUBLIC, so the default GITHUB_TOKEN reads it from
           # either private caller and no new secret is introduced.
-          ref: cb3ebae6f0196585e9194b3d1b63128210efd812
+          ref: 33a5d280515531b39f752a695926df0a913893dd
           path: .ai-review-gate
           sparse-checkout: scripts/ai-review-coverage
           persist-credentials: false
           fetch-depth: 1
+
+      - name: Check caller workflow shape
+        # EHAC-2060/EHAC-2167. Runs in the REVIEW job because that is the only place both
+        # trees exist at once: the calling repo is checked out at the workspace root (step
+        # "Checkout PR") and this repo's gate scripts are in .ai-review-gate (the step above).
+        #
+        # WARN-ONLY for now, deliberately. This is a new signal landing across twelve repos
+        # simultaneously; making it fail closed on day one would red PRs that have nothing to
+        # do with the change that introduced it. Promote by setting CALLER_SHAPE_MODE to
+        # 'enforce' once every caller reports clean — the same staged path the coverage gate
+        # itself took.
+        #
+        # `if: always()` is load-bearing: the shape of the caller is exactly what needs
+        # reporting when the review DIED, and a step defaulting to success() would skip then.
+        # NO `continue-on-error:` here, deliberately. That key is an error SUPPRESSOR — it
+        # makes a failing step report green — and it is one of the two mechanisms
+        # workflow-invariants.test.mjs exists to reject, because it is how EHAC-2057 became a
+        # gate that could not fail. Warn-vs-enforce is carried by CALLER_SHAPE_MODE, which
+        # controls the script's exit code honestly. When this is promoted to 'enforce' it
+        # must go red, and no suppressor may be sitting here to stop it.
+        if: always()
+        env:
+          CALLER_WORKFLOWS_DIR: .github/workflows
+          CALLER_SHAPE_MODE: warn
+        run: node .ai-review-gate/scripts/ai-review-coverage/assert-caller-shape.mjs
 
       - name: Measure review coverage
         id: coverage
@@ -568,7 +593,7 @@ jobs:
         with:
           repository: EHA-Clinics/.github
           # Same pinned SHA as the producer, for the same reason (T-2057-01).
-          ref: cb3ebae6f0196585e9194b3d1b63128210efd812
+          ref: 33a5d280515531b39f752a695926df0a913893dd
           path: .ai-review-gate
           sparse-checkout: scripts/ai-review-coverage
           persist-credentials: false
