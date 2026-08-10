@@ -42,7 +42,16 @@ export const DEFAULT_INVENTORY_CAP = 250;
 export const NOT_REVIEWED_REASONS = Object.freeze([
   'actor_not_in_actor_filter',
   'actor_is_bot_not_allowlisted',
+  // EHAC-2060. Both are decided by the `Resolve review scope` step BEFORE elek is invoked,
+  // from the changed-file list and the draft flag — never inferred from an empty elek output.
+  // They exist so a PR the review does not apply to yields a GREEN check rather than NO
+  // check: a required context that is never reported blocks the PR forever.
+  'no_files_in_review_scope',
+  'pull_request_is_draft',
 ]);
+
+/** The subset of NOT_REVIEWED_REASONS that the workflow decides, not the actor precheck. */
+export const SCOPE_SKIP_REASONS = Object.freeze(['no_files_in_review_scope', 'pull_request_is_draft']);
 
 /** Git settings we pin explicitly and record, so the measurement is reproducible. */
 export const GIT_CONFIG = Object.freeze({ 'core.autocrlf': 'false', 'diff.noprefix': 'false' });
@@ -59,12 +68,22 @@ const asPositiveInt = (value) => {
  * actor), never inferred from an empty elek output. A review that demonstrably happened
  * (input tokens > 0) always wins — otherwise this branch would be a fail-open.
  *
- * @param {{actorFilter: string, actor: string, inputTokens: number|null}} args
+ * @param {{actorFilter: string, actor: string, inputTokens: number|null, skipReason?: string}} args
  * @returns {{reason: string, actor: string}|null}
  */
-export function computeNotReviewed({ actorFilter, actor, inputTokens }) {
+export function computeNotReviewed({ actorFilter, actor, inputTokens, skipReason = '' }) {
   if (inputTokens && inputTokens > 0) return null; // a review did happen — audit it
   const who = String(actor ?? '').trim();
+
+  // EHAC-2060 — the workflow decided, before invoking elek, that no review applied. Checked
+  // after the inputTokens guard above so a review that demonstrably ran can never be
+  // explained away by a stale skip reason, and validated against the closed allowlist so a
+  // typo or an injected value degrades to UNKNOWN rather than to a silent pass.
+  const skip = String(skipReason ?? '').trim();
+  if (skip !== '' && SCOPE_SKIP_REASONS.includes(skip)) {
+    return { reason: skip, actor: who || null };
+  }
+
   if (who === '') return null;
 
   // elek's `allowed_bots` defaults to empty, so an unlisted bot declines regardless of
@@ -246,6 +265,7 @@ export function buildCoverage({ diffText, env = {}, context = {}, inventoryCap =
     actorFilter: env.ACTOR_FILTER,
     actor,
     inputTokens,
+    skipReason: env.SKIP_REASON,
   });
 
   if (!notReviewed) {

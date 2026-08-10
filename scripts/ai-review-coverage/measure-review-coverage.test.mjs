@@ -5,7 +5,13 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { ELEK_REF_VERIFIED, parseUnifiedDiffFiles } from './elek-prompt-budget.mjs';
-import { buildCoverage, deriveModels, renderJobSummary } from './measure-review-coverage.mjs';
+import {
+  NOT_REVIEWED_REASONS,
+  SCOPE_SKIP_REASONS,
+  buildCoverage,
+  deriveModels,
+  renderJobSummary,
+} from './measure-review-coverage.mjs';
 
 const FIXTURES = join(import.meta.dirname, 'fixtures');
 const fixturePath = (name) => join(FIXTURES, name);
@@ -274,6 +280,63 @@ describe('buildCoverage — strategy facts come from review_summary_json when pr
     expect(coverage.strategy.executed).toBe('crosscheck');
     expect(coverage.verdict).toBe('UNKNOWN');
     expect(coverage.unknown_reasons.map((r) => r.branch)).toContain('U3');
+  });
+});
+
+describe('scope skip reasons make an inapplicable review REPORTABLE (EHAC-2060)', () => {
+  // The promotion blocker in one sentence: on eha_care #3574/#3576/#3554 no AI Review
+  // Coverage check run existed at all, and a required context that is never reported blocks
+  // the PR forever. These cases prove the check can now be GREEN instead of ABSENT.
+  const noReviewEnv = (over = {}) =>
+    healthyEnv({ REVIEW_INPUT_TOKENS: '', REVIEW_CONCLUSION: 'skipped', ...over });
+
+  it('an out-of-scope PR yields NOT_REVIEWED, not UNKNOWN', () => {
+    const coverage = buildCoverage({
+      diffText: read('small-complete.diff'),
+      env: noReviewEnv({ SKIP_REASON: 'no_files_in_review_scope' }),
+      context: healthyContext({ changedFilesApi: 2 }),
+    });
+    expect(coverage.verdict).toBe('NOT_REVIEWED');
+    expect(coverage.not_reviewed.reason).toBe('no_files_in_review_scope');
+  });
+
+  it('a draft PR yields NOT_REVIEWED, not UNKNOWN', () => {
+    const coverage = buildCoverage({
+      diffText: read('small-complete.diff'),
+      env: noReviewEnv({ SKIP_REASON: 'pull_request_is_draft' }),
+      context: healthyContext({ changedFilesApi: 2 }),
+    });
+    expect(coverage.verdict).toBe('NOT_REVIEWED');
+    expect(coverage.not_reviewed.reason).toBe('pull_request_is_draft');
+  });
+
+  // The fail-open this could so easily have been. A skip reason must never be able to
+  // explain away a review that demonstrably ran, or any PR could be waved through by
+  // setting one env var.
+  it('a skip reason NEVER suppresses a review that actually ran', () => {
+    const coverage = buildCoverage({
+      diffText: read('pr-3515.diff'),
+      env: healthyEnv({ SKIP_REASON: 'no_files_in_review_scope' }),
+      context: healthyContext(),
+    });
+    expect(coverage.not_reviewed).toBeNull();
+    expect(coverage.verdict).toBe('PARTIAL_SOURCE');
+  });
+
+  it('an unrecognised skip reason degrades to UNKNOWN, never to a pass', () => {
+    const coverage = buildCoverage({
+      diffText: read('small-complete.diff'),
+      env: noReviewEnv({ SKIP_REASON: 'because_i_said_so' }),
+      context: healthyContext({ changedFilesApi: 2 }),
+    });
+    expect(coverage.not_reviewed).toBeNull();
+    expect(coverage.verdict).toBe('UNKNOWN');
+  });
+
+  it('every scope skip reason is inside the closed allowlist', () => {
+    for (const reason of SCOPE_SKIP_REASONS) {
+      expect(NOT_REVIEWED_REASONS).toContain(reason);
+    }
   });
 });
 
