@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { ELEK_REF_VERIFIED, parseUnifiedDiffFiles } from './elek-prompt-budget.mjs';
-import { buildCoverage } from './measure-review-coverage.mjs';
+import { buildCoverage, deriveModels, renderJobSummary } from './measure-review-coverage.mjs';
 
 const FIXTURES = join(import.meta.dirname, 'fixtures');
 const fixturePath = (name) => join(FIXTURES, name);
@@ -274,6 +274,90 @@ describe('buildCoverage — strategy facts come from review_summary_json when pr
     expect(coverage.strategy.executed).toBe('crosscheck');
     expect(coverage.verdict).toBe('UNKNOWN');
     expect(coverage.unknown_reasons.map((r) => r.branch)).toContain('U3');
+  });
+});
+
+describe('deriveModels — per-lens ground truth (EHAC-2162, EHAC-2103)', () => {
+  // The real modelRuns from eha_care PR #3564, run 31223046934.
+  const PR_3564_RUNS = [
+    { role: 'reviewer', lensId: 'risk', modelLabel: 'deepseek/deepseek-v4-pro', conclusion: 'success' },
+    { role: 'reviewer', lensId: 'design', modelLabel: 'xiaomi/mimo-v2.5-pro', conclusion: 'success' },
+    { role: 'reviewer', lensId: 'tests', modelLabel: 'openrouter/z-ai/glm-5.1', conclusion: 'failure' },
+    { role: 'reviewer', lensId: 'operations', modelLabel: 'deepseek/deepseek-v4-pro', conclusion: 'success' },
+    { role: 'validator-review', lensId: 'validator-self-review', modelLabel: 'openrouter/z-ai/glm-5.1', conclusion: 'failure' },
+    { role: 'validator', modelLabel: 'openrouter/z-ai/glm-5.1', conclusion: 'success' },
+  ];
+
+  it('counts failed reviewer lenses and failed validator runs separately', () => {
+    const models = deriveModels({ modelRuns: PR_3564_RUNS });
+    expect(models.rollup.runs_total).toBe(6);
+    expect(models.rollup.reviewer_lenses_total).toBe(4);
+    expect(models.rollup.reviewer_lenses_failed).toBe(1);
+    expect(models.rollup.validator_runs_total).toBe(2);
+    expect(models.rollup.validator_runs_failed).toBe(1);
+    expect(models.rollup.failed_lens_ids).toEqual(['tests', 'validator-self-review']);
+  });
+
+  it('records GLM among the distinct models even though the posted comment erases it', () => {
+    const models = deriveModels({ modelRuns: PR_3564_RUNS });
+    // The whole point of EHAC-2103: elek's comment rewrote every GLM mention to the deepseek
+    // label. modelRuns did not, so the gate can still see all three models.
+    expect(models.distinct_models).toEqual([
+      'deepseek/deepseek-v4-pro',
+      'openrouter/z-ai/glm-5.1',
+      'xiaomi/mimo-v2.5-pro',
+    ]);
+  });
+
+  it('treats an absent or unrecognised conclusion as not-success, never as a pass', () => {
+    const models = deriveModels({
+      modelRuns: [
+        { role: 'reviewer', lensId: 'risk', modelLabel: 'm', conclusion: 'success' },
+        { role: 'reviewer', lensId: 'design', modelLabel: 'm' },
+        { role: 'reviewer', lensId: 'tests', modelLabel: 'm', conclusion: 'timeout' },
+      ],
+    });
+    expect(models.rollup.reviewer_lenses_failed).toBe(2);
+  });
+
+  it('returns runs: null when the summary carries no modelRuns array', () => {
+    expect(deriveModels({ run: { conclusion: 'success' } }).runs).toBeNull();
+    expect(deriveModels(null).runs).toBeNull();
+  });
+
+  it('records the configured council alongside the observed one', () => {
+    const models = deriveModels(
+      { modelRuns: PR_3564_RUNS },
+      { REVIEW_MODELS: 'deepseek/deepseek-v4-pro, xiaomi/mimo-v2.5-pro', VALIDATOR_MODEL: 'openrouter/z-ai/glm-5.1' },
+    );
+    expect(models.configured.review_models).toEqual(['deepseek/deepseek-v4-pro', 'xiaomi/mimo-v2.5-pro']);
+    expect(models.configured.validator_model).toBe('openrouter/z-ai/glm-5.1');
+  });
+
+  it('buildCoverage attaches the models block, and renderJobSummary publishes it', () => {
+    const coverage = buildCoverage({
+      diffText: read('small-complete.diff'),
+      env: healthyEnv({
+        REVIEW_SUMMARY_JSON: JSON.stringify({
+          run: { conclusion: 'success' },
+          entity: { actor: 'adothompson', event: 'pull_request' },
+          review: { requestedStrategy: 'council', executedStrategy: 'council' },
+          cost: { inputTokens: 83_000 },
+          modelRuns: PR_3564_RUNS,
+        }),
+        REVIEW_MODELS: 'deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,openrouter/z-ai/glm-5.1',
+        VALIDATOR_MODEL: 'openrouter/z-ai/glm-5.1',
+      }),
+      context: healthyContext({ changedFilesApi: 2 }),
+    });
+    expect(coverage.models.rollup.reviewer_lenses_failed).toBe(1);
+
+    const summary = renderJobSummary(coverage);
+    expect(summary).toContain('Model attribution');
+    // The attribution must NAME the model the posted comment erases.
+    expect(summary).toContain('openrouter/z-ai/glm-5.1');
+    expect(summary).toContain('validator-self-review');
+    expect(summary).toContain('Distinct models observed:** 3');
   });
 });
 

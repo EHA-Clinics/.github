@@ -54,6 +54,29 @@ const payload = (over = {}) =>
       prompt_chars: 14_700,
     },
     review: { conclusion: 'success', input_tokens: 83_000, cost_usd: 0.0496 },
+    // A healthy council: three distinct models, every run succeeded. Mirrors the real
+    // modelRuns shape from elek review_summary_json (EHAC-2162 / EHAC-2103).
+    models: {
+      runs: [
+        { role: 'reviewer', lens_id: 'risk', model_label: 'deepseek/deepseek-v4-pro', conclusion: 'success' },
+        { role: 'reviewer', lens_id: 'design', model_label: 'xiaomi/mimo-v2.5-pro', conclusion: 'success' },
+        { role: 'reviewer', lens_id: 'tests', model_label: 'openrouter/z-ai/glm-5.1', conclusion: 'success' },
+        { role: 'validator', lens_id: null, model_label: 'openrouter/z-ai/glm-5.1', conclusion: 'success' },
+      ],
+      configured: {
+        review_models: ['deepseek/deepseek-v4-pro', 'xiaomi/mimo-v2.5-pro', 'openrouter/z-ai/glm-5.1'],
+        validator_model: 'openrouter/z-ai/glm-5.1',
+      },
+      distinct_models: ['deepseek/deepseek-v4-pro', 'openrouter/z-ai/glm-5.1', 'xiaomi/mimo-v2.5-pro'],
+      rollup: {
+        runs_total: 4,
+        reviewer_lenses_total: 3,
+        reviewer_lenses_failed: 0,
+        validator_runs_total: 1,
+        validator_runs_failed: 0,
+        failed_lens_ids: [],
+      },
+    },
     rollup: {
       files_total: 2,
       whole: 2,
@@ -115,6 +138,29 @@ describe('coverage verdicts -> exit codes', () => {
     expect(result.stdout).not.toContain('U2');
   });
 
+  // EHAC-2162 — GREEN on known-good. A full council where every run succeeded must pass, or
+  // U7 would be a gate that cannot pass rather than one that cannot fail.
+  it('a healthy council where every model run succeeded exits 0 without U7', () => {
+    const base = JSON.parse(payload());
+    expect(base.models.runs.every((r) => r.conclusion === 'success')).toBe(true);
+    const result = run({ COVERAGE_JSON: JSON.stringify(base) });
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('U7');
+  });
+
+  // EHAC-2162 — absent modelRuns must NOT red when no review ran at all. That case is already
+  // U5's (or NOT_REVIEWED's) to report; double-reporting it would make every Renovate PR red.
+  it('a NOT_REVIEWED record with no modelRuns still exits 0 — U7 does not double-report', () => {
+    const base = JSON.parse(payload());
+    base.verdict = 'NOT_REVIEWED';
+    base.not_reviewed = { reason: 'actor_is_bot_not_allowlisted', actor: 'renovate[bot]' };
+    base.models.runs = null;
+    base.review = { conclusion: 'skipped', input_tokens: null, cost_usd: 0, actor: 'renovate[bot]', event: 'pull_request' };
+    const result = run({ COVERAGE_JSON: JSON.stringify(base) });
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('U7');
+  });
+
   it('never posts a PR comment (elek’s sticky comment is the review surface)', () => {
     const result = run({ COVERAGE_JSON: payload() });
     expect(result.stdout).not.toMatch(/gh (pr|api)/);
@@ -156,6 +202,43 @@ describe('UNKNOWN branches — every one exits non-zero', () => {
     expect(result.status).toBe(1);
     expect(result.stdout).toContain('U2');
     expect(result.stdout).toContain('does not report a measured file count');
+  });
+
+  // EHAC-2162 — RED on known-bad, reproducing the real defect verbatim.
+  //
+  // These are the actual modelRuns from eha_care PR #3564, run 31223046934: the `tests`
+  // reviewer lens and `validator-self-review` both returned conclusion "failure", the final
+  // validator succeeded, and the check reported "analysis complete" with a green coverage
+  // gate. Every other field below is HEALTHY — full diff coverage, matching strategy, no pin
+  // drift, positive input tokens — so this test can only red for the U7 reason.
+  it('U7: council lenses that failed while the aggregate conclusion says success', () => {
+    const base = JSON.parse(payload());
+    base.models.runs = [
+      { role: 'reviewer', lens_id: 'risk', model_label: 'deepseek/deepseek-v4-pro', conclusion: 'success' },
+      { role: 'reviewer', lens_id: 'design', model_label: 'xiaomi/mimo-v2.5-pro', conclusion: 'success' },
+      { role: 'reviewer', lens_id: 'tests', model_label: 'openrouter/z-ai/glm-5.1', conclusion: 'failure' },
+      { role: 'reviewer', lens_id: 'operations', model_label: 'deepseek/deepseek-v4-pro', conclusion: 'success' },
+      { role: 'validator-review', lens_id: 'validator-self-review', model_label: 'openrouter/z-ai/glm-5.1', conclusion: 'failure' },
+      { role: 'validator', lens_id: null, model_label: 'openrouter/z-ai/glm-5.1', conclusion: 'success' },
+    ];
+    // The aggregate elek reported for that run, and the reason the gate stayed green.
+    expect(base.review.conclusion).toBe('success');
+    expect(base.verdict).toBe('COMPLETE');
+
+    const result = run({ COVERAGE_JSON: JSON.stringify(base) });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('U7');
+    expect(result.stdout).toContain('tests');
+    expect(result.stdout).toContain('validator-self-review');
+    expect(result.stdout).toContain('2 of 6');
+  });
+
+  // EHAC-2162 — the gate must not accept "we cannot tell" as a pass either.
+  it('U7: modelRuns absent while the review reported input tokens', () => {
+    const base = JSON.parse(payload());
+    base.models.runs = null;
+    expect(base.review.input_tokens).toBeGreaterThan(0);
+    expectUnknown({ COVERAGE_JSON: JSON.stringify(base) }, 'U7');
   });
 
   it('U3: executed strategy differs from requested', () => {

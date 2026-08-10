@@ -6,7 +6,7 @@
  * error-suppression key) and turns the coverage record into an exit code, which is the only
  * thing GitHub converts into a check conclusion.
  *
- * IT DOES NOT TRUST THE UPSTREAM VERDICT STRING. Every UNKNOWN branch U1-U6 is
+ * IT DOES NOT TRUST THE UPSTREAM VERDICT STRING. Every UNKNOWN branch U1-U7 is
  * INDEPENDENTLY RE-DERIVED from the coverage record's own fields, and the PARTIAL/COMPLETE
  * verdict is RECOMPUTED from the rollup counts. Feeding it `verdict: "COMPLETE"` alongside
  * `source_partial: 1` still exits 1. A gate that rubber-stamps a verdict it was handed is
@@ -17,9 +17,16 @@
  * | COMPLETE            | every changed file WHOLE                            | 0 |
  * | PARTIAL_NON_SOURCE  | only priority >= 1 files PARTIAL/ABSENT              | 0 + ::warning:: |
  * | PARTIAL_SOURCE      | any priority 0 file PARTIAL/ABSENT                   | 1 + ::error:: |
- * | UNKNOWN             | any branch U1-U6                                    | 1 |
+ * | UNKNOWN             | any branch U1-U7                                    | 1 |
  * | NOT_REVIEWED        | deterministic, allowlisted reason only               | 0 + ::warning:: |
  * | —                   | needs.review.result in {failure,cancelled,skipped}   | 1 |
+ *
+ * Branches, and the defect each one exists to catch:
+ *   U1 elek pin drift        U2 empty/unmeasured diff      U3 strategy downgrade
+ *   U4 head-SHA mismatch     U5 record structurally incomplete / no prompt built
+ *   U6 unparseable file header
+ *   U7 a council model run that did not succeed (EHAC-2162) — the aggregate
+ *      `review.conclusion` can say "success" while individual lenses failed.
  *
  * It never posts a PR comment: elek's sticky comment is the review surface.
  *
@@ -148,6 +155,44 @@ export function deriveUnknownBranches(coverage) {
       'U6',
       `U6 ${unknownPaths} changed-file header(s) parsed as "(unknown)" — the inventory cannot claim to name every changed file.`,
     );
+  }
+
+  // U7 — a council lens that did not succeed (EHAC-2162).
+  //
+  // The gate previously audited only the AGGREGATE `review.conclusion`. On eha_care PR #3564
+  // (run 31223046934) the `tests` reviewer lens and `validator-self-review` BOTH returned
+  // conclusion "failure", the validator reconciled anyway, and the check reported "analysis
+  // complete" with full diff coverage. A 3-lens council that ran 2 lenses is the same defect
+  // as U3 — the check name reports work that did not happen — so it reds for the same reason.
+  //
+  // Re-derived from `models.runs` here rather than read from `models.rollup`, consistent with
+  // every other branch in this function: the producer's own arithmetic is never the authority.
+  const notReviewedForModels = coverage?.not_reviewed ?? null;
+  if (!notReviewedForModels) {
+    const runs = coverage?.models?.runs ?? null;
+    const inputTokensForModels = num(coverage?.review?.input_tokens);
+    if (!Array.isArray(runs)) {
+      // Absent modelRuns is only an unknown when a review demonstrably ran. Records from
+      // before this field existed, or from a genuinely skipped review, are already covered by
+      // U5 and must not be double-reported here.
+      if (inputTokensForModels !== null && inputTokensForModels > 0) {
+        add(
+          'U7',
+          'U7 the review reported input tokens but the coverage record carries no per-lens model runs — which models actually ran cannot be established.',
+        );
+      }
+    } else {
+      const failedRuns = runs.filter((r) => r?.conclusion !== 'success');
+      if (failedRuns.length > 0) {
+        const named = failedRuns
+          .map((r) => `${r?.lens_id ?? r?.role ?? '(unknown)'} (${r?.model_label ?? 'unknown model'} -> ${r?.conclusion ?? 'no conclusion'})`)
+          .join(', ');
+        add(
+          'U7',
+          `U7 ${failedRuns.length} of ${runs.length} council model run(s) did not succeed: ${named}. The review is degraded — part of the council never returned, so the check name overstates the work performed.`,
+        );
+      }
+    }
   }
 
   // Union with what the producer recorded, de-duplicated by message.

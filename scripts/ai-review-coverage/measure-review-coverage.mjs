@@ -84,6 +84,93 @@ export function computeNotReviewed({ actorFilter, actor, inputTokens }) {
 }
 
 /**
+ * Roles in elek's `review_summary_json.modelRuns[]`. A council run emits one `reviewer` entry
+ * per lens, one `validator-review` (the validator reviewing as a lens in its own right), and
+ * one final `validator` that reconciles and writes the comment.
+ */
+export const REVIEWER_ROLES = Object.freeze(['reviewer']);
+export const VALIDATOR_ROLES = Object.freeze(['validator', 'validator-review']);
+
+/**
+ * Derive the per-lens model record from elek's `review_summary_json.modelRuns[]` (EHAC-2162,
+ * EHAC-2103).
+ *
+ * Two separate defects motivate this, and they share one input:
+ *
+ * EHAC-2162 — the gate previously read only `summary.run.conclusion`, the AGGREGATE. A council
+ * run in which an individual reviewer lens returned `conclusion: "failure"` but the validator
+ * reconciled successfully still yielded `run.conclusion: "success"`, positive input_tokens and
+ * full diff coverage, so the gate reported COMPLETE / exit 0. Observed on eha_care PR #3564
+ * (run 31223046934): the `tests` lens AND `validator-self-review` both failed, and the check
+ * still said "analysis complete". That is the EHAC-2057 shape with a different first cause — a
+ * review that partially did not happen, reported as a review that did.
+ *
+ * EHAC-2103 — the posted comment cannot be used to verify which models ran. elek's
+ * `redactInternalModelLabels` rewrites the validator's label to the primary model's, so GLM is
+ * not merely missing from the attribution, it is erased and misattributed. `modelRuns[]` is the
+ * unmangled ground truth for the same run, so recording it here makes "three models reviewed
+ * this" a checkable claim rather than narration.
+ *
+ * The configured model list is recorded ALONGSIDE the observed one but deliberately NOT
+ * asserted against it yet. elek's `modelLabelFor` prefixes the provider (`deepseek/...` becomes
+ * `openrouter/deepseek/...`) while an already-qualified id such as `openrouter/z-ai/glm-5.1`
+ * passes through unchanged, and council lens labels come from `usage.modelLabel` rather than
+ * necessarily from `modelLabelFor(inputs)`. A naive set comparison would mismatch two of the
+ * three configured lenses on day one and emit a false red. False reds are how gates get
+ * disabled, so stage 1 observes and stage 2 asserts against measured strings.
+ *
+ * @param {any} summary Parsed `review_summary_json`, or null.
+ * @param {Record<string, string|undefined>} env
+ * @returns {any|null} null when the summary carries no usable modelRuns array.
+ */
+export function deriveModels(summary, env = {}) {
+  const list = (value) =>
+    String(value ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+  const configured = {
+    review_models: list(env.REVIEW_MODELS),
+    validator_model: String(env.VALIDATOR_MODEL ?? '').trim() || null,
+  };
+
+  const rawRuns = Array.isArray(summary?.modelRuns) ? summary.modelRuns : null;
+  if (!rawRuns) return { runs: null, configured, distinct_models: [], rollup: null };
+
+  const runs = rawRuns.map((r) => ({
+    role: typeof r?.role === 'string' ? r.role : null,
+    lens_id: typeof r?.lensId === 'string' ? r.lensId : null,
+    model_label: typeof r?.modelLabel === 'string' ? r.modelLabel : null,
+    // Anything that is not the literal string "success" is treated as not-success. An absent
+    // or unrecognised conclusion must not read as a pass — that is the defect class this gate
+    // exists to catch, and it would be perverse to reintroduce it here.
+    conclusion: typeof r?.conclusion === 'string' ? r.conclusion : null,
+    input_tokens: Number.isFinite(Number(r?.inputTokens)) ? Number(r.inputTokens) : null,
+    output_tokens: Number.isFinite(Number(r?.outputTokens)) ? Number(r.outputTokens) : null,
+    cost_usd: Number.isFinite(Number(r?.costUsd)) ? Number(r.costUsd) : null,
+  }));
+
+  const failed = (r) => r.conclusion !== 'success';
+  const reviewers = runs.filter((r) => REVIEWER_ROLES.includes(r.role));
+  const validators = runs.filter((r) => VALIDATOR_ROLES.includes(r.role));
+
+  return {
+    runs,
+    configured,
+    distinct_models: [...new Set(runs.map((r) => r.model_label).filter(Boolean))].sort(),
+    rollup: {
+      runs_total: runs.length,
+      reviewer_lenses_total: reviewers.length,
+      reviewer_lenses_failed: reviewers.filter(failed).length,
+      validator_runs_total: validators.length,
+      validator_runs_failed: validators.filter(failed).length,
+      failed_lens_ids: runs.filter(failed).map((r) => r.lens_id ?? r.role ?? '(unknown)'),
+    },
+  };
+}
+
+/**
  * Pure core: turn a diff plus the elek step's outputs into the coverage record.
  *
  * @param {{
@@ -149,6 +236,10 @@ export function buildCoverage({ diffText, env = {}, context = {}, inventoryCap =
     : null;
   const actor = summary?.entity?.actor || context.actor || '';
   const eventName = summary?.entity?.event || context.eventName || '';
+
+  // EHAC-2162 / EHAC-2103 — per-lens ground truth. Recorded unconditionally; the asserter
+  // re-derives its own verdict from `models.runs` rather than trusting the rollup below.
+  const models = deriveModels(summary, env);
 
   // ---- NOT_REVIEWED precheck ------------------------------------------------------
   const notReviewed = computeNotReviewed({
@@ -273,6 +364,7 @@ export function buildCoverage({ diffText, env = {}, context = {}, inventoryCap =
       actor: actor || null,
       event: eventName || null,
     },
+    models,
     rollup: attribution.rollup,
     inventory,
     inventory_truncated: attribution.files.length > inventory.length,
@@ -330,6 +422,10 @@ function unknownRecord(reasons, { env = {}, context = {} } = {}) {
       prompt_chars: null,
     },
     review: { conclusion: null, input_tokens: null, cost_usd: null, actor: null, event: null },
+    // Shape-consistent with buildCoverage so the asserter never has to special-case which
+    // producer path emitted the record. A null `runs` means "not measured", which the
+    // asserter's U7 treats as unknown when a review demonstrably ran — never as a pass.
+    models: { runs: null, configured: { review_models: [], validator_model: null }, distinct_models: [], rollup: null },
     rollup: null,
     inventory: [],
     inventory_truncated: false,
@@ -367,6 +463,52 @@ export function renderJobSummary(coverage) {
   }
   for (const reason of coverage.unknown_reasons ?? []) {
     lines.push(`> **${reason.branch}** — ${reason.message}`, '');
+  }
+
+  // EHAC-2103 — the truthful model attribution.
+  //
+  // elek's posted comment cannot be used to verify which models ran: redactInternalModelLabels
+  // rewrites the validator's label to the primary model's, so GLM is not omitted from the
+  // attribution but erased and misattributed, and the footer label compounds provider prefixes
+  // (`openrouter/openrouter/deepseek/openrouter/deepseek/deepseek-v4-pro`). That is upstream in
+  // elek and not fixable from here. `modelRuns[]` in the same run's review_summary_json is the
+  // unmangled ground truth, so this table — not the comment — is the evidence that N distinct
+  // models actually reviewed the PR.
+  const models = coverage.models ?? null;
+  if (Array.isArray(models?.runs) && models.runs.length > 0) {
+    lines.push(
+      '### Model attribution (ground truth, from `review_summary_json.modelRuns`)',
+      '',
+      '_The posted review comment misreports these — see EHAC-2103. This table is authoritative._',
+      '',
+      '| Role | Lens | Model | Result |',
+      '|---|---|---|---|',
+    );
+    for (const r of models.runs) {
+      const ok = r.conclusion === 'success';
+      lines.push(
+        `| \`${r.role ?? '?'}\` | \`${r.lens_id ?? '—'}\` | \`${r.model_label ?? '?'}\` | ${ok ? 'success' : `**${r.conclusion ?? 'no conclusion'}**`} |`,
+      );
+    }
+    lines.push(
+      '',
+      `**Distinct models observed:** ${models.distinct_models.length} — ${models.distinct_models.map((m) => `\`${m}\``).join(', ')}`,
+      '',
+    );
+    // Configured vs observed is REPORTED, not asserted. elek's modelLabelFor prefixes the
+    // provider for bare ids while leaving already-qualified ones alone, and council lens
+    // labels come from usage.modelLabel, so a set comparison would emit false reds until the
+    // real label forms have been measured across a range of PRs. Stage 2 of EHAC-2103 turns
+    // this into an assertion against measured strings; shipping it as one today is how a gate
+    // earns a reputation for crying wolf and gets switched off.
+    const configured = models.configured ?? { review_models: [], validator_model: null };
+    const configuredAll = [...configured.review_models, configured.validator_model].filter(Boolean);
+    if (configuredAll.length > 0) {
+      lines.push(
+        `**Configured:** ${configuredAll.map((m) => `\`${m}\``).join(', ')} — reported for comparison only; not yet asserted (EHAC-2103 stage 2).`,
+        '',
+      );
+    }
   }
 
   if ((coverage.inventory ?? []).length > 0) {

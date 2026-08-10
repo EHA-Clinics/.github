@@ -128,6 +128,16 @@ describe('the review job exports the coverage record', () => {
       new RegExp(`^ {10}ELEK_REF: ${ELEK_REF_VERIFIED}\\s*$`, 'm'),
     );
   });
+
+  // EHAC-2103 — the configured council must reach the PRODUCER, not just the elek step.
+  // Before this, review_models/validator_model were passed only to elek, so the coverage
+  // record had nothing to compare modelRuns against and the comment's model claims were
+  // structurally uncheckable. Dropping either line silently returns us to that state.
+  it('passes the configured council models to the producer', () => {
+    const block = review().block;
+    expect(block).toMatch(/^ {10}REVIEW_MODELS: \$\{\{ inputs\.review_models \}\}\s*$/m);
+    expect(block).toMatch(/^ {10}VALIDATOR_MODEL: \$\{\{ inputs\.validator_model \}\}\s*$/m);
+  });
 });
 
 describe('every cross-repo gate checkout is pinned to a SHA, never a branch', () => {

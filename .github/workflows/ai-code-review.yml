@@ -287,6 +287,12 @@ jobs:
           ELEK_REF: 3748508413fb355ae696b8fa98d1075930d12106
           REQUESTED_STRATEGY: ${{ inputs.review_strategy }}
           ACTOR_FILTER: ${{ inputs.actor_filter }}
+          # EHAC-2103: the CONFIGURED council, so the coverage record can put what we asked for
+          # next to what modelRuns says actually ran. Until now these values reached the elek
+          # step only, which is why the gate could not check the comment's model claims at all.
+          # Reported, not yet asserted — see renderJobSummary for why (label normalisation).
+          REVIEW_MODELS: ${{ inputs.review_models }}
+          VALIDATOR_MODEL: ${{ inputs.validator_model }}
           # For the `gh api repos/{repo}/pulls/{n}` lookup on the issue_comment path.
           GITHUB_TOKEN: ${{ github.token }}
         run: node .ai-review-gate/scripts/ai-review-coverage/measure-review-coverage.mjs
