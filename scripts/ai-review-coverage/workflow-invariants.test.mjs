@@ -234,6 +234,47 @@ describe('council model configuration', () => {
   });
 });
 
+describe('caller-shape guard is wired and cannot be silently suppressed (EHAC-2060)', () => {
+  it('runs assert-caller-shape.mjs from the pinned gate checkout', () => {
+    // Running it from anywhere but .ai-review-gate would execute a copy this repo does not
+    // pin, reintroducing the drift class the guard exists to detect.
+    expect(source()).toMatch(
+      /run: node \.ai-review-gate\/scripts\/ai-review-coverage\/assert-caller-shape\.mjs/,
+    );
+  });
+
+  it('declares a CALLER_SHAPE_MODE', () => {
+    expect(source()).toMatch(/^ {10}CALLER_SHAPE_MODE: (warn|enforce)$/m);
+  });
+
+  it('carries NO continue-on-error anywhere in the workflow', () => {
+    // The suppressor class. `continue-on-error` makes a FAILING step report green, which is
+    // precisely how EHAC-2057 became a gate that could not fail. Warn-vs-enforce is carried
+    // by CALLER_SHAPE_MODE and the script's exit code, never by hiding the failure.
+    expect(source()).not.toMatch(/continue-on-error:\s*true/);
+  });
+
+  it('runs the shape check with if: always()', () => {
+    // The caller's shape is exactly what needs reporting when the review DIED. A step with
+    // no `if:` defaults to success() and would skip in that case — the same defect that
+    // silently disabled the gate-script checkout on every failed review.
+    //
+    // The slice MUST end at the next step. An earlier version took a fixed 1,200-character
+    // window, which ran past this step into "Measure review coverage" — whose own
+    // `if: always()` satisfied the assertion. Deleting the line under test changed nothing
+    // and the test still passed: a check that could not fail, inside the very suite that
+    // exists to forbid checks that cannot fail. It was caught only by deleting the line and
+    // watching, and it is the reason this comment is longer than the assertion.
+    const yaml = source();
+    const idx = yaml.indexOf('- name: Check caller workflow shape');
+    expect(idx).toBeGreaterThan(-1);
+    const next = yaml.indexOf('\n      - name:', idx + 1);
+    const block = yaml.slice(idx, next === -1 ? yaml.length : next);
+    expect(block).not.toContain('- name: Measure review coverage'); // slice really is bounded
+    expect(block).toMatch(/^ {8}if: always\(\)$/m);
+  });
+});
+
 describe('every cross-repo gate checkout is pinned to a SHA, never a branch', () => {
   it('pins ref: to a 40-hex SHA in both gate checkouts', () => {
     const refs = [...source().matchAll(/^ {10}ref: (\S+)\s*$/gm)].map((m) => m[1]);
