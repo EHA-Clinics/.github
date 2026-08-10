@@ -137,6 +137,15 @@ on:
           eha_care #3515 (2,432 changed lines). At v1.1.4 the downgrade loop is gone
           and the threshold is warn-only, but we set it explicitly so the behaviour is
           self-documenting and pin-independent (CONTEXT D-05(i)).
+      disable_mcp:
+        type: string
+        default: '1'
+        description: >
+          EHAC-2165 workaround, defaulted ON because reviews are currently 100% broken without
+          it. '1' makes pi run --no-extensions so it never loads pi-mcp-adapter, whose
+          floating install has been failing every real review since 2026-08-09. Costs inline
+          comments; the sticky review comment is unaffected. Set to '0' once EHAC-2165 is
+          resolved (durable fix: an elek ref that installs with `npm ci` — see EHAC-2059).
       scope_paths:
         type: string
         default: ''
@@ -355,6 +364,38 @@ jobs:
           # and update_tracking_comment. No approve/merge/close code paths exist.
           # Path exclusion is no longer a workflow input — it lives in .elek.yml
           # ignore_paths (elek does not accept file-pattern inputs at this SHA).
+        env:
+          # EHAC-2165 — WORKAROUND for a live upstream outage. Every non-bot, in-scope review
+          # in both calling repos has failed since 2026-08-09 (eha-care-infra 17:41Z, eha_care
+          # 19:29Z) with:
+          #
+          #   pi failed: Failed to load extension ".../pi-mcp-adapter/index.ts":
+          #   Cannot find module '.../@earendil-works/pi-ai/dist/index.js/compat'
+          #
+          # Cause, read at this pin: elek's action.yml installs with
+          # `npm install --omit=dev --no-package-lock` — the lockfile is IGNORED, so
+          # pi-coding-agent's transitive @earendil-works/pi-ai floats to whatever is newest —
+          # and then runs `pi install npm:pi-mcp-adapter`, which fetches the LATEST adapter
+          # into ~/.pi rather than the 2.10.0 this package pins. A newly published pi-ai broke
+          # that pairing. Nothing changed on our side; our elek pin has not moved.
+          #
+          # ELEK_DISABLE_MCP=1 sets mcpEnabled=false (run.ts:210), so pi runs
+          # `--no-extensions` (pi.ts:474) and never loads the adapter. The failure disappears.
+          #
+          # HONEST COST: inline review comments (create_inline_comment) are lost while this is
+          # set. The sticky review comment is posted by elek's own code, not by the model
+          # through MCP, so the review body itself is unaffected — `commentId` is populated
+          # even on the currently-failing runs. A review without inline comments is strictly
+          # better than the zero reviews we have had for ~16 hours.
+          #
+          # REMOVE THIS once EHAC-2165 is resolved. The durable fix is elek main, which
+          # replaces the floating install with `npm ci --omit=dev` against a committed
+          # package-lock and loads the local pinned adapter — tracked in EHAC-2059, and worth
+          # doing for EHAC-2058 anyway (main raises MAX_FILE_SLICE_CHARS 4_000 -> 64_000 and
+          # drops the 80k full-diff threshold, which is the truncation prevention itself).
+          # That re-pin also invalidates our ported prompt-budget model, so it is its own
+          # piece of work rather than a drive-by bump.
+          ELEK_DISABLE_MCP: ${{ inputs.disable_mcp }}
 
       - name: Checkout coverage gate scripts
         # Placed AFTER elek so this extra directory is never in view of elek's read/grep
