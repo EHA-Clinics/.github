@@ -172,46 +172,53 @@ describe('the review job exports the coverage record', () => {
 
 // EHAC-2166 — the council model config, guarded on the two ways it has actually gone wrong.
 describe('council model configuration', () => {
-  // Deliberately version-AGNOSTIC. An earlier draft asserted a specific GLM version, which
-  // was the wrong shape: glm-5.2 had to be reverted within the hour (OpenRouter returned
-  // "404 No endpoints available matching your guardrail restrictions and data policy"), and a
-  // version-pinned invariant would then have blocked the revert that restored service. What
-  // must hold regardless of which version is configured is that its PRICE is configured too.
-  it('prices whichever GLM version it configures', () => {
+  // Model-AGNOSTIC by design. An earlier draft asserted a specific model version and was
+  // wrong twice over: glm-5.2 had to be reverted within the hour, and then GLM left the
+  // council entirely. A version-pinned invariant would have blocked both changes. What must
+  // hold whatever the council is made of: no cost_rates entry may name a model the council
+  // does not actually use.
+  it('carries no orphan cost_rates entry', () => {
     const yaml = withoutComments(source());
 
-    // Read the MODEL lines specifically rather than scanning the whole file. A scan with
-    // `glm-[\d.]+` also matches inside the cost_rates line, and because `[\d.]+` is greedy it
-    // backtracks past the `=` and yields the truncated id `glm-5.` — which would then never be
-    // found in the rates and would fail forever. Narrow beats clever here.
-    const modelLines = yaml
-      .split('\n')
-      .filter((l) => /^ {8}default: '[^']*'/.test(l) && !/=\d/.test(l));
-    const configured = modelLines.flatMap((l) =>
-      [...l.matchAll(/openrouter\/z-ai\/(glm-[0-9]+(?:\.[0-9]+)*)/g)].map((m) => m[1]),
+    // Read the model lines and the rates line separately. A whole-file scan is what let an
+    // earlier draft match inside the rates line and, through greedy backtracking past the
+    // `=`, yield a truncated id that could never be found again.
+    const defaults = yaml.split('\n').filter((l) => /^ {8}default: '[^']*'/.test(l));
+    const rateLine = defaults.find((l) => /=\d/.test(l));
+    const modelLines = defaults.filter((l) => !/=\d/.test(l));
+    expect(rateLine, 'cost_rates default not found').toBeDefined();
+
+    const configured = new Set(
+      modelLines.flatMap((l) => (l.match(/'([^']*)'/)?.[1] ?? '').split(',').map((s) => s.trim())),
     );
-    expect(configured.length, 'no GLM model configured').toBeGreaterThan(0);
+    const priced = (rateLine.match(/'([^']*)'/)?.[1] ?? '')
+      .split(',')
+      .map((e) => e.split('=')[0].trim())
+      .filter(Boolean);
+    expect(priced.length, 'cost_rates is empty').toBeGreaterThan(0);
 
-    const rates = yaml.match(/^ {8}default: '([^']*=[^']*)'\s*$/m);
-    expect(rates, 'cost_rates default not found').not.toBeNull();
-
-    // A rate that has drifted from the provider's real price is worse than no rate at all:
-    // max_cost_usd then enforces a budget against numbers that are not the price. The
-    // glm-5.1 entry read 0.98:3.08 for months while OpenRouter charged 1.40:4.40.
-    for (const version of new Set(configured)) {
-      expect(rates[1], `cost_rates does not price ${version}`).toContain(
-        `openrouter/z-ai/${version}=`,
-      );
+    // A rate for a model nobody runs is dead config that silently rots — which is exactly how
+    // `glm-5.1=0.98:3.08` survived for months while OpenRouter charged 1.40:4.40, leaving
+    // max_cost_usd enforcing a budget against numbers that were not the price.
+    for (const m of priced) {
+      expect([...configured], `cost_rates prices "${m}", which no lens or validator uses`).toContain(m);
     }
   });
 
-  it('provider-qualifies the GLM id so pi cannot self-route it to NVIDIA', () => {
-    // A bare `z-ai/*` id routes to NVIDIA (no key -> hang). deepseek/* and xiaomi/*
-    // already resolve to OpenRouter, so only GLM needs the explicit prefix.
+  it('does not use z-ai/glm-5.1 — it never converges (EHAC-2166)', () => {
+    // Measured: >620s with zero content on a payload deepseek answered in 6.7s, and still
+    // zero content at reasoning effort "low". Not repairable by configuration.
+    expect(withoutComments(source())).not.toContain('glm-5.1');
+  });
+
+  it('provider-qualifies any z-ai id, so pi cannot self-route it to NVIDIA', () => {
+    // A bare `z-ai/*` id routes to NVIDIA (no key -> hang); deepseek/* and xiaomi/* already
+    // resolve to OpenRouter. No z-ai model is configured today, so this currently holds
+    // vacuously — kept deliberately as a trap for whoever reintroduces one.
     const yaml = withoutComments(source());
-    for (const m of yaml.matchAll(/z-ai\/glm-[\d.]+/g)) {
+    for (const m of yaml.matchAll(/z-ai\/[a-z0-9.\-]+/g)) {
       const idx = m.index ?? 0;
-      expect(yaml.slice(Math.max(0, idx - 11), idx)).toContain('openrouter/');
+      expect(yaml.slice(Math.max(0, idx - 11), idx), `bare z-ai id at offset ${idx}`).toContain('openrouter/');
     }
   });
 });
