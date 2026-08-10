@@ -152,6 +152,16 @@ describe('the review job exports the coverage record', () => {
     expect(block).toMatch(/^ {10}SKIP_REASON: \$\{\{ steps\.scope\.outputs\.skip_reason \}\}\s*$/m);
   });
 
+  // EHAC-2060 — the producer's `if: always()` is worthless if its script is not on disk.
+  // A step with no `if:` defaults to success(), so before this the gate-script checkout
+  // skipped on every failed review and the producer died on "Cannot find module".
+  it('checks out the gate scripts even when the review failed', () => {
+    const block = review().block;
+    expect(block).toMatch(
+      /- name: Checkout coverage gate scripts\n(?: {8}#.*\n)* {8}if: always\(\)/,
+    );
+  });
+
   it('gates only the elek step on scope — never the job', () => {
     // A job-level `if:` here would skip the coverage job too (it `needs: review`), which is
     // exactly the absence-not-green failure this work exists to remove.
