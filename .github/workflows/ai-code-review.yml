@@ -100,12 +100,29 @@ on:
         description: 'elek review strategy. council = multi-lens review + validator reconciliation.'
       review_models:
         type: string
-        # GLM is provider-qualified as `openrouter/z-ai/glm-5.2`: in council mode elek omits
+        # GLM is provider-qualified as `openrouter/z-ai/glm-5.1`: in council mode elek omits
         # `--provider` for slashed ids (src/pi.ts), and pi self-routes a bare `z-ai/*` id to
         # NVIDIA (no key -> hang). The `openrouter/` prefix forces OpenRouter. deepseek/* and
         # xiaomi/* already resolve to OpenRouter, so only GLM needs the explicit prefix.
         #
-        # EHAC-2166: moved off glm-5.1, which TIMED OUT rather than errored. Measured across
+        # EHAC-2166 UPDATE — glm-5.2 was tried and REVERTED. It is blocked at the account
+        # level, not by anything in this workflow. Run 31385408995, verbatim:
+        #
+        #   pi failed: 404 No endpoints available matching your guardrail restrictions and
+        #   data policy. Configure: https://openrouter.ai/settings/privacy
+        #
+        # All three glm-5.2 runs failed in 1.1-4.4s with 1 turn and zero output — an immediate
+        # rejection, not the timeout below. That is STRICTLY WORSE than glm-5.1: the FINAL
+        # validator failed too, so run.conclusion was "failure" and no review comment posted at
+        # all, where glm-5.1 at least completes the review.
+        #
+        # glm-5.2 remains the right target on the merits (5x context, ~46% cheaper) and needs
+        # exactly one thing: the OpenRouter account's privacy / data-policy guardrails widened
+        # to admit its endpoints. Both models share most providers, so the public endpoints API
+        # does not show which are excluded — it is an account setting. Until then we stay on
+        # glm-5.1 and wear the timeouts described below.
+        #
+        # EHAC-2166: glm-5.1 TIMES OUT rather than erroring. Measured across
         # 10 reviews: 5 had a failed lens and all 9 failures were glm-5.1, on the two lenses it
         # is assigned. Run 31223046934 is the diagnosis, verbatim:
         #
@@ -119,16 +136,14 @@ on:
         # instead of six in ~half of all reviews while reporting "analysis complete" — a fact
         # only visible after EHAC-2162 shipped branch U7 to read modelRuns[].conclusion.
         #
-        # glm-5.2 is a strict improvement on every axis that plausibly bears on the timeout
-        # (OpenRouter, verified 2026-08-10): 1,048,576 context vs 204,800 — glm-5.1 was also
-        # the only council model under ~1M and therefore the prompt-budget bottleneck — at
-        # $0.76/M in and $2.42/M out vs $1.40/$4.40, i.e. ~46% cheaper. elek main's own
-        # modelInputBudgetChars() recognises glm-5.2 as a 540,000-char-budget model.
-        default: 'deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,openrouter/z-ai/glm-5.2'
+        # glm-5.1 is also the ONLY council model under ~1M context (204,800 vs ~1.05M for
+        # deepseek and mimo), so it is the prompt-budget bottleneck for the whole council as
+        # well as the unreliable member. Both facts resolve together once glm-5.2 is unblocked.
+        default: 'deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,openrouter/z-ai/glm-5.1'
         description: 'Comma-separated OpenRouter model ids for the council lenses (round-robin assigned).'
       validator_model:
         type: string
-        default: 'openrouter/z-ai/glm-5.2'
+        default: 'openrouter/z-ai/glm-5.1'
         description: 'Model that reconciles/validates lens findings before posting (openrouter/ prefix forces OpenRouter routing for the GLM id).'
       severity_threshold:
         type: string
@@ -141,12 +156,13 @@ on:
       cost_rates:
         type: string
         # EHAC-2166: re-derived from the OpenRouter models API on 2026-08-10, not carried over.
-        # The glm-5.1 entry these replace read 0.98:3.08 while OpenRouter charged 1.40:4.40, so
-        # every GLM run was costed ~30% under actual and max_cost_usd was enforcing a budget
-        # against numbers that were not the price. mimo's 0.435:0.87 was correct and is kept.
+        # This entry previously read 0.98:3.08 while OpenRouter charged 1.40:4.40, so every GLM
+        # run was costed ~30% under actual and max_cost_usd was enforcing a budget against
+        # numbers that were not the price. The correction stands independently of which GLM
+        # version we run. mimo's 0.435:0.87 was correct and is kept.
         # deepseek is also 0.435:0.87 and is omitted here for the same reason it always was —
         # elek only needs rates for models whose pricing it cannot resolve from the provider.
-        default: 'openrouter/z-ai/glm-5.2=0.76:2.42,xiaomi/mimo-v2.5-pro=0.435:0.87'
+        default: 'openrouter/z-ai/glm-5.1=1.40:4.40,xiaomi/mimo-v2.5-pro=0.435:0.87'
         description: 'Per-model cost rates as model=inputPerMillion:outputPerMillion, comma-separated.'
       mode:
         type: string
