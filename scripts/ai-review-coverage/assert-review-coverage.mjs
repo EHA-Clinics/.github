@@ -96,13 +96,27 @@ export function deriveUnknownBranches(coverage) {
     }
   }
 
-  // U2 — empty diff while the PR reports changed files.
+  // U2 — empty (or unmeasured) diff while the PR reports changed files.
+  //
+  // EHAC-2164: `num()` returns null for an absent field, and `null === 0` is false. The
+  // original `filesDiff === 0` therefore let a record that carries a valid rollup but no
+  // `diff.files_diff` slip past U2 entirely; U5's rollup check then passed and computeVerdict
+  // returned COMPLETE with exit 0. A MISSING value read as a PASS — the one construct in this
+  // gate where absence was treated as evidence of health.
+  //
+  // Absent and zero are different facts and are reported as such, but both are unknowns: we
+  // cannot establish coverage from either. This matches the fail-closed doctrine the rest of
+  // this file already follows (empty/unparseable COVERAGE_JSON is exit 1, not a pass).
   const filesDiff = num(coverage?.diff?.files_diff);
   const changedApi = num(coverage?.diff?.changed_files_api);
-  if (filesDiff === 0 && (changedApi === null || changedApi > 0)) {
+  if ((filesDiff === null || filesDiff === 0) && (changedApi === null || changedApi > 0)) {
+    const measured =
+      filesDiff === null
+        ? 'the coverage record does not report a measured file count'
+        : 'the measured diff contains 0 files';
     add(
       'U2',
-      `U2 the measured diff contains 0 files${changedApi ? ` while the pull request reports ${changedApi} changed file(s)` : ' and the pull-request changed-file count is unavailable'} — coverage cannot be established.`,
+      `U2 ${measured}${changedApi ? ` while the pull request reports ${changedApi} changed file(s)` : ' and the pull-request changed-file count is unavailable'} — coverage cannot be established.`,
     );
   }
 

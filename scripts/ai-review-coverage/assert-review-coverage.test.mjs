@@ -102,6 +102,19 @@ describe('coverage verdicts -> exit codes', () => {
     expect(result.stdout).toContain(`::error file=${SOURCE_FILE},line=1,title=AI review coverage::`);
   });
 
+  // EHAC-2164 — GREEN on known-good, the control for the U2 absent-vs-zero fix. A genuinely
+  // empty diff on a PR the API also reports as empty is not an unknown: there was nothing to
+  // cover. Without this the fix could not be distinguished from one that reds on every zero.
+  it('files_diff: 0 with changed_files_api: 0 still exits 0 — a real empty diff is not unknown', () => {
+    const base = JSON.parse(payload());
+    base.diff = { ...base.diff, files_diff: 0, changed_files_api: 0 };
+    base.rollup = { ...base.rollup, files_total: 0, whole: 0 };
+    base.inventory = [];
+    const result = run({ COVERAGE_JSON: JSON.stringify(base) });
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('U2');
+  });
+
   it('never posts a PR comment (elek’s sticky comment is the review surface)', () => {
     const result = run({ COVERAGE_JSON: payload() });
     expect(result.stdout).not.toMatch(/gh (pr|api)/);
@@ -128,6 +141,21 @@ describe('UNKNOWN branches — every one exits non-zero', () => {
     const base = JSON.parse(payload());
     base.diff = { ...base.diff, files_diff: 0, changed_files_api: 15 };
     expectUnknown({ COVERAGE_JSON: JSON.stringify(base) }, 'U2');
+  });
+
+  // EHAC-2164 — RED on known-bad. Before the fix `num()` returned null for the absent field,
+  // `null === 0` was false, U2 never fired, and this exact record exited 0 as COMPLETE.
+  // The rollup below is deliberately VALID so U5's rollup check cannot be what reds it —
+  // this test fails for the U2 reason or it is not testing anything.
+  it('U2: files_diff absent (not zero) while the PR reports changed files', () => {
+    const base = JSON.parse(payload());
+    base.diff = { ...base.diff, changed_files_api: 15 };
+    delete base.diff.files_diff;
+    expect(base.rollup && typeof base.rollup === 'object').toBe(true);
+    const result = run({ COVERAGE_JSON: JSON.stringify(base) });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('U2');
+    expect(result.stdout).toContain('does not report a measured file count');
   });
 
   it('U3: executed strategy differs from requested', () => {
