@@ -128,6 +128,36 @@ describe('the review job exports the coverage record', () => {
       new RegExp(`^ {10}ELEK_REF: ${ELEK_REF_VERIFIED}\\s*$`, 'm'),
     );
   });
+
+  // EHAC-2103 — the configured council must reach the PRODUCER, not just the elek step.
+  // Before this, review_models/validator_model were passed only to elek, so the coverage
+  // record had nothing to compare modelRuns against and the comment's model claims were
+  // structurally uncheckable. Dropping either line silently returns us to that state.
+  it('passes the configured council models to the producer', () => {
+    const block = review().block;
+    expect(block).toMatch(/^ {10}REVIEW_MODELS: \$\{\{ inputs\.review_models \}\}\s*$/m);
+    expect(block).toMatch(/^ {10}VALIDATOR_MODEL: \$\{\{ inputs\.validator_model \}\}\s*$/m);
+  });
+
+  // EHAC-2060 — scope must be a VERDICT inside this job, never a skip upstream.
+  //
+  // The whole promotion blocker was that a caller-side `on.pull_request.paths` filter or a
+  // draft `if:` prevents the workflow dispatching, so no check run is created and a required
+  // context stays pending forever. These invariants keep the decision here, where it can
+  // still produce a green NOT_REVIEWED.
+  it('resolves review scope in a step, so an out-of-scope PR still reports', () => {
+    const block = review().block;
+    expect(block).toContain('id: scope');
+    expect(block).toMatch(/^ {8}if: steps\.scope\.outputs\.in_scope == 'true'\s*$/m);
+    expect(block).toMatch(/^ {10}SKIP_REASON: \$\{\{ steps\.scope\.outputs\.skip_reason \}\}\s*$/m);
+  });
+
+  it('gates only the elek step on scope — never the job', () => {
+    // A job-level `if:` here would skip the coverage job too (it `needs: review`), which is
+    // exactly the absence-not-green failure this work exists to remove.
+    const jobIfs = review().lines.filter((line) => /^ {4}if:/.test(line));
+    expect(jobIfs).toEqual([]);
+  });
 });
 
 describe('every cross-repo gate checkout is pinned to a SHA, never a branch', () => {

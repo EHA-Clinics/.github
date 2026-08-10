@@ -137,6 +137,21 @@ on:
           eha_care #3515 (2,432 changed lines). At v1.1.4 the downgrade loop is gone
           and the threshold is warn-only, but we set it explicitly so the behaviour is
           self-documenting and pin-independent (CONTEXT D-05(i)).
+      scope_paths:
+        type: string
+        default: ''
+        description: >
+          EHAC-2060. Comma-separated globs describing which changed files warrant a review,
+          evaluated INSIDE this workflow so an out-of-scope PR yields a green NOT_REVIEWED
+          check instead of no check at all. Callers must express scope here rather than via
+          `on.pull_request.paths`: a paths-filtered workflow never dispatches, so it can never
+          host a required status check. Empty means every file is in scope.
+      pr_number:
+        type: string
+        default: ''
+        description: >
+          Pull-request number for events that do not carry one on the payload (issue_comment).
+          Ignored when github.event.pull_request.number is present.
       actor_filter:
         type: string
         default: ''
@@ -190,7 +205,93 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # EHAC-2060 — turn "the review did not apply" from an ABSENT check into a GREEN one.
+      #
+      # A required status context that is never reported stays pending forever, so a caller
+      # that suppresses this workflow with `on.pull_request.paths` or a draft `if:` can never
+      # host a required check: measured on eha_care #3574/#3576/#3554 (0 in-scope files), no
+      # `AI Review Coverage` check run was created at all. Promotion in that state would leave
+      # every docs-only PR permanently unmergeable — a gate that cannot PASS, which breaks the
+      # same property as one that cannot fail.
+      #
+      # So scope and draft state are evaluated HERE, as a verdict, instead of upstream as a
+      # skip. The job always runs; only the elek step below is conditional. Cost is unchanged:
+      # an out-of-scope PR still never invokes a model.
+      - name: Resolve review scope
+        id: scope
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SCOPE_PATHS: ${{ inputs.scope_paths }}
+          IS_DRAFT: ${{ github.event.pull_request.draft }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+        run: |
+          set -euo pipefail
+
+          # Draft state first: it suppresses regardless of paths.
+          if [ "${IS_DRAFT:-false}" = "true" ]; then
+            echo "in_scope=false" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=pull_request_is_draft" >> "$GITHUB_OUTPUT"
+            echo "Draft pull request — review deferred until ready_for_review."
+            exit 0
+          fi
+
+          # An empty scope_paths means "review everything" — never "review nothing".
+          if [ -z "${SCOPE_PATHS// /}" ]; then
+            echo "in_scope=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=" >> "$GITHUB_OUTPUT"
+            echo "No scope_paths configured — every changed file is in scope."
+            exit 0
+          fi
+
+          # Changed files from the API, not from git: the caller may run on events where the
+          # merge-base is not checked out, and a failed lookup must not read as "out of scope".
+          if ! FILES="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" \
+                          --paginate --jq '.[].filename')"; then
+            echo "::warning::could not list changed files — treating the PR as IN SCOPE so the review still runs."
+            echo "in_scope=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # A PR with no files at all is not evidence of being out of scope.
+          if [ -z "$FILES" ]; then
+            echo "::warning::the pull request reports no changed files — treating as IN SCOPE."
+            echo "in_scope=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          matched=0
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            # Read patterns from a here-string rather than `for p in $SCOPE_PATHS`: word
+            # splitting an unquoted variable is how the same shape bit us three times in
+            # Phase 70. IFS=, handles the comma-separated input explicitly.
+            while IFS= read -r p; do
+              p="${p// /}"
+              [ -n "$p" ] || continue
+              # $p is deliberately unquoted below: it is a glob, not a literal.
+              # shellcheck disable=SC2254
+              case "$f" in
+                $p) matched=1; break 2 ;;
+              esac
+            done <<< "$(printf '%s' "$SCOPE_PATHS" | tr ',' '\n')"
+          done <<< "$FILES"
+
+          if [ "$matched" -eq 1 ]; then
+            echo "in_scope=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=" >> "$GITHUB_OUTPUT"
+            echo "At least one changed file is in scope — running the review."
+          else
+            echo "in_scope=false" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=no_files_in_review_scope" >> "$GITHUB_OUTPUT"
+            echo "No changed file matches ${SCOPE_PATHS} — reporting NOT_REVIEWED, not skipping the check."
+          fi
+
       - name: AI Code Review via OpenRouter
+        # EHAC-2060: conditional on the STEP, never on the job — the coverage job must still
+        # run and still publish a verdict. `needs.review.result` stays `success`.
+        if: steps.scope.outputs.in_scope == 'true'
         # `id: review` is load-bearing (EHAC-2057 Fault 4): elek's action.yml has declared
         # review_summary_json / review_summary_path / input_tokens / output_tokens /
         # cost_usd / conclusion as outputs at EVERY ref, and all of them were unreachable
@@ -287,6 +388,16 @@ jobs:
           ELEK_REF: 3748508413fb355ae696b8fa98d1075930d12106
           REQUESTED_STRATEGY: ${{ inputs.review_strategy }}
           ACTOR_FILTER: ${{ inputs.actor_filter }}
+          # EHAC-2103: the CONFIGURED council, so the coverage record can put what we asked for
+          # next to what modelRuns says actually ran. Until now these values reached the elek
+          # step only, which is why the gate could not check the comment's model claims at all.
+          # Reported, not yet asserted — see renderJobSummary for why (label normalisation).
+          REVIEW_MODELS: ${{ inputs.review_models }}
+          VALIDATOR_MODEL: ${{ inputs.validator_model }}
+          # EHAC-2060: why the elek step did not run, when it did not. Empty means it ran.
+          # The producer turns this into a deterministic NOT_REVIEWED verdict (green + a
+          # warning), which is what makes an out-of-scope PR reportable rather than absent.
+          SKIP_REASON: ${{ steps.scope.outputs.skip_reason }}
           # For the `gh api repos/{repo}/pulls/{n}` lookup on the issue_comment path.
           GITHUB_TOKEN: ${{ github.token }}
         run: node .ai-review-gate/scripts/ai-review-coverage/measure-review-coverage.mjs
