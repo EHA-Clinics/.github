@@ -360,6 +360,19 @@ jobs:
         # Placed AFTER elek so this extra directory is never in view of elek's read/grep
         # tools. It cannot affect elek's own measurement either way: `git diff
         # origin/base...origin/head` is a ref-to-ref diff and ignores untracked paths.
+        #
+        # `if: always()` is load-bearing and was missing. A step with no `if:` defaults to
+        # `success()`, so whenever the elek step FAILED this checkout silently skipped — and
+        # then the producer, which correctly carries `if: always()`, ran with its own script
+        # absent and died on `Cannot find module .../measure-review-coverage.mjs`. The
+        # "always emit a coverage record" property was therefore false in exactly the case it
+        # exists for: a broken review. Observed on runs 31381064913, 31377112277, 31373475349,
+        # 31372529264 and 31372514323 — every failed review since the gate shipped.
+        #
+        # The gate still failed CLOSED (the asserter reds on REVIEW_RESULT=failure), so this
+        # was never a fail-open. What was lost is the evidence: no per-file inventory and no
+        # model attribution, precisely when the question "which lens died?" matters most.
+        if: always()
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: EHA-Clinics/.github
