@@ -208,7 +208,18 @@ describe('council model configuration', () => {
   it('does not use z-ai/glm-5.1 — it never converges (EHAC-2166)', () => {
     // Measured: >620s with zero content on a payload deepseek answered in 6.7s, and still
     // zero content at reasoning effort "low". Not repairable by configuration.
-    expect(withoutComments(source())).not.toContain('glm-5.1');
+    //
+    // Scoped to the CONFIG lines, not the whole file. `withoutComments` only strips `#`
+    // lines, so a YAML `description: >` block that explains WHY glm-5.1 was removed counts
+    // as content and would fail this test — punishing the documentation that stops someone
+    // reintroducing it. What must hold is that no model line names it.
+    const defaults = source()
+      .split('\n')
+      .filter((l) => /^ {8}default: '[^']*'/.test(l));
+    expect(defaults.length, 'no default: lines found — the parser has drifted').toBeGreaterThan(0);
+    for (const line of defaults) {
+      expect(line, 'a model/rate default still names glm-5.1').not.toContain('glm-5.1');
+    }
   });
 
   it('provider-qualifies any z-ai id, so pi cannot self-route it to NVIDIA', () => {
@@ -311,7 +322,31 @@ describe('the elek step forces a trigger on PR events without hijacking comment 
   });
 
   it('asks for a review rather than some unrelated instruction', () => {
-    expect(promptLine()).toMatch(/review this pr/i);
+    // EHAC-2167 moved the STRING into an input; the step now passes `inputs.prompt`. Assert
+    // the input's DEFAULT still asks for a review, so an unset caller is unchanged.
+    const decl = source().match(/^ {6}prompt:\n {8}type: string\n {8}default: '([^']*)'/m);
+    expect(decl, 'no `prompt` workflow_call input with a string default').not.toBeNull();
+    expect(decl[1]).toMatch(/review this pr/i);
+  });
+
+  // EHAC-2167 — the gate is NOT caller-controllable. inputs.prompt supplies the text; the
+  // event condition decides whether any prompt is sent. Handing that decision to callers is
+  // exactly how EHAC-2099 happened, and kemiqa then repeated it for 18 days.
+  it('sources the prompt text from the input but keeps the gate in the workflow', () => {
+    expect(promptLine()).toBe("${{ github.event_name == 'pull_request' && inputs.prompt || '' }}");
+  });
+
+  // EHAC-2167 — ported from eHealthAfrica/.github. Declared AND passed through, or the
+  // migration of kemiqa (which passes '900') silently halves its budget.
+  it('declares and passes run_timeout_seconds and allowed_bots', () => {
+    for (const key of ['run_timeout_seconds', 'allowed_bots']) {
+      expect(source(), `${key} is not declared as a workflow_call input`).toMatch(
+        new RegExp(`^ {6}${key}:\\n {8}type: string`, 'm'),
+      );
+      expect(source(), `${key} is declared but never passed to the elek step`).toMatch(
+        new RegExp(`^ {10}${key}: \\$\\{\\{ inputs\\.${key} \\}\\}\\s*$`, 'm'),
+      );
+    }
   });
 
   it('still passes trigger_phrase, which continues to govern the comment paths', () => {
