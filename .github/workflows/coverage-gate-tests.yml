@@ -61,16 +61,41 @@ jobs:
           REQUESTED_STRATEGY: council
           EXECUTED_STRATEGY: council
           REVIEW_INPUT_TOKENS: '83000'
+          # EHAC-2162: a HEALTHY council must be supplied here. Without it the record carries
+          # no modelRuns while input_tokens is positive, U7 fires, and this step still exits 1
+          # — passing for a reason that has nothing to do with truncation. That would leave the
+          # step green even if PARTIAL_SOURCE detection broke completely, which is precisely
+          # the vacuity this step exists to rule out. Every run below must succeed so that the
+          # ONLY thing capable of redding this proof is the truncation itself.
+          REVIEW_SUMMARY_JSON: >-
+            {"run":{"conclusion":"success"},
+             "review":{"requestedStrategy":"council","executedStrategy":"council"},
+             "cost":{"inputTokens":83000},
+             "modelRuns":[
+               {"role":"reviewer","lensId":"risk","modelLabel":"deepseek/deepseek-v4-pro","conclusion":"success"},
+               {"role":"reviewer","lensId":"design","modelLabel":"xiaomi/mimo-v2.5-pro","conclusion":"success"},
+               {"role":"reviewer","lensId":"tests","modelLabel":"openrouter/z-ai/glm-5.1","conclusion":"success"},
+               {"role":"validator","modelLabel":"openrouter/z-ai/glm-5.1","conclusion":"success"}]}
         run: |
           set -euo pipefail
           COV="$(node scripts/ai-review-coverage/measure-review-coverage.mjs \
                    --diff-file scripts/ai-review-coverage/fixtures/pr-3515.diff)"
           node -e 'const c=JSON.parse(process.argv[1]);if(c.verdict!=="PARTIAL_SOURCE")throw new Error("expected PARTIAL_SOURCE, got "+c.verdict)' "$COV"
           rc=0
-          REVIEW_RESULT=success COVERAGE_JSON="$COV" \
-            node scripts/ai-review-coverage/assert-review-coverage.mjs || rc=$?
+          OUT="$(REVIEW_RESULT=success COVERAGE_JSON="$COV" \
+            node scripts/ai-review-coverage/assert-review-coverage.mjs)" || rc=$?
+          printf '%s\n' "$OUT"
           if [ "$rc" -ne 1 ]; then
             echo "::error::the coverage gate did NOT fail on a truncating diff (exit $rc) — it is vacuous"
             exit 1
           fi
-          echo "fixture-driven red proven (assert exited $rc)"
+          # Assert the REASON, not merely the exit code. An exit-1 that happens for an
+          # unrelated reason proves nothing about truncation detection.
+          case "$OUT" in
+            *PARTIAL_SOURCE*) ;;
+            *) echo "::error::gate exited 1 but not for PARTIAL_SOURCE — the red is not attributable to truncation"; exit 1 ;;
+          esac
+          case "$OUT" in
+            *U7*) echo "::error::U7 fired in the truncation proof — the fixture council is not healthy, so this step is no longer a truncation test"; exit 1 ;;
+          esac
+          echo "fixture-driven red proven (assert exited $rc, verdict PARTIAL_SOURCE, no unrelated branches)"
