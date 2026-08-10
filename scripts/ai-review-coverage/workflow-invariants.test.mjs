@@ -172,21 +172,37 @@ describe('the review job exports the coverage record', () => {
 
 // EHAC-2166 — the council model config, guarded on the two ways it has actually gone wrong.
 describe('council model configuration', () => {
-  it('does not use glm-5.1 anywhere — it timed out at 600s on ~half of all reviews', () => {
-    // code=143 (SIGTERM at run_timeout_seconds) on the two lenses it was assigned, while
-    // deepseek and mimo finished the same PRs in 112-257s. Reverting to 5.1 silently
-    // reintroduces a four-lens council reporting itself as six.
-    expect(withoutComments(source())).not.toContain('glm-5.1');
-  });
-
-  it('prices every model it names in cost_rates, and names glm-5.2', () => {
+  // Deliberately version-AGNOSTIC. An earlier draft asserted a specific GLM version, which
+  // was the wrong shape: glm-5.2 had to be reverted within the hour (OpenRouter returned
+  // "404 No endpoints available matching your guardrail restrictions and data policy"), and a
+  // version-pinned invariant would then have blocked the revert that restored service. What
+  // must hold regardless of which version is configured is that its PRICE is configured too.
+  it('prices whichever GLM version it configures', () => {
     const yaml = withoutComments(source());
+
+    // Read the MODEL lines specifically rather than scanning the whole file. A scan with
+    // `glm-[\d.]+` also matches inside the cost_rates line, and because `[\d.]+` is greedy it
+    // backtracks past the `=` and yields the truncated id `glm-5.` — which would then never be
+    // found in the rates and would fail forever. Narrow beats clever here.
+    const modelLines = yaml
+      .split('\n')
+      .filter((l) => /^ {8}default: '[^']*'/.test(l) && !/=\d/.test(l));
+    const configured = modelLines.flatMap((l) =>
+      [...l.matchAll(/openrouter\/z-ai\/(glm-[0-9]+(?:\.[0-9]+)*)/g)].map((m) => m[1]),
+    );
+    expect(configured.length, 'no GLM model configured').toBeGreaterThan(0);
+
     const rates = yaml.match(/^ {8}default: '([^']*=[^']*)'\s*$/m);
     expect(rates, 'cost_rates default not found').not.toBeNull();
-    // A rate line that has drifted from the provider's real price is worse than no rate:
+
+    // A rate that has drifted from the provider's real price is worse than no rate at all:
     // max_cost_usd then enforces a budget against numbers that are not the price. The
-    // glm-5.1 entry this replaced read 0.98:3.08 while OpenRouter charged 1.40:4.40.
-    expect(rates[1]).toContain('openrouter/z-ai/glm-5.2=0.76:2.42');
+    // glm-5.1 entry read 0.98:3.08 for months while OpenRouter charged 1.40:4.40.
+    for (const version of new Set(configured)) {
+      expect(rates[1], `cost_rates does not price ${version}`).toContain(
+        `openrouter/z-ai/${version}=`,
+      );
+    }
   });
 
   it('provider-qualifies the GLM id so pi cannot self-route it to NVIDIA', () => {
