@@ -170,6 +170,36 @@ describe('the review job exports the coverage record', () => {
   });
 });
 
+// EHAC-2166 — the council model config, guarded on the two ways it has actually gone wrong.
+describe('council model configuration', () => {
+  it('does not use glm-5.1 anywhere — it timed out at 600s on ~half of all reviews', () => {
+    // code=143 (SIGTERM at run_timeout_seconds) on the two lenses it was assigned, while
+    // deepseek and mimo finished the same PRs in 112-257s. Reverting to 5.1 silently
+    // reintroduces a four-lens council reporting itself as six.
+    expect(withoutComments(source())).not.toContain('glm-5.1');
+  });
+
+  it('prices every model it names in cost_rates, and names glm-5.2', () => {
+    const yaml = withoutComments(source());
+    const rates = yaml.match(/^ {8}default: '([^']*=[^']*)'\s*$/m);
+    expect(rates, 'cost_rates default not found').not.toBeNull();
+    // A rate line that has drifted from the provider's real price is worse than no rate:
+    // max_cost_usd then enforces a budget against numbers that are not the price. The
+    // glm-5.1 entry this replaced read 0.98:3.08 while OpenRouter charged 1.40:4.40.
+    expect(rates[1]).toContain('openrouter/z-ai/glm-5.2=0.76:2.42');
+  });
+
+  it('provider-qualifies the GLM id so pi cannot self-route it to NVIDIA', () => {
+    // A bare `z-ai/*` id routes to NVIDIA (no key -> hang). deepseek/* and xiaomi/*
+    // already resolve to OpenRouter, so only GLM needs the explicit prefix.
+    const yaml = withoutComments(source());
+    for (const m of yaml.matchAll(/z-ai\/glm-[\d.]+/g)) {
+      const idx = m.index ?? 0;
+      expect(yaml.slice(Math.max(0, idx - 11), idx)).toContain('openrouter/');
+    }
+  });
+});
+
 describe('every cross-repo gate checkout is pinned to a SHA, never a branch', () => {
   it('pins ref: to a 40-hex SHA in both gate checkouts', () => {
     const refs = [...source().matchAll(/^ {10}ref: (\S+)\s*$/gm)].map((m) => m[1]);
