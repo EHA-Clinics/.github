@@ -512,7 +512,7 @@ jobs:
           # code change underneath a pinned caller — the exact pin-drift class EHAC-2057 is
           # about. EHA-Clinics/.github is PUBLIC, so the default GITHUB_TOKEN reads it from
           # either private caller and no new secret is introduced.
-          ref: 33a5d280515531b39f752a695926df0a913893dd
+          ref: 3322a33fb3b55257ded10c296a87bf41091169f6
           path: .ai-review-gate
           sparse-checkout: scripts/ai-review-coverage
           persist-credentials: false
@@ -593,7 +593,7 @@ jobs:
         with:
           repository: EHA-Clinics/.github
           # Same pinned SHA as the producer, for the same reason (T-2057-01).
-          ref: 33a5d280515531b39f752a695926df0a913893dd
+          ref: 3322a33fb3b55257ded10c296a87bf41091169f6
           path: .ai-review-gate
           sparse-checkout: scripts/ai-review-coverage
           persist-credentials: false
