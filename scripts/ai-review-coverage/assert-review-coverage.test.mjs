@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { ELEK_REF_VERIFIED } from './elek-prompt-budget.mjs';
+import { BUCKET_TOKENS, bucketReviewRecords, evaluateRecordSet } from './assert-review-coverage.mjs';
 
 const SCRIPT = join(import.meta.dirname, 'assert-review-coverage.mjs');
 const SOURCE_FILE = 'apps/ehacare/frontend/src/common/services/tenantRoster.ts';
@@ -412,5 +413,228 @@ describe('no rubber-stamping — the verdict is recomputed from rollup counts', 
     base.verdict = 'COMPLETE';
     base.rollup = { ...base.rollup, source_absent: 2 };
     expect(run({ COVERAGE_JSON: JSON.stringify(base) }).status).toBe(1);
+  });
+});
+
+/**
+ * R12 — verdict bucketing across a record SET (EHAC-2165).
+ *
+ * Driven through the CLI in a child process for the same reason as every other case in this
+ * file: the exit code is the only thing GitHub turns into a check conclusion. Each case
+ * asserts the REASON TOKEN as well, because an exit produced for an unrelated reason is not
+ * proof of the rule.
+ */
+describe('R12 — review record sets are bucketed by verdict', () => {
+  const runSet = (recordSet) =>
+    spawnSync(process.execPath, [SCRIPT], {
+      env: { PATH: process.env.PATH, REVIEW_RECORD_SET_JSON: JSON.stringify(recordSet) },
+      encoding: 'utf8',
+    });
+
+  const ALL_FAILED = 'REVIEW_SET_ALL_REAL_REVIEWS_FAILED';
+  const UNKNOWN = 'REVIEW_SET_UNKNOWN';
+
+  const realRecord = (id, verdict) => ({ id, verdict, conclusion: 'success', not_reviewed: null });
+
+  /**
+   * THE SHARED BUILDER for the state-3 / state-4 boundary. Both cases come from here and
+   * differ by EXACTLY ONE FIELD — the reason on the last record. If the two cases were built
+   * separately they could drift into differing by something else, and the pair would stop
+   * proving that the DECLARATION is the discriminator.
+   */
+  const declinedOnlySet = ({ lastReason = 'actor_is_bot_not_allowlisted' } = {}) => [
+    {
+      id: 'renovate-1',
+      verdict: 'NOT_REVIEWED',
+      conclusion: 'skipped',
+      not_reviewed: { reason: 'actor_is_bot_not_allowlisted', actor: 'renovate[bot]' },
+      cost_usd: 0,
+    },
+    {
+      id: 'renovate-2',
+      verdict: 'NOT_REVIEWED',
+      conclusion: 'skipped',
+      not_reviewed: { reason: lastReason, actor: 'renovate[bot]' },
+      cost_usd: 0,
+    },
+  ];
+
+  it('state 1 REPORTS the outage shape: every real review failed while declined records read green', () => {
+    // The observed 2026-08-09 window, in miniature: real reviews all dead, bot records green,
+    // the aggregate reading partly healthy. Nothing else in this payload is unhealthy, so the
+    // ONLY thing that can red it is the bucketing.
+    const result = runSet([
+      realRecord('pr-1', 'UNKNOWN'),
+      realRecord('pr-2', 'UNKNOWN'),
+      realRecord('pr-3', 'PARTIAL_SOURCE'),
+      ...declinedOnlySet(),
+    ]);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain(ALL_FAILED);
+    expect(result.stdout).not.toContain(UNKNOWN);
+  });
+
+  it('state 2 ACCEPTS a set in which at least one real review succeeded', () => {
+    // As load-bearing as the reporting case. Without it this could be a rule that CANNOT
+    // PASS, which breaks the same property as one that cannot fail.
+    const result = runSet([
+      realRecord('pr-1', 'UNKNOWN'),
+      realRecord('pr-2', 'COMPLETE'),
+      ...declinedOnlySet(),
+    ]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain(ALL_FAILED);
+    expect(result.stdout).not.toContain(UNKNOWN);
+  });
+
+  it('state 4 ACCEPTS a declined-only set in which every record declares a recognised reason', () => {
+    // Reporting this would red EVERY dependency-bot pull request, and a rule that reds every
+    // bot PR is switched off within a week. The single-record NOT_REVIEWED path already
+    // covers it, so reporting here would double-report as well.
+    const result = runSet(declinedOnlySet());
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('DECLINED-ONLY');
+    expect(result.stdout).not.toContain(UNKNOWN);
+  });
+
+  it('state 3 REPORTS the same set with one record declaring an unrecognised reason', () => {
+    // THE DISCRIMINATOR CASE, and the whole repair. Same builder, same shape, one field
+    // changed. If this and the case above both exited 0 the rule could not detect an outage;
+    // if both exited non-zero every bot PR would red. They must differ, and the only thing
+    // that differs is whether the record explained itself.
+    const result = runSet(declinedOnlySet({ lastReason: 'something_nobody_recognises' }));
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain(UNKNOWN);
+    expect(result.stdout).not.toContain(ALL_FAILED);
+  });
+
+  it('state 3 REPORTS a record whose verdict field is missing entirely', () => {
+    const set = declinedOnlySet();
+    delete set[1].verdict;
+    const result = runSet(set);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain(UNKNOWN);
+  });
+
+  it('state 3 REPORTS an empty record set rather than calling it healthy', () => {
+    // Nothing examined is not the same as nothing wrong. This is the fail-open an empty
+    // bucket set would otherwise produce.
+    const result = runSet([]);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain(UNKNOWN);
+  });
+
+  it('state 3 REPORTS a truncated read, where fewer records came back than the run declares', () => {
+    // A truncated read is a FAILURE TO LOOK. Reading it as "these are all the records" is the
+    // failed-read-as-absence substitution.
+    const result = runSet({ reported_count: 9, records: declinedOnlySet() });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain(UNKNOWN);
+  });
+
+  it('fails closed when the record set does not parse', () => {
+    const result = spawnSync(process.execPath, [SCRIPT], {
+      env: { PATH: process.env.PATH, REVIEW_RECORD_SET_JSON: '{not json' },
+      encoding: 'utf8',
+    });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain(UNKNOWN);
+  });
+
+  it('emits two DISTINCT tokens, so the two reds are separately attributable', () => {
+    // "Every real review failed" and "we cannot tell whether a review happened" need
+    // different investigations. One token for both sends the next person to the wrong place.
+    expect(BUCKET_TOKENS.allFailed).not.toBe(BUCKET_TOKENS.unknown);
+    expect(runSet([realRecord('a', 'UNKNOWN')]).stdout).toContain(BUCKET_TOKENS.allFailed);
+    expect(runSet([]).stdout).toContain(BUCKET_TOKENS.unknown);
+  });
+
+  it('buckets by VERDICT even when the run conclusion disagrees with it', () => {
+    // THE CASE THAT MAKES "bucket by verdict, never by conclusion" AN ASSERTION RATHER THAN A
+    // COMMENT. Every other fixture here has conclusion and verdict agreeing, so a rule that
+    // bucketed on `conclusion === 'success'` would satisfy all of them — proven by mutation:
+    // that substitution passed the whole suite before this case existed. Conclusion is the
+    // aggregate, and the aggregate is exactly what lied for ~16 hours.
+    //
+    // A declined bot record that the run nevertheless marked "success":
+    //   by verdict    -> declined -> DECLINED-ONLY, exit 0 (correct; it is a bot PR)
+    //   by conclusion -> real     -> ACTIVE-FAILING, exit 1 (reds every bot PR)
+    const declinedButMarkedSuccess = runSet([
+      {
+        id: 'renovate-3',
+        verdict: 'NOT_REVIEWED',
+        conclusion: 'success',
+        not_reviewed: { reason: 'actor_is_bot_not_allowlisted', actor: 'renovate[bot]' },
+      },
+    ]);
+    expect(declinedButMarkedSuccess.status).toBe(0);
+    expect(declinedButMarkedSuccess.stdout).toContain('DECLINED-ONLY');
+
+    // A real, completed review whose JOB was reported skipped:
+    //   by verdict    -> real, passing -> ACTIVE-HEALTHY, exit 0 (correct; it reviewed)
+    //   by conclusion -> unknown       -> UNKNOWN, exit 1
+    const realButMarkedSkipped = runSet([
+      { id: 'pr-9', verdict: 'COMPLETE', conclusion: 'skipped', not_reviewed: null },
+    ]);
+    expect(realButMarkedSkipped.status).toBe(0);
+    expect(realButMarkedSkipped.stdout).toContain('ACTIVE-HEALTHY');
+  });
+
+  it('assigns every record to exactly one bucket, from a field on the record', () => {
+    const set = [
+      realRecord('r', 'COMPLETE'),
+      ...declinedOnlySet(),
+      { id: 'u', verdict: 'WAT', not_reviewed: null },
+    ];
+    const { real, declined, unknown } = bucketReviewRecords(set);
+    expect([real.length, declined.length, unknown.length]).toEqual([1, 2, 1]);
+    expect(real.length + declined.length + unknown.length).toBe(set.length);
+    // Bucket by VERDICT, never by conclusion: the declined records and a dead review both
+    // carry conclusion "skipped", so a conclusion-based rule cannot tell them apart.
+    const byConclusion = set.filter((r) => r.conclusion === 'skipped');
+    expect(byConclusion).toHaveLength(2);
+  });
+
+  it('the four states are total and disjoint — every payload matches exactly one', () => {
+    // A payload the contract cannot classify means a fifth, unstated behaviour, which is
+    // where a gate acquires a silent branch.
+    const cases = [
+      [[realRecord('a', 'UNKNOWN')], 'ACTIVE-FAILING', 1],
+      [[realRecord('a', 'COMPLETE')], 'ACTIVE-HEALTHY', 0],
+      [declinedOnlySet({ lastReason: 'nope' }), 'UNKNOWN', 1],
+      [declinedOnlySet(), 'DECLINED-ONLY', 0],
+      [[], 'UNKNOWN', 1],
+      [[{ id: 'x' }], 'UNKNOWN', 1],
+      [[realRecord('a', 'PARTIAL_NON_SOURCE')], 'ACTIVE-HEALTHY', 0],
+    ];
+    const seen = new Set();
+    for (const [records, state, exitCode] of cases) {
+      const verdict = evaluateRecordSet(records);
+      expect(verdict.state, JSON.stringify(records)).toBe(state);
+      expect(verdict.exitCode, JSON.stringify(records)).toBe(exitCode);
+      expect(verdict.token === null).toBe(exitCode === 0);
+      seen.add(state);
+    }
+    // All four states are actually exercised, so this is not three cases and a gap.
+    expect([...seen].sort()).toEqual(['ACTIVE-FAILING', 'ACTIVE-HEALTHY', 'DECLINED-ONLY', 'UNKNOWN']);
+  });
+
+  describe('non-vacuity', () => {
+    it('does not fire on the healthy single-run path this gate already covers', () => {
+      // The record-set rule must not double-report a run the existing rules handle. The
+      // ordinary CLI path is unchanged and emits neither token.
+      const result = run({ COVERAGE_JSON: payload() });
+      expect(result.status).toBe(0);
+      expect(result.stdout).not.toContain(ALL_FAILED);
+      expect(result.stdout).not.toContain(UNKNOWN);
+    });
+
+    it('buckets nothing when given nothing, and the caller reports that as UNKNOWN not a pass', () => {
+      // 0 findings over 0 records must NOT be indistinguishable from a clean result. The
+      // empty partition is correct; state 3 is what stops it reading as health.
+      expect(bucketReviewRecords([])).toEqual({ real: [], declined: [], unknown: [] });
+      expect(bucketReviewRecords(undefined)).toEqual({ real: [], declined: [], unknown: [] });
+      expect(evaluateRecordSet([]).exitCode).toBe(1);
+    });
   });
 });
