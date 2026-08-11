@@ -36,6 +36,17 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          # R13. The gate-script identity assertion resolves the SHAs that ai-code-review.yml
+          # pins for its own scripts, and the default depth of 1 does not contain them. A
+          # resolution failure is deliberately a FINDING, so a shallow checkout would red the
+          # suite for a reason unrelated to pin identity — the state in which someone weakens
+          # the rule to clear it. Depth 0 is necessary and NOT sufficient: it fetches the
+          # history of surviving refs, and a commit outside every surviving branch (a squashed
+          # or deleted PR tip) is not among them, so the rule ALSO fetches each ref explicitly
+          # and asserts reachability before resolving its tree. `persist-credentials: false`
+          # is retained: this repository is public, so that fetch works anonymously — on a
+          # private repository it would not.
+          fetch-depth: 0
 
       - name: Set up pnpm
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
