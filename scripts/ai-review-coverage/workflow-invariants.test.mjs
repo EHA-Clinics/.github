@@ -17,6 +17,14 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { ELEK_REF_VERIFIED } from './elek-prompt-budget.mjs';
+import {
+  GATE_SCRIPT_DIR,
+  changedPathsFromGit,
+  findSuppressionKeys,
+  inspectGateRefIdentity,
+  makeGitTreeResolver,
+  runGit,
+} from './gate-ref-identity.mjs';
 
 const WORKFLOW = join(import.meta.dirname, '..', '..', '.github', 'workflows', 'ai-code-review.yml');
 const TESTS_WORKFLOW = join(import.meta.dirname, '..', '..', '.github', 'workflows', 'coverage-gate-tests.yml');
@@ -289,6 +297,45 @@ describe('every cross-repo gate checkout is pinned to a SHA, never a branch', ()
     expect(new Set(refs).size).toBe(1);
   });
 
+  // R13 — the SHA-shape assertion above proves the ref LOOKS like a commit. It does not
+  // prove the commit holds the gate code this suite is testing. Those are different claims,
+  // and the gap between them is a change to a runtime gate module that ships, passes all of
+  // these specs, and never executes.
+  //
+  // Disposition is SPEC Q6, implemented in gate-ref-identity.mjs: an error on the default
+  // branch and on a PR that does not touch the gate scripts, a loud WARNING on a PR that
+  // does — because the pin is self-referential and PR-1 of the ordered pair legitimately
+  // carries a stale pin at review time.
+  //
+  // ⚠ MEASURED 2026-08-11: the pins are one commit behind HEAD and the trees DIFFER. This
+  // case is expected to WARN here (this branch modifies the gate scripts) and to ERROR on
+  // main after merge. That red is the finding. It is cleared by BUMPING THE PINS in the
+  // follow-up commit — never by relaxing the comparison, excluding a path, or suppressing
+  // the step.
+  it('proves each pinned ref holds the gate-script tree under test (R13)', () => {
+    const repoRoot = join(import.meta.dirname, '..', '..');
+    const head = runGit(['rev-parse', `HEAD:${GATE_SCRIPT_DIR}`], repoRoot);
+
+    // A read that ERRORS while resolving a tree is a FAILURE, never a skip. Letting this
+    // spec pass when it could not look would recreate, inside the suite that exists to
+    // forbid unfailable checks, exactly the defect it forbids.
+    expect(head.status, `git rev-parse HEAD:${GATE_SCRIPT_DIR} failed: ${head.stderr}`).toBe(0);
+
+    const findings = inspectGateRefIdentity({
+      workflowSource: source(),
+      headTree: head.stdout.trim(),
+      changedPaths: changedPathsFromGit({ cwd: repoRoot }),
+      eventName: process.env.GITHUB_EVENT_NAME ?? 'pull_request',
+      resolveTree: makeGitTreeResolver({ cwd: repoRoot }),
+    });
+
+    for (const warning of findings.filter((f) => f.level === 'warning')) {
+      process.stdout.write(`::warning::${warning.code} ${warning.message}\n`);
+    }
+    const errors = findings.filter((f) => f.level === 'error');
+    expect(errors.map((e) => `${e.code} ${e.message}`)).toEqual([]);
+  });
+
   it('sparse-checks-out only the gate directory, with credentials not persisted', () => {
     const text = source();
     expect([...text.matchAll(/^ {10}sparse-checkout: scripts\/ai-review-coverage\s*$/gm)]).toHaveLength(2);
@@ -402,16 +449,59 @@ describe('the elek step forces a trigger on PR events without hijacking comment 
 });
 
 describe('the tests workflow is itself unsuppressed', () => {
+  // The file's own header states there is deliberately no error-suppression key anywhere in
+  // it. This promotes that PROSE CONTRACT into an EXECUTED assertion.
+  //
+  // It calls findSuppressionKeys — the same pure function specified in BOTH directions in
+  // gate-ref-identity.test.mjs, against a fixture that carries the key (reported), a fixture
+  // that carries it COMMENTED OUT (not reported), and this live file. One implementation,
+  // two directions. Reading only the live file would establish that the rule does not fire
+  // on clean input, which is not evidence that it fires on dirty input.
   it('has no error-suppression key', () => {
-    const text = withoutComments(readFileSync(TESTS_WORKFLOW, 'utf8'));
-    for (const key of ERROR_SUPPRESSION_KEYS) {
-      expect(text).not.toContain(key);
-    }
+    const findings = findSuppressionKeys(readFileSync(TESTS_WORKFLOW, 'utf8'));
+    expect(findings.map((f) => f.message)).toEqual([]);
   });
 
   it('re-proves the fixture-driven red from the shell, not only through Vitest', () => {
     const text = readFileSync(TESTS_WORKFLOW, 'utf8');
     expect(text).toContain('--diff-file scripts/ai-review-coverage/fixtures/pr-3515.diff');
     expect(text).toContain('PARTIAL_SOURCE');
+  });
+
+  // R13 — without full history the resolver cannot see the pinned commits, and because a
+  // resolution failure is (correctly) a finding, the identity assertion would red for a
+  // reason unrelated to pin identity. That is the state in which someone weakens the rule to
+  // clear it, so the depth is part of the assertion rather than an incidental setting.
+  it('checks out full history, so the identity assertion can resolve the pinned refs', () => {
+    const text = readFileSync(TESTS_WORKFLOW, 'utf8');
+    expect(text).toMatch(/^ {10}fetch-depth: 0\s*$/m);
+  });
+});
+
+/**
+ * The two job names in this workflow are a BRANCH-PROTECTION INTERFACE CONTRACT: a required
+ * context is matched by name, so renaming one silently detaches protection in every
+ * consuming repository — the check simply stops being reported and the PR stops being
+ * gated, with no error anywhere.
+ *
+ * Asserted STRUCTURALLY, as four-space `name:` keys inside a job block. A `grep` for the
+ * name would also be satisfied by the several PROSE COMMENTS in this file that discuss the
+ * job names, so it could pass with the real job renamed out from under it.
+ */
+describe('the review job names are unchanged (branch-protection interface contract)', () => {
+  const jobNames = () => [...source().matchAll(/^ {4}name: (.+?)\s*$/gm)].map((m) => m[1]);
+
+  it('still declares exactly the two named review jobs', () => {
+    expect(jobNames()).toEqual([
+      'AI Code Review (${{ inputs.review_strategy }})',
+      'AI Review Coverage',
+    ]);
+  });
+
+  it('each name is a job-block key, not a comment mentioning one', () => {
+    // jobBlock walks back to the enclosing `jobs.<id>:` key and throws if there is none, so a
+    // name that only appears in prose cannot satisfy this.
+    expect(jobBlock(source(), /^ {4}name: AI Review Coverage\s*$/).key).toBe('coverage-gate');
+    expect(jobBlock(source(), /^ {4}name: AI Code Review \(/).key).toBe('review');
   });
 });

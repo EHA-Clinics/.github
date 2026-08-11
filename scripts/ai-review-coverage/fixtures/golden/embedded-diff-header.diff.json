@@ -1,0 +1,38 @@
+{
+  "regime": "FULL",
+  "slice_ceiling_observed": null,
+  "prompt_chars": 26366,
+  "diff_chars": 26048,
+  "ranking_anomalies": [],
+  "files": [
+    {
+      "path": ".planning/milestones/v1.9.1-phases/05.8.1-drive-bettercare-staging-argocd-application-back-to-synced-o/05.8.1-01-SUMMARY.md",
+      "priority": 4,
+      "status": "added",
+      "patch_chars": 6519,
+      "shown_chars": 6519,
+      "pct": 100,
+      "verdict": "WHOLE",
+      "path_parse_failed": false
+    },
+    {
+      "path": ".planning/milestones/v1.9.1-phases/21-ehac-1443-docker-secret-remediation-plan/21-07-SUMMARY.md",
+      "priority": 4,
+      "status": "added",
+      "patch_chars": 19527,
+      "shown_chars": 19527,
+      "pct": 100,
+      "verdict": "WHOLE",
+      "path_parse_failed": false
+    }
+  ],
+  "rollup": {
+    "files_total": 2,
+    "whole": 2,
+    "source_partial": 0,
+    "source_absent": 0,
+    "non_source_partial": 0,
+    "non_source_absent": 0,
+    "unknown_paths": 0
+  }
+}

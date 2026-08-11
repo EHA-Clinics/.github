@@ -105,7 +105,8 @@ as `jobs.review.outputs.coverage_json`, consumed as `needs.review.outputs.covera
                 "head_sha_event": "...", "sha_match": true, "shallow": false },
   "git_config": { "core.autocrlf": "false", "diff.noprefix": "false" },
   "diff":     { "chars": 137015, "files_diff": 15, "changed_files_api": 15,
-                "regime": "FULL | SLICES", "per_file_budget": 4000, "prompt_chars": 52715 },
+                "regime": "FULL | SLICES", "slice_ceiling_observed": 3846, "prompt_chars": 52715,
+                "ranking_anomalies": [] },
   "review":   { "conclusion": "success", "input_tokens": 83000, "cost_usd": 0.0496,
                 "actor": "...", "event": "pull_request" },
   "rollup":   { "files_total": 15, "whole": 6, "source_partial": 4, "source_absent": 0,
@@ -160,7 +161,8 @@ REVIEW_RESULT=success COVERAGE_JSON="$COV" \
 |---|---|
 | Reds on real truncation | `fixtures/pr-3515.diff` → verdict exactly `PARTIAL_SOURCE`; `tenantRoster.ts` shows **3,822 of 15,215** chars (25%); assert exits **1** |
 | Greens on full coverage | `fixtures/small-complete.diff` → `COMPLETE`, exit 0 |
-| The port is faithful | the **real** `elek@3748508 src/review/diff-context.ts` was executed (`node --experimental-strip-types`) against all three fixtures; prompt sizes match to the character (52,715 / 14,751 / 26,366) and every per-file boundary agrees. Those numbers are pinned in the specs |
+| There is no second implementation to be unfaithful | R14 deleted the port. `elek@3748508 src/review/diff-context.ts` is vendored byte-identically and **executed**; `elek-prompt-budget.mjs` measures its output and names none of its constants. The rewrite reproduces the previously measured prompt sizes to the character (52,715 / 14,751 / 26,366) and every per-file boundary — those values were produced by the earlier implementation and were **not** recomputed by this change, so agreement with them is external corroboration rather than a snapshot of itself |
+| The vendored copy cannot drift unreported | `git hash-object -t blob` over `vendor/diff-context.ts` equals upstream's own blob sha in the sibling manifest; the manifest commit equals the workflow's action pin; and every fixture's output equals a golden frozen at that pin. All three are demonstrated on a deliberate divergence in `elek-prompt-budget.test.mjs` |
 | The YAML cannot be vacuous | `workflow-invariants.test.mjs` parses the shipped workflow and asserts no error-suppression key, `if:` exactly `always()`, no step-level `if:`, `needs: review`, both gate `ref:`s 40-hex and equal |
 
 ---
@@ -296,16 +298,46 @@ full-diff gate and the 4,000-char per-file clamp bind first.
 
 ### 6. Pin re-verification procedure
 
-The `BUDGET` constants are **observed upstream implementation details, not a contract**. On any
-elek bump:
+**R14 / D-04 changed this.** There used to be a hand-written *port* of elek's packer here: a
+second implementation that restated the upstream constants and had to be re-derived by hand on
+every bump. Two copies of one idea agree on the day they are written and can disagree silently
+ever after. There is now **one** implementation — `vendor/diff-context.ts` is the upstream
+packer, vendored byte-for-byte at the pinned commit, and `elek-prompt-budget.mjs` **executes**
+it and measures what it emitted.
 
-1. re-read `src/review/diff-context.ts` at the new ref;
-2. update `ELEK_REF_VERIFIED` **and** `BUDGET` in `elek-prompt-budget.mjs`;
-3. update the literal `ELEK_REF` env value in `.github/workflows/ai-code-review.yml`.
+The vendored file carries **no local header**: a header would break the byte-identity that its
+provenance asserts. Provenance lives in the sibling `vendor/diff-context.manifest.json`, which
+records `upstream_repo`, `upstream_path`, `upstream_commit` and `upstream_blob_sha` — the last
+being **upstream's own git blob identifier**, taken from the contents API at fetch time, not a
+digest we computed over what we wrote. (A self-computed digest proves only that we hashed our
+own bytes: an edit updating both the file and the digest would pass.) It is recomputable offline
+with `git hash-object -t blob`.
 
-Until all three agree, **U1 keeps the gate red by design**. `workflow-invariants.test.mjs`
-asserts the workflow's elek pin equals `ELEK_REF_VERIFIED`, so a partial bump fails a unit test
-with a clear message rather than surprising a PR author.
+On any elek bump, in one change:
+
+1. re-fetch `src/review/diff-context.ts` at the new ref into `vendor/`, unmodified;
+2. update `upstream_commit` and `upstream_blob_sha` in `vendor/diff-context.manifest.json`
+   (`ELEK_REF_VERIFIED` is **read from** that file, never retyped);
+3. update the literal `ELEK_REF` env value in `.github/workflows/ai-code-review.yml`;
+4. regenerate `fixtures/golden/` with `node scripts/ai-review-coverage/generate-goldens.mjs`;
+5. **by hand:** re-check that `fixtures/pr-3515.diff` still truncates. A newer packer may stop
+   truncating it, at which point the `Prove the fixture-driven red end-to-end` step in
+   `coverage-gate-tests.yml` would pass for the wrong reason.
+
+Until 1–3 agree, **U1 keeps the gate red by design**, and `elek-prompt-budget.test.mjs` reports
+the disagreement offline: blob-hash agreement catches a hand-edited vendored copy, pin agreement
+catches a bump without a re-vendor, and the committed goldens catch any change to the model, the
+vendored module or the runtime that alters the answer.
+
+**Stated limitation.** None of those assertions proves that the Action executing at runtime uses
+these semantics. The only link is pin agreement, and it is a link by *commit identity*, not by
+execution.
+
+Two figures are no longer published, and one is new. `per_file_budget` is gone: it was elek's
+*internal* slice budget, it does not appear anywhere in elek's output, and the only way to
+publish it was to restate the arithmetic. `slice_ceiling_observed` replaces it with what can
+actually be measured — the largest slice that survived into the prompt (3,846 on `pr-3515.diff`,
+against an internal budget of 4,000).
 
 The pin itself is revisited in **EHAC-2059**: `main` (`cbb7202b`, untagged) replaces `execSync`
 with `execFileSync` + `isSafeGitRefName` in `src/github/git.ts`, a genuine shell-injection fix,
@@ -350,7 +382,11 @@ operator rule, nothing is filed on `selimozten/elek` or any other third-party re
 
 | File | Role |
 |---|---|
-| `elek-prompt-budget.mjs` | verbatim port of `elek@3748508 src/review/diff-context.ts` + the frozen `ELEK_REF_VERIFIED` / `BUDGET` |
+| `vendor/diff-context.ts` | **upstream bytes and nothing else** — `elek@3748508 src/review/diff-context.ts`, byte-identical, no local header |
+| `vendor/diff-context.manifest.json` | provenance for the above: repo, path, commit, upstream blob sha, the fetch command, and the coupling note for the deferred version move |
+| `elek-prompt-budget.mjs` | **executes** the vendored packer and measures its output; carries no upstream constant. Re-exports `ELEK_REF_VERIFIED` from the manifest |
+| `generate-goldens.mjs` | one-off regenerator for `fixtures/golden/`; run it only when the vendored packer moves |
+| `fixtures/golden/` | frozen expected outputs + a manifest naming the inputs they were produced from |
 | `measure-review-coverage.mjs` | producer: pure `buildCoverage` core + thin CLI; runs in the `review` job; never exits non-zero |
 | `assert-review-coverage.mjs` | consumer: re-derives U1–U6, recomputes the verdict, exits per the contract |
 | `workflow-invariants.test.mjs` | parses the shipped workflow YAML and asserts the gate cannot be suppressed or skipped |

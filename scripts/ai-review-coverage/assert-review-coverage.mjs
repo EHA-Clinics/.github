@@ -347,9 +347,193 @@ export function evaluate({ reviewResult, coverageRaw }) {
   return { exitCode: 0, verdict, lines, summary };
 }
 
+/* ────────────────────────────────────────────────────────────────────────────────────────
+ * R12 — VERDICT BUCKETING, across a SET of review records (EHAC-2165).
+ *
+ * WHAT THIS DETECTS: a review record set whose aggregate reads partly healthy because the
+ * greens in it are of a DIFFERENT KIND from the reds. From 2026-08-09 a newly published
+ * `pi-ai` broke elek's floating `pi install npm:pi-mcp-adapter || true`, killing AI review
+ * org-wide — eleven consecutive failures across six branches, invisible for ~16 HOURS,
+ * because every green in the window was a declined-bot NOT_REVIEWED record. Nobody was
+ * lying; the arithmetic was. Failures were being averaged against successes that were not
+ * successes of the same thing.
+ *
+ * WHAT THIS DOES NOT DETECT, AND CANNOT: the CAUSE. The offending install lives inside the
+ * third-party action's own composite steps, `v1.1.4` ships no lockfile of any kind, and no
+ * action input reaches it — there is NO caller-side lever at the pinned version. The durable
+ * hermetic fix re-points at EHAC-2059, which is deferred. The existing workaround (the
+ * plugin is disabled) remains load-bearing: do not remove it believing the install was
+ * repaired, because it was not.
+ *
+ * BUCKET BY VERDICT, NEVER BY CONCLUSION. A declined bot record carries conclusion
+ * "skipped", and so does a review that died before it started. The verdict is the only field
+ * that distinguishes them, and membership is decided by a FIELD ON EACH RECORD — never
+ * inferred from another bucket being empty, which is the inference that produced the outage.
+ *
+ * | Bucket     | Membership                                                                  |
+ * |------------|-----------------------------------------------------------------------------|
+ * | `real`     | the verdict names a review that EXECUTED and produced a coverage judgement   |
+ * | `declined` | verdict NOT_REVIEWED **and** a reason in the closed allowlist                |
+ * | `unknown`  | anything else: verdict absent, empty, unrecognised, or NOT_REVIEWED with an   |
+ * |            | unrecognised or missing reason — a record that declares NOTHING              |
+ *
+ * `unknown` is the DISCRIMINATOR, and it is the whole repair. A declined-only run and a
+ * total outage share a shape — an empty `real` bucket — and differ only by whether every
+ * non-real record positively explained itself. An earlier draft of this rule reasoned from
+ * bucket emptiness alone and therefore required a declined-only set to exit both 0 and
+ * non-zero. Two reviewers derived that contradiction independently. Do not reintroduce it.
+ * ──────────────────────────────────────────────────────────────────────────────────────── */
+
+/** Verdicts that mean a review ran and the gate judged its coverage. */
+export const REAL_REVIEW_VERDICTS = Object.freeze([
+  'COMPLETE',
+  'PARTIAL_NON_SOURCE',
+  'PARTIAL_SOURCE',
+  'UNKNOWN',
+]);
+
+/** The subset of the above that means the review both ran AND certified its coverage. */
+export const PASSING_REAL_VERDICTS = Object.freeze(['COMPLETE', 'PARTIAL_NON_SOURCE']);
+
+/**
+ * The two reason tokens. DISTINCT on purpose: "every review we ran failed" and "we cannot
+ * tell whether a review happened" need different investigations, and one token for both
+ * sends the next person to the wrong place.
+ */
+export const BUCKET_TOKENS = Object.freeze({
+  allFailed: 'REVIEW_SET_ALL_REAL_REVIEWS_FAILED',
+  unknown: 'REVIEW_SET_UNKNOWN',
+});
+
+/**
+ * Partition review records into the three disjoint buckets. Every record lands in exactly
+ * one, decided by its own fields.
+ *
+ * @param {any[]} records
+ * @returns {{real: any[], declined: any[], unknown: any[]}}
+ */
+export function bucketReviewRecords(records) {
+  const real = [];
+  const declined = [];
+  const unknown = [];
+  for (const record of Array.isArray(records) ? records : []) {
+    const verdict = typeof record?.verdict === 'string' ? record.verdict.trim() : '';
+    if (REAL_REVIEW_VERDICTS.includes(verdict)) {
+      real.push(record);
+    } else if (verdict === 'NOT_REVIEWED' && NOT_REVIEWED_REASONS.includes(record?.not_reviewed?.reason)) {
+      // Positively declares WHY no review happened. That declaration is the only thing
+      // separating this record from an outage record, so it is required, not assumed.
+      declined.push(record);
+    } else {
+      unknown.push(record);
+    }
+  }
+  return { real, declined, unknown };
+}
+
+/**
+ * Apply the four-state contract to a record set. Pure: returns the exit code and the lines
+ * to print. The states are TOTAL and DISJOINT — every payload matches exactly one.
+ *
+ * | # | Condition                                                    | Exit | Token     |
+ * |---|--------------------------------------------------------------|------|-----------|
+ * | 1 | `real` non-empty and EVERY real record failed                 | 1    | allFailed |
+ * | 2 | `real` non-empty and at least one real record passed          | 0    | none      |
+ * | 3 | `real` empty and (`unknown` non-empty OR `declined` empty)     | 1    | unknown   |
+ * | 4 | `real` empty and `unknown` empty and `declined` non-empty      | 0    | none      |
+ *
+ * State 3's second clause is what stops an EMPTY record set reading as healthy: nothing
+ * examined is not the same as nothing wrong. `reportedCount` closes the other half — a read
+ * that returned fewer records than the run says it has is a TRUNCATED read, which is a
+ * failure to look, not an absence of findings.
+ *
+ * @param {any[]} records
+ * @param {{reportedCount?: number}} [options]
+ * @returns {{exitCode: number, state: string, token: string|null, lines: string[], summary: string[]}}
+ */
+export function evaluateRecordSet(records, { reportedCount } = {}) {
+  const lines = [];
+  const summary = ['## AI Review Coverage — review record set', ''];
+  const list = Array.isArray(records) ? records : [];
+  const { real, declined, unknown } = bucketReviewRecords(list);
+
+  const declaredCount = num(reportedCount);
+  const truncated = declaredCount !== null && declaredCount > list.length;
+
+  summary.push(
+    `Buckets — real: ${real.length}, declined: ${declined.length}, unknown: ${unknown.length}.`,
+    '',
+  );
+
+  // State 1 — the outage shape. Reviews ran; every one of them failed. Any greens present
+  // are declined records, which are not successes of the same kind and must not offset it.
+  if (real.length > 0 && !real.some((r) => PASSING_REAL_VERDICTS.includes(r?.verdict))) {
+    const named = real.map((r) => `${r?.id ?? r?.run_id ?? '(unnamed)'}: ${r?.verdict}`).join(', ');
+    lines.push(
+      `::error::${BUCKET_TOKENS.allFailed} all ${real.length} real review record(s) failed, while ${declined.length} declined record(s) reported green. The aggregate reads partly healthy because the greens are of a DIFFERENT KIND. Failing bucket: real (${named}).`,
+    );
+    summary.push(`**${BUCKET_TOKENS.allFailed}** — every real review failed.`);
+    return { exitCode: 1, state: 'ACTIVE-FAILING', token: BUCKET_TOKENS.allFailed, lines, summary };
+  }
+
+  // State 2 — at least one review ran and certified. Healthy.
+  if (real.length > 0) {
+    lines.push(
+      `::notice::${real.length} real review record(s), at least one of which succeeded; ${declined.length} declined, ${unknown.length} unknown.`,
+    );
+    summary.push('> At least one real review succeeded.');
+    return { exitCode: 0, state: 'ACTIVE-HEALTHY', token: null, lines, summary };
+  }
+
+  // State 3 — no review demonstrably ran, and something failed to explain itself. Absence of
+  // evidence is not evidence of health.
+  if (unknown.length > 0 || declined.length === 0 || truncated) {
+    const why = truncated
+      ? `the run reports ${declaredCount} record(s) but only ${list.length} were read — a truncated read is a failure to look, never an absence of findings`
+      : unknown.length > 0
+        ? `${unknown.length} record(s) declare no recognised verdict or reason, so whether a review happened cannot be established`
+        : 'the record set is empty — nothing was examined, which is not the same as nothing being wrong';
+    lines.push(`::error::${BUCKET_TOKENS.unknown} no real review records are present and ${why}.`);
+    summary.push(`**${BUCKET_TOKENS.unknown}** — ${why}.`);
+    return { exitCode: 1, state: 'UNKNOWN', token: BUCKET_TOKENS.unknown, lines, summary };
+  }
+
+  // State 4 — every record positively declared a recognised reason for not being reviewed.
+  // Healthy, and it MUST be: reporting this would red every dependency-bot pull request, and
+  // a rule that reds every bot PR is switched off within a week. The single-record path
+  // already handles this case, so reporting here would also double-report it.
+  lines.push(
+    `::notice::no review was requested on any of the ${declined.length} record(s); every one declares a recognised reason.`,
+  );
+  summary.push('> Declined-only: every record declares a recognised reason.');
+  return { exitCode: 0, state: 'DECLINED-ONLY', token: null, lines, summary };
+}
+
 const invokedDirectly =
   process.argv[1] && basename(process.argv[1]) === 'assert-review-coverage.mjs';
-if (invokedDirectly) {
+if (invokedDirectly && process.env.REVIEW_RECORD_SET_JSON !== undefined) {
+  // R12 mode: audit a SET of review records rather than one run's coverage.
+  let parsed = null;
+  let parseError = null;
+  try {
+    parsed = JSON.parse(process.env.REVIEW_RECORD_SET_JSON);
+  } catch (err) {
+    parseError = err?.message ?? String(err);
+  }
+  if (parseError !== null) {
+    out(
+      `::error::${BUCKET_TOKENS.unknown} REVIEW_RECORD_SET_JSON did not parse (${parseError}). Failing closed: a record set we could not read is not a record set with nothing in it.`,
+    );
+    process.exit(1);
+  }
+  const records = Array.isArray(parsed) ? parsed : parsed?.records;
+  const { exitCode, state, lines } = evaluateRecordSet(records, {
+    reportedCount: Array.isArray(parsed) ? undefined : parsed?.reported_count,
+  });
+  out(`AI Review record set state: ${state}`);
+  for (const line of lines) out(line);
+  process.exit(exitCode);
+} else if (invokedDirectly) {
   const { exitCode, verdict, lines, summary } = evaluate({
     reviewResult: process.env.REVIEW_RESULT,
     coverageRaw: process.env.COVERAGE_JSON,

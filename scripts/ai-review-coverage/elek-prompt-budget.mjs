@@ -1,397 +1,319 @@
 /**
- * elek-prompt-budget.mjs — a verbatim port of elek's prompt-budget model, so this
- * organisation can measure which changed files actually reached the review prompt.
+ * elek-prompt-budget.mjs — the coverage gate's prompt-budget model (EHAC-2057, EHAC-2103).
  *
- * PORTED FROM: selimozten/elek@3748508413fb355ae696b8fa98d1075930d12106 (v1.1.4),
- *              src/review/diff-context.ts (209 lines), plus the two constants that
- *              select the budget: src/review/strategy.ts:55
- *              DEFAULT_CHANGED_FILES_PROMPT_CHARS = 200_000 and strategy.ts:355
- *              `changedFilesBlock(data, maxChars = DEFAULT_CHANGED_FILES_PROMPT_CHARS)`,
- *              which calls `formatChangedFilesForPrompt(data.diff, maxChars)` with NO
- *              options object — so `fullDiffThresholdChars` keeps its 80_000 default.
+ * WHAT CHANGED, AND WHY (D-04 / R14). This file used to be a hand-written PORT of elek's
+ * packer: it restated the upstream constants and reimplemented the upstream selection
+ * arithmetic. That is two implementations of one idea. They agreed on the day the port was
+ * written and would have had to be re-derived, by hand, on every elek bump — and a bump that
+ * changed the packer without changing the port would have left the gate modelling a version
+ * that no longer runs, with every signal still green.
  *
- * SUPERSEDED REGIME, recorded because it is the EHAC-2057 root cause: at the previous pin
- * selimozten/elek@88813716bf744e2666c078d655abef990b7d82aa, src/review/strategy.ts:282
- * built the changed-files block with a raw mid-stream `data.diff.slice(0, 60_000)`. Files
- * past that byte offset vanished entirely, INCLUDING their `diff --git` name lines, and the
- * lens was told only "diff truncated for prompt budget". On eha_care PR #3515 that dropped
- * `src/common/services/tenantRoster.ts` outright, the acceptance gates in
- * src/review/contract.ts then converted the missing context into silence ("drop it instead
- * of posting a caveat"), and the check reported green.
+ * There is now ONE implementation. `vendor/diff-context.ts` is the upstream packer, vendored
+ * byte-for-byte at the pinned commit, and this file EXECUTES it. Everything below is
+ * measurement of what that execution produced.
  *
- * THESE CONSTANTS ARE OBSERVED UPSTREAM IMPLEMENTATION DETAILS, NOT A CONTRACT. On any elek
- * bump, re-read `src/review/diff-context.ts` at the new ref and update both
- * `ELEK_REF_VERIFIED` and `BUDGET` here, plus the `ELEK_REF` literal in
- * .github/workflows/ai-code-review.yml. Until all three agree, branch U1 makes the coverage
- * gate red by design — an unverified model must not be allowed to certify coverage.
+ * PERMITTED RESPONSIBILITIES OF THIS FILE — the list is exhaustive, and
+ * `elek-prompt-budget.test.mjs` asserts that the file declares nothing outside it:
+ *   1. marshal arguments into the vendored functions (including the reference inputs used to
+ *      read upstream's own file ranking back out of its output);
+ *   2. measure what the vendored packer's OUTPUT actually contains, per changed file;
+ *   3. carry the vendored module's provenance forward as `ELEK_REF_VERIFIED`;
+ *   4. format the coverage report the two halves of the gate consume.
+ * Reading a diff from disk belongs to `measure-review-coverage.mjs`, not here.
+ *
+ * WHAT IS DELIBERATELY NOT HERE. Not one upstream constant. Not the prompt ceiling, not the
+ * full-diff threshold, not the slice clamps, not the divisor cap, not the block-fit margin.
+ * `formatChangedFilesForPrompt` is called with its own default arguments so that upstream's
+ * defaults bind — which is also exactly how elek's own `changedFilesBlock` calls it — so
+ * this file never needs to name a number upstream owns. A spec case asserts that none of
+ * those literal values appears anywhere in this source.
+ *
+ * STATED LIMITATION, written rather than implied away: nothing in this file or its spec
+ * proves that the GitHub Action executing at runtime uses these semantics. The only link is
+ * that `vendor/diff-context.manifest.json`'s `upstream_commit` equals the action pin in
+ * .github/workflows/ai-code-review.yml, and that is a link by COMMIT IDENTITY, not by
+ * execution. It is asserted; it is not an execution proof, and it must not be read as one.
+ *
+ * RUNTIME DEPENDENCY: importing a typed module directly requires a Node runtime with
+ * unflagged type stripping. The gate workflow pins that runtime as a literal version, and
+ * the spec asserts both the literal AND — behaviourally — that this import does not throw.
  *
  * Node built-ins only. Pure functions only: no network, no exec, no filesystem writes.
  */
 
-/** The elek ref this budget model was read at and verified against. */
-export const ELEK_REF_VERIFIED = '3748508413fb355ae696b8fa98d1075930d12106';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
-/** The six upstream constants that decide what reaches the prompt. */
-export const BUDGET = Object.freeze({
-  /** strategy.ts:55 DEFAULT_CHANGED_FILES_PROMPT_CHARS — the absolute ceiling. */
-  maxChars: 200_000,
-  /** diff-context.ts DEFAULT_FULL_DIFF_THRESHOLD_CHARS — above this, per-file slices. */
-  fullDiffThreshold: 80_000,
-  /** diff-context.ts MIN_FILE_SLICE_CHARS. */
-  minFileSlice: 700,
-  /** diff-context.ts MAX_FILE_SLICE_CHARS — the clamp that actually binds in practice. */
-  maxFileSlice: 4_000,
-  /** diff-context.ts MAX_OVERVIEW_FILES — files named in the overview block. */
-  maxOverviewFiles: 250,
-  /** diff-context.ts `Math.min(files.length, 40)` in the per-file budget divisor. */
-  packerFileDivisorCap: 40,
-});
+import {
+  formatChangedFilesForPrompt,
+  parseUnifiedDiffFiles,
+} from './vendor/diff-context.ts';
 
-/** Literal strings from the upstream packer, reproduced so block lengths match exactly. */
-const SLICE_HEADER_LINES = Object.freeze([
-  '# Representative diff slices',
-  '# Slices are prioritized toward non-deleted production files so later application changes are not starved by early docs/workflow churn.',
+/**
+ * Provenance of the vendored packer. This file is the single source of truth for which elek
+ * commit the gate models; `upstream_blob_sha` is upstream's own git blob identifier for the
+ * vendored bytes and is re-checked offline by the spec with `git hash-object -t blob`.
+ */
+export const VENDOR_MANIFEST = Object.freeze(
+  JSON.parse(readFileSync(join(import.meta.dirname, 'vendor', 'diff-context.manifest.json'), 'utf8')),
+);
+
+/**
+ * The elek ref this budget model is derived from — READ FROM THE MANIFEST, never retyped.
+ * `measure-review-coverage.mjs` reds the gate (U1) when the workflow's ELEK_REF disagrees,
+ * and `workflow-invariants.test.mjs` asserts the action pin equals this value.
+ */
+export const ELEK_REF_VERIFIED = VENDOR_MANIFEST.upstream_commit;
+
+/**
+ * Reference inputs for reading upstream's own file ranking back out of its output.
+ *
+ * WHY THIS EXISTS. The gate's predicate is source-weighted: it must distinguish production
+ * source from tests, docs and deletions, and it must do so EXACTLY as elek does, or the gate
+ * and the reviewer disagree about which files mattered (CONTEXT D-06). elek's classifier
+ * (`promptPriority`) is module-private upstream — it is not exported, so it cannot be called.
+ * Reimplementing it here would put back the second copy this change exists to delete.
+ *
+ * So it is not reimplemented; it is OBSERVED. `comparePromptPriority` orders the slice blocks
+ * upstream emits by (priority ascending, churn descending, path ascending). Feeding upstream a
+ * synthetic diff that contains one minimal section per changed path, plus these six reference
+ * sections — each given strictly MORE churn than every synthetic real section, so a reference
+ * always sorts first within its own class — makes the emitted order read as:
+ *
+ *     [ref 0][real files of priority 0][ref 1][priority 1]…[ref 6][priority 6]
+ *
+ * A file's priority is therefore the priority of the nearest reference that precedes it. The
+ * classification is upstream's; only the reference paths are ours.
+ *
+ * These paths are INPUTS to upstream, not a restatement of its rules. If a future elek changes
+ * what counts as production code, the references reorder, the spec's anchor case reds, and the
+ * disagreement is reported — which is the whole point. A silently diverging second copy is what
+ * we are removing.
+ */
+export const PRIORITY_PROBES = Object.freeze([
+  { priority: 0, suffix: 'production.ts', deleted: false },
+  { priority: 1, suffix: 'unit.test.ts', deleted: false },
+  { priority: 2, suffix: 'opaque.bin', deleted: false },
+  { priority: 4, suffix: 'notes.md', deleted: false },
+  { priority: 5, suffix: 'gone.ts', deleted: true },
+  { priority: 6, suffix: 'gone.md', deleted: true },
 ]);
-const SLICE_TRUNCATION_MARKER =
-  '# ... file diff truncated; inspect this file directly if it is relevant.';
-/** diff-context.ts reserves this many characters inside slicePatch for the marker line. */
-const SLICE_MARKER_RESERVE = 140;
-/** diff-context.ts adds this safety margin to every block-fit test. */
-const BLOCK_FIT_MARGIN = 240;
-/** diff-context.ts subtracts this from maxChars before dividing the per-file budget. */
-const PACKER_OVERHEAD_RESERVE = 1_200;
 
 /**
- * @typedef {Object} ChangedFilePatch
- * @property {string}  path             new path (old path for deletions), or `(unknown)`
- * @property {string}  oldPath
- * @property {'added'|'deleted'|'modified'|'renamed'} status
- * @property {number}  additions
- * @property {number}  deletions
- * @property {string}  patch            the file's raw diff section
- * @property {boolean} pathParseFailed  true when the `diff --git` header would not parse (U6)
+ * Path prefix for the reference sections. Long and arbitrary so it cannot collide with a real
+ * changed path; a collision is reported as an anomaly rather than silently absorbed.
  */
+export const PROBE_PREFIX = 'zzz-eha-coverage-probe-8f21c4de/';
+
+/** Ceiling handed to the ranking run. Ours, not upstream's: it exists only to guarantee that
+ * the ranking run omits nothing, so that every path is observable in the emitted order. */
+const PROBE_MAX_CHARS = 1_000_000_000;
 
 /**
- * Split a unified diff into per-file sections, exactly as elek does.
+ * Build one minimal unified-diff section. Used ONLY to construct the ranking input; the real
+ * diff is never rewritten.
  *
- * The anchored multiline regex is load-bearing: a `grep -c 'diff --git'`-style count
- * over-matches on any diff that ADDS a file whose content quotes a diff (an archived
- * summary, a committed `.patch` fixture), silently over-splitting the inventory. Using
- * elek's own regex means the gate and the reviewer agree even where both are wrong.
- *
- * @param {unknown} diff
- * @returns {ChangedFilePatch[]}
- */
-export function parseUnifiedDiffFiles(diff) {
-  if (typeof diff !== 'string' || diff === '') return [];
-
-  const starts = [...diff.matchAll(/^diff --git .+$/gm)].map((match) => match.index ?? 0);
-  if (starts.length === 0) return [];
-
-  const files = [];
-  for (let i = 0; i < starts.length; i++) {
-    const start = starts[i];
-    const end = starts[i + 1] ?? diff.length;
-    const patch = diff.slice(start, end).replace(/\n+$/, '');
-    const firstLine = patch.split('\n', 1)[0] ?? '';
-    const { oldPath, newPath, parsed } = parseDiffHeader(firstLine);
-    const status = patch.includes('\ndeleted file mode ')
-      ? 'deleted'
-      : patch.includes('\nnew file mode ')
-        ? 'added'
-        : patch.includes('\nrename from ') || patch.includes('\nrename to ')
-          ? 'renamed'
-          : 'modified';
-    const counts = countPatchChanges(patch);
-    files.push({
-      path: status === 'deleted' ? oldPath : newPath,
-      oldPath,
-      status,
-      additions: counts.additions,
-      deletions: counts.deletions,
-      patch,
-      pathParseFailed: !parsed,
-    });
-  }
-  return files;
-}
-
-/**
- * elek's `parseDiffHeader`, plus a `parsed` flag we need for U6. Upstream silently returns
- * `(unknown)`; a gate that silently accepts `(unknown)` cannot know what it failed to see.
- * @param {string} line
- */
-function parseDiffHeader(line) {
-  const match = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
-  if (!match) return { oldPath: '(unknown)', newPath: '(unknown)', parsed: false };
-  return { oldPath: unquotePath(match[1]), newPath: unquotePath(match[2]), parsed: true };
-}
-
-/** @param {string} path */
-function unquotePath(path) {
-  return path.replace(/^"|"$/g, '');
-}
-
-/** @param {string} patch */
-function countPatchChanges(patch) {
-  let additions = 0;
-  let deletions = 0;
-  for (const line of patch.split('\n')) {
-    if (line.startsWith('+++') || line.startsWith('---')) continue;
-    if (line.startsWith('+')) additions++;
-    if (line.startsWith('-')) deletions++;
-  }
-  return { additions, deletions };
-}
-
-/**
- * elek's `formatFileOverview`. Reproduced verbatim because its LENGTH feeds the per-file
- * budget arithmetic — a paraphrase would silently shift every slice boundary.
- * @param {ChangedFilePatch[]} files
+ * @param {string} path
+ * @param {boolean} deleted  reproduce upstream's deleted-file marker, which its classifier reads
+ * @param {string} token     unique marker, so the section is locatable in the emitted output
+ *                           without parsing upstream's block-header format
+ * @param {number} addedLines churn: exactly this many `+` lines, so churn is ours to control
  * @returns {string}
  */
-export function formatFileOverview(files) {
-  const shown = files.slice(0, BUDGET.maxOverviewFiles);
-  const totalAdditions = files.reduce((sum, file) => sum + file.additions, 0);
-  const totalDeletions = files.reduce((sum, file) => sum + file.deletions, 0);
-  const lines = [
-    `# Changed file overview (${files.length} file${files.length === 1 ? '' : 's'}, +${totalAdditions}/-${totalDeletions})`,
-    ...shown.map(
-      (file) => `# - ${file.path} (${file.status}, +${file.additions}/-${file.deletions})`,
-    ),
-  ];
-  if (files.length > shown.length) {
-    lines.push(`# - ... ${files.length - shown.length} more file(s)`);
-  }
-  return lines.join('\n');
-}
-
-/**
- * elek's `promptPriority`. 0 = production source, 1 = tests, 2 = other, 4 = docs/workflows,
- * 5/6 = deletions. The coverage predicate is source-weighted off exactly this function, so
- * the gate and the reviewer rank files identically (CONTEXT D-06).
- * @param {ChangedFilePatch} file
- * @returns {number}
- */
-export function promptPriority(file) {
-  const nonCode = isDocsOrWorkflow(file.path);
-  if (file.status === 'deleted' && nonCode) return 6;
-  if (file.status === 'deleted') return 5;
-  if (isProductionCode(file.path)) return 0;
-  if (isTestCode(file.path)) return 1;
-  if (nonCode) return 4;
-  return 2;
-}
-
-/**
- * elek's `comparePromptPriority`: priority asc, then churn desc, then path.
- * @param {ChangedFilePatch} a
- * @param {ChangedFilePatch} b
- */
-export function comparePromptPriority(a, b) {
-  const score = promptPriority(a) - promptPriority(b);
-  if (score !== 0) return score;
-  const churn = b.additions + b.deletions - (a.additions + a.deletions);
-  if (churn !== 0) return churn;
-  return a.path.localeCompare(b.path);
-}
-
-/** @param {string} path */
-function isDocsOrWorkflow(path) {
-  const lower = path.toLowerCase();
+function probeSection(path, deleted, token, addedLines) {
+  const marker = deleted ? '\ndeleted file mode 100644' : '';
+  const body = Array.from({ length: addedLines }, (_, i) => `+${token}${i}`).join('\n');
   return (
-    lower.startsWith('.github/') ||
-    lower.startsWith('docs/') ||
-    lower === 'readme.md' ||
-    lower.startsWith('readme.') ||
-    lower.startsWith('changelog.') ||
-    lower.endsWith('.md') ||
-    lower.endsWith('.mdx') ||
-    lower.endsWith('.rst') ||
-    lower.endsWith('.adoc')
-  );
-}
-
-/** @param {string} path */
-function isProductionCode(path) {
-  const lower = path.toLowerCase();
-  if (isTestCode(lower) || isDocsOrWorkflow(lower)) return false;
-  return /\.(ts|tsx|js|jsx|mjs|cjs|go|rs|py|rb|java|kt|swift|c|cc|cpp|h|hpp|cs|php|ex|exs|erl|hrl|sql)$/.test(
-    lower,
-  );
-}
-
-/** @param {string} path */
-function isTestCode(path) {
-  const lower = path.toLowerCase();
-  return (
-    lower.includes('/test/') ||
-    lower.includes('/tests/') ||
-    lower.includes('__tests__/') ||
-    lower.includes('.test.') ||
-    lower.includes('.spec.') ||
-    lower.endsWith('_test.go')
+    `diff --git a/${path} b/${path}${marker}\n` +
+    `index 1111111..2222222 100644\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n${body}\n`
   );
 }
 
 /**
- * elek's `slicePatch`, verbatim — needed for its exact LENGTH in the fit test below.
- * @param {string} patch
- * @param {number} maxChars
- * @returns {string}
- */
-function slicePatch(patch, maxChars) {
-  if (patch.length <= maxChars) return patch;
-  const slice = patch
-    .slice(0, Math.max(0, maxChars - SLICE_MARKER_RESERVE))
-    .replace(/\n[^\n]*$/, '');
-  return `${slice}\n${SLICE_TRUNCATION_MARKER}`;
-}
-
-/**
- * How many characters OF THE ORIGINAL PATCH survive `slicePatch`. This is the number the
- * coverage verdict turns on, and it is derived from the ported packer — never defaulted to
- * `patch.length`, which would make the gate arithmetically incapable of going red.
- * @param {string} patch
- * @param {number} maxChars
- * @returns {number}
- */
-function shownCharsOf(patch, maxChars) {
-  if (patch.length <= maxChars) return patch.length;
-  return patch
-    .slice(0, Math.max(0, maxChars - SLICE_MARKER_RESERVE))
-    .replace(/\n[^\n]*$/, '').length;
-}
-
-/**
- * @typedef {Object} PackResult
- * @property {'FULL'|'SLICES'} regime
- * @property {number|null} perFileBudget
- * @property {Map<string, number>} shown   path -> characters of that file's patch in the prompt
- * @property {string[]} omittedPaths       files dropped from the prompt entirely
- * @property {number} promptChars          size of the changed-files block elek would emit
+ * @typedef {Object} PriorityReading
+ * @property {(file: {path: string, status: string}) => number|null} priorityOf
+ * @property {string[]} anomalies  reference sections that did not come back, or path collisions
+ * @property {number[]} referenceOrder  the reference priorities in the order upstream emitted them
  */
 
 /**
- * Reproduce elek's `formatChangedFilesForPrompt` selection, returning WHAT WAS SHOWN rather
- * than the prompt text.
+ * Read upstream's own priority for each changed file by executing its sorter.
  *
- * @param {ChangedFilePatch[]} files  output of parseUnifiedDiffFiles for `diffText`
- * @param {string} diffText           the same diff those files were parsed from
- * @param {{maxChars?: number, fullDiffThreshold?: number}} [options]
- * @returns {PackResult}
+ * @param {{path: string, status: string}[]} files output of the vendored `parseUnifiedDiffFiles`
+ * @returns {PriorityReading}
  */
-export function packPromptSlices(files, diffText, options = {}) {
-  const maxChars = options.maxChars ?? BUDGET.maxChars;
-  const fullDiffThreshold = options.fullDiffThreshold ?? BUDGET.fullDiffThreshold;
+export function derivePromptPriorities(files) {
+  const keyOf = (file) => `${file.status === 'deleted' ? 'D' : 'M'} ${file.path}`;
+  const anomalies = [];
 
-  const overview = formatFileOverview(files);
-  const fullDiffWithOverview = `${overview}\n\n# Full diff\n${diffText}`;
-  if (
-    fullDiffWithOverview.length <= maxChars &&
-    fullDiffWithOverview.length <= fullDiffThreshold
-  ) {
-    return {
-      regime: 'FULL',
-      perFileBudget: null,
-      shown: new Map(files.map((file) => [file.path, file.patch.length])),
-      omittedPaths: [],
-      promptChars: fullDiffWithOverview.length,
-    };
+  const index = new Map();
+  const unique = [];
+  for (const file of files) {
+    const key = keyOf(file);
+    if (!index.has(key)) {
+      index.set(key, unique.length);
+      unique.push(file);
+    }
+    if (typeof file.path === 'string' && file.path.startsWith(PROBE_PREFIX)) {
+      anomalies.push(`changed path collides with the ranking reference prefix: ${file.path}`);
+    }
   }
 
-  const sorted = [...files].sort(comparePromptPriority);
-  const remainingBudget = Math.max(0, maxChars - overview.length - PACKER_OVERHEAD_RESERVE);
-  const perFileBudget = Math.max(
-    BUDGET.minFileSlice,
-    Math.min(
-      BUDGET.maxFileSlice,
-      Math.floor(
-        remainingBudget / Math.max(1, Math.min(files.length, BUDGET.packerFileDivisorCap)),
-      ),
-    ),
-  );
+  const markers = [];
+  const sections = [];
+  PRIORITY_PROBES.forEach((probe, i) => {
+    const token = `EHAPROBE${i}X`;
+    markers.push({ token, probe });
+    sections.push(probeSection(`${PROBE_PREFIX}${probe.suffix}`, probe.deleted, token, 2));
+  });
+  unique.forEach((file, i) => {
+    const token = `EHAREAL${i}X`;
+    markers.push({ token, real: i });
+    sections.push(probeSection(file.path, file.status === 'deleted', token, 1));
+  });
 
-  const blocks = [overview, '', ...SLICE_HEADER_LINES];
-  const included = new Set();
-  const shown = new Map();
+  // `fullDiffThresholdChars: 0` forces the slice regime, which is the only regime that sorts.
+  const ranked = formatChangedFilesForPrompt(sections.join(''), PROBE_MAX_CHARS, {
+    fullDiffThresholdChars: 0,
+  });
 
-  for (const file of sorted) {
-    const slice = slicePatch(file.patch, perFileBudget);
-    const header = `\n# ${file.path} (${file.status}, +${file.additions}/-${file.deletions})\n`;
-    const block = `${header}${slice}`;
-    const nextLength = blocks.join('\n').length + block.length + BLOCK_FIT_MARGIN;
-    if (nextLength > maxChars) continue; // omitted from the prompt entirely
-    blocks.push(block);
-    included.add(file.path);
-    shown.set(file.path, shownCharsOf(file.patch, perFileBudget));
-  }
+  const placed = markers
+    .map((entry) => ({ ...entry, at: ranked.indexOf(`+${entry.token}0`) }))
+    .sort((a, b) => a.at - b.at);
 
-  const omittedPaths = files.filter((f) => !included.has(f.path)).map((f) => f.path);
-  if (omittedPaths.length > 0) {
-    blocks.push('');
-    blocks.push(
-      `# ... ${omittedPaths.length} changed file(s) omitted from diff slices; see the full file overview above and inspect files with read/grep/find/ls as needed.`,
+  for (const entry of placed) {
+    if (entry.at >= 0) continue;
+    anomalies.push(
+      entry.probe
+        ? `ranking reference of priority ${entry.probe.priority} did not appear in the emitted order`
+        : `changed path ${unique[entry.real]?.path ?? '(unknown)'} did not appear in the emitted order`,
     );
   }
-  blocks.push('');
-  blocks.push(
-    `# ... diff truncated by file for prompt budget; original diff was ${diffText.length.toLocaleString('en-US')} characters.`,
-  );
 
-  for (const file of files) {
-    if (!shown.has(file.path)) shown.set(file.path, 0);
+  const byUniqueIndex = [];
+  const referenceOrder = [];
+  let current = null;
+  for (const entry of placed) {
+    if (entry.at < 0) continue;
+    if (entry.probe) {
+      current = entry.probe.priority;
+      referenceOrder.push(entry.probe.priority);
+    } else {
+      byUniqueIndex[entry.real] = current;
+    }
   }
 
   return {
-    regime: 'SLICES',
-    perFileBudget,
-    shown,
-    omittedPaths,
-    promptChars: blocks.join('\n').slice(0, maxChars).length,
+    priorityOf: (file) => {
+      const at = index.get(keyOf(file));
+      const value = at === undefined ? null : byUniqueIndex[at];
+      return value === undefined ? null : value;
+    },
+    anomalies,
+    referenceOrder,
   };
+}
+
+/**
+ * How many characters of `patch` reached `prompt` — measured on the emitted text, not predicted.
+ *
+ * The block upstream emits for an included file begins with that file's own `diff --git` line
+ * and continues with a PREFIX of its patch (a slice, or the whole patch). So: anchor on the
+ * patch's first line appearing as a whole line, then count the common prefix from there.
+ *
+ * Two details are load-bearing.
+ *
+ * - The anchor requires the header to be a WHOLE line (`\n…\n`). A diff that adds a file whose
+ *   content quotes a diff header carries that text as `+diff --git …` or ` diff --git …`, which
+ *   cannot match — the `embedded-diff-header.diff` fixture exists for exactly this, and a naive
+ *   substring anchor would attribute one file's content to another.
+ * - Every occurrence is tried and the longest run kept, because a quoted header could in
+ *   principle appear bare. Keeping the longest is conservative in the honest direction: a run
+ *   only counts if those characters really are in the prompt.
+ *
+ * The final trailing-newline trim recovers upstream's own accounting: when it truncates, it cuts
+ * at a line boundary and then appends its marker line, so the prompt and the patch share the
+ * boundary newline and diverge on the character after it. That shared newline is not content of
+ * the file that survived, so it is not counted.
+ *
+ * @param {string} prompt the text the vendored packer emitted
+ * @param {string} patch  the file's full patch, as the vendored parser split it
+ * @returns {number} characters of `patch` present in `prompt`; 0 when the file was omitted
+ */
+export function shownCharsFromPrompt(prompt, patch) {
+  if (typeof prompt !== 'string' || typeof patch !== 'string' || patch === '') return 0;
+  const anchor = `\n${patch.split('\n', 1)[0] ?? ''}\n`;
+  let best = 0;
+  let from = 0;
+  for (;;) {
+    const at = prompt.indexOf(anchor, from);
+    if (at < 0) break;
+    const start = at + 1;
+    const limit = Math.min(patch.length, prompt.length - start);
+    let run = 0;
+    while (run < limit && prompt.charCodeAt(start + run) === patch.charCodeAt(run)) run++;
+    if (run > 0 && patch[run - 1] === '\n') run--;
+    if (run > best) best = run;
+    from = at + 1;
+  }
+  return best;
 }
 
 /**
  * @typedef {Object} CoverageFile
  * @property {string} path
- * @property {number} priority
+ * @property {number|null} priority
  * @property {string} status
  * @property {number} patch_chars
  * @property {number} shown_chars
  * @property {number} pct
  * @property {'WHOLE'|'PARTIAL'|'ABSENT'} verdict
+ * @property {boolean} path_parse_failed
  */
 
 /**
- * Attribute per-file coverage for a diff: what elek would have shown each file, and the
- * rollup counts the gate's predicate is computed from.
+ * Attribute per-file coverage for a diff by EXECUTING the vendored packer and measuring what
+ * it emitted.
+ *
+ * `options` is a pass-through for specs and probes. Left undefined — which is how the gate
+ * calls it, and how elek's own caller calls upstream — every budget decision is taken by
+ * upstream's own default arguments.
  *
  * @param {unknown} diffText
- * @param {{maxChars?: number, fullDiffThreshold?: number}} [options]
+ * @param {{maxChars?: number, fullDiffThresholdChars?: number}} [options]
  */
 export function attributeCoverage(diffText, options = {}) {
   const text = typeof diffText === 'string' ? diffText : '';
-  const parsed = parseUnifiedDiffFiles(text);
-  const packed = packPromptSlices(parsed, text, options);
+  const prompt = formatChangedFilesForPrompt(text, options.maxChars, {
+    fullDiffThresholdChars: options.fullDiffThresholdChars,
+  });
+  const parsed = text === '' ? [] : parseUnifiedDiffFiles(text);
+
+  const ranking =
+    parsed.length === 0
+      ? { priorityOf: () => null, anomalies: [], referenceOrder: [] }
+      : derivePromptPriorities(parsed);
 
   /** @type {CoverageFile[]} */
   const files = parsed.map((file) => {
     const patchChars = file.patch.length;
-    const shownChars = packed.shown.get(file.path) ?? 0;
+    const shownChars = shownCharsFromPrompt(prompt, file.patch);
     const verdict = shownChars === 0 ? 'ABSENT' : shownChars >= patchChars ? 'WHOLE' : 'PARTIAL';
     return {
       path: file.path,
-      priority: promptPriority(file),
+      priority: ranking.priorityOf(file),
       status: file.status,
       patch_chars: patchChars,
       shown_chars: shownChars,
       pct: patchChars === 0 ? 0 : Math.floor((shownChars / patchChars) * 100),
       verdict,
-      path_parse_failed: file.pathParseFailed,
+      // Upstream's own signal for a header it could not parse: it substitutes this sentinel
+      // for BOTH paths. A gate that silently accepts it cannot know what it failed to see (U6).
+      path_parse_failed: file.path === '(unknown)' && file.oldPath === '(unknown)',
     };
   });
+
+  const truncated = files.filter((file) => file.shown_chars > 0 && file.shown_chars < file.patch_chars);
 
   const rollup = {
     files_total: files.length,
@@ -404,10 +326,17 @@ export function attributeCoverage(diffText, options = {}) {
   };
 
   return {
-    regime: packed.regime,
-    per_file_budget: packed.perFileBudget,
-    prompt_chars: packed.promptChars,
+    // The full diff is inlined verbatim in exactly one regime, so the emitted text ends with it.
+    // Structural, not a marker grep: it reads the relationship between the two strings rather
+    // than a caption upstream happens to print, which a paraphrase of that caption would fake.
+    regime: prompt.endsWith(text) ? 'FULL' : 'SLICES',
+    // OBSERVED, not upstream's internal per-file budget. That budget is not recoverable from
+    // upstream's output, and the only way to publish it would be to restate the arithmetic this
+    // change exists to delete. What can be measured is the largest slice that actually survived.
+    slice_ceiling_observed: truncated.length === 0 ? null : Math.max(...truncated.map((f) => f.shown_chars)),
+    prompt_chars: prompt.length,
     diff_chars: text.length,
+    ranking_anomalies: ranking.anomalies,
     files,
     rollup,
   };

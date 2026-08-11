@@ -374,8 +374,17 @@ export function buildCoverage({ diffText, env = {}, context = {}, inventoryCap =
       files_diff: attribution.rollup.files_total,
       changed_files_api: changedFilesApi,
       regime: attribution.regime,
-      per_file_budget: attribution.per_file_budget,
+      // R14. Formerly `per_file_budget`, which was elek's INTERNAL slice budget and could only
+      // be published by restating its arithmetic in a second implementation (D-04). The packer
+      // does not put that number in its output, so it is no longer claimed. What is measurable
+      // is the largest slice that actually survived into the prompt, and that is what is
+      // published: an observation rather than a recomputation.
+      slice_ceiling_observed: attribution.slice_ceiling_observed,
       prompt_chars: attribution.prompt_chars,
+      // Reference-ranking anomalies (a changed path colliding with the ranking prefix, or a
+      // reference that did not come back). Non-empty means a priority reading is not
+      // trustworthy; recorded so it is visible rather than absorbed.
+      ranking_anomalies: attribution.ranking_anomalies ?? [],
     },
     review: {
       conclusion,
@@ -438,8 +447,9 @@ function unknownRecord(reasons, { env = {}, context = {} } = {}) {
       files_diff: null,
       changed_files_api: null,
       regime: null,
-      per_file_budget: null,
+      slice_ceiling_observed: null,
       prompt_chars: null,
+      ranking_anomalies: [],
     },
     review: { conclusion: null, input_tokens: null, cost_usd: null, actor: null, event: null },
     // Shape-consistent with buildCoverage so the asserter never has to special-case which
@@ -469,7 +479,7 @@ export function renderJobSummary(coverage) {
     `| elek pin | \`${coverage.elek.ref ?? '(unset)'}\` (${coverage.elek.pin_ok ? 'verified' : '**UNVERIFIED**'}) |`,
     `| strategy | requested \`${coverage.strategy.requested ?? '?'}\` / executed \`${coverage.strategy.executed ?? '?'}\` |`,
     `| diff | ${coverage.diff.chars ?? '?'} utf8 units, ${coverage.diff.files_diff ?? '?'} file(s) |`,
-    `| prompt regime | \`${coverage.diff.regime ?? '?'}\`${coverage.diff.per_file_budget ? `, per-file budget ${coverage.diff.per_file_budget}` : ''} |`,
+    `| prompt regime | \`${coverage.diff.regime ?? '?'}\`${coverage.diff.slice_ceiling_observed ? `, largest surviving slice ${coverage.diff.slice_ceiling_observed} (observed)` : ''} |`,
     `| review input tokens | ${coverage.review.input_tokens ?? '(none)'} |`,
     `| shallow repository | ${coverage.refs.shallow === null ? 'unknown' : String(coverage.refs.shallow)} (recorded, not escalated) |`,
     '',
