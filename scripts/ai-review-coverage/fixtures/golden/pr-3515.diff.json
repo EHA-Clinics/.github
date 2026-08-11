@@ -1,0 +1,168 @@
+{
+  "regime": "SLICES",
+  "slice_ceiling_observed": 3846,
+  "prompt_chars": 52715,
+  "diff_chars": 137015,
+  "ranking_anomalies": [],
+  "files": [
+    {
+      "path": "apps/ehacare/frontend/src/__tests__/helpers/tenantIsolationFixtures.ts",
+      "priority": 1,
+      "status": "added",
+      "patch_chars": 2682,
+      "shown_chars": 2682,
+      "pct": 100,
+      "verdict": "WHOLE",
+      "path_parse_failed": false
+    },
+    {
+      "path": "apps/ehacare/frontend/src/ambulatory/features/encounter/services/encounterService.isolation.test.ts",
+      "priority": 1,
+      "status": "added",
+      "patch_chars": 13931,
+      "shown_chars": 3825,
+      "pct": 27,
+      "verdict": "PARTIAL",
+      "path_parse_failed": false
+    },
+    {
+      "path": "apps/ehacare/frontend/src/ambulatory/features/encounter/services/encounterService.test.ts",
+      "priority": 1,
+      "status": "modified",
+      "patch_chars": 3368,
+      "shown_chars": 3368,
+      "pct": 100,
+      "verdict": "WHOLE",
+      "path_parse_failed": false
+    },
+    {
+      "path": "apps/ehacare/frontend/src/ambulatory/features/encounter/services/encounterService.ts",
+      "priority": 0,
+      "status": "modified",
+      "patch_chars": 8596,
+      "shown_chars": 3846,
+      "pct": 44,
+      "verdict": "PARTIAL",
+      "path_parse_failed": false
+    },
+    {
+      "path": "apps/ehacare/frontend/src/ambulatory/features/labtest/services/labOrders.isolation.test.ts",
+      "priority": 1,
+      "status": "added",
+      "patch_chars": 14605,
+      "shown_chars": 3829,
+      "pct": 26,
+      "verdict": "PARTIAL",
+      "path_parse_failed": false
+    },
+    {
+      "path": "apps/ehacare/frontend/src/ambulatory/features/labtest/services/labOrders.test.ts",
+      "priority": 1,
+      "status": "modified",
+      "patch_chars": 2380,
+      "shown_chars": 2380,
+      "pct": 100,
+      "verdict": "WHOLE",
+      "path_parse_failed": false
+    },
+    {
+      "path": "apps/ehacare/frontend/src/ambulatory/features/labtest/services/labOrders.ts",
+      "priority": 0,
+      "status": "modified",
+      "patch_chars": 6241,
+      "shown_chars": 3817,
+      "pct": 61,
+      "verdict": "PARTIAL",
+      "path_parse_failed": false
+    },
+    {
+      "path": "apps/ehacare/frontend/src/ambulatory/features/prescription/services/prescriptionService.aql.test.ts",
+      "priority": 1,
+      "status": "modified",
+      "patch_chars": 1821,
+      "shown_chars": 1821,
+      "pct": 100,
+      "verdict": "WHOLE",
+      "path_parse_failed": false
+    },
+    {
+      "path": "apps/ehacare/frontend/src/ambulatory/features/prescription/services/prescriptionService.isolation.test.ts",
+      "priority": 1,
+      "status": "added",
+      "patch_chars": 15888,
+      "shown_chars": 3827,
+      "pct": 24,
+      "verdict": "PARTIAL",
+      "path_parse_failed": false
+    },
+    {
+      "path": "apps/ehacare/frontend/src/ambulatory/features/prescription/services/prescriptionService.test.ts",
+      "priority": 1,
+      "status": "modified",
+      "patch_chars": 2874,
+      "shown_chars": 2874,
+      "pct": 100,
+      "verdict": "WHOLE",
+      "path_parse_failed": false
+    },
+    {
+      "path": "apps/ehacare/frontend/src/ambulatory/features/prescription/services/prescriptionService.ts",
+      "priority": 0,
+      "status": "modified",
+      "patch_chars": 13725,
+      "shown_chars": 3782,
+      "pct": 27,
+      "verdict": "PARTIAL",
+      "path_parse_failed": false
+    },
+    {
+      "path": "apps/ehacare/frontend/src/common/services/sdkClientAdapter.ts",
+      "priority": 0,
+      "status": "modified",
+      "patch_chars": 1116,
+      "shown_chars": 1116,
+      "pct": 100,
+      "verdict": "WHOLE",
+      "path_parse_failed": false
+    },
+    {
+      "path": "apps/ehacare/frontend/src/common/services/tenantRoster.test.ts",
+      "priority": 1,
+      "status": "added",
+      "patch_chars": 11207,
+      "shown_chars": 3817,
+      "pct": 34,
+      "verdict": "PARTIAL",
+      "path_parse_failed": false
+    },
+    {
+      "path": "apps/ehacare/frontend/src/common/services/tenantRoster.ts",
+      "priority": 0,
+      "status": "added",
+      "patch_chars": 15215,
+      "shown_chars": 3822,
+      "pct": 25,
+      "verdict": "PARTIAL",
+      "path_parse_failed": false
+    },
+    {
+      "path": "e2e/bettercare/tests/clinical-list-tenant-isolation.spec.ts",
+      "priority": 1,
+      "status": "added",
+      "patch_chars": 23351,
+      "shown_chars": 3826,
+      "pct": 16,
+      "verdict": "PARTIAL",
+      "path_parse_failed": false
+    }
+  ],
+  "rollup": {
+    "files_total": 15,
+    "whole": 6,
+    "source_partial": 4,
+    "source_absent": 0,
+    "non_source_partial": 5,
+    "non_source_absent": 0,
+    "unknown_paths": 0
+  }
+}

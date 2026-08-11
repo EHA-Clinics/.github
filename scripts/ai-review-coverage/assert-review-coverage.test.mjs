@@ -51,7 +51,7 @@ const payload = (over = {}) =>
       files_diff: 2,
       changed_files_api: 2,
       regime: 'FULL',
-      per_file_budget: null,
+      slice_ceiling_observed: null,
       prompt_chars: 14_700,
     },
     review: { conclusion: 'success', input_tokens: 83_000, cost_usd: 0.0496 },

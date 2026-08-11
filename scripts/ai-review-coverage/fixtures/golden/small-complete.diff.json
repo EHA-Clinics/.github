@@ -1,0 +1,38 @@
+{
+  "regime": "FULL",
+  "slice_ceiling_observed": null,
+  "prompt_chars": 14751,
+  "diff_chars": 14599,
+  "ranking_anomalies": [],
+  "files": [
+    {
+      "path": ".github/workflows/ai-code-review.yml",
+      "priority": 4,
+      "status": "modified",
+      "patch_chars": 8583,
+      "shown_chars": 8583,
+      "pct": 100,
+      "verdict": "WHOLE",
+      "path_parse_failed": false
+    },
+    {
+      "path": "README.md",
+      "priority": 4,
+      "status": "modified",
+      "patch_chars": 6014,
+      "shown_chars": 6014,
+      "pct": 100,
+      "verdict": "WHOLE",
+      "path_parse_failed": false
+    }
+  ],
+  "rollup": {
+    "files_total": 2,
+    "whole": 2,
+    "source_partial": 0,
+    "source_absent": 0,
+    "non_source_partial": 0,
+    "non_source_absent": 0,
+    "unknown_paths": 0
+  }
+}

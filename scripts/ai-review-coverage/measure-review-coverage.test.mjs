@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { ELEK_REF_VERIFIED, parseUnifiedDiffFiles } from './elek-prompt-budget.mjs';
+import { ELEK_REF_VERIFIED } from './elek-prompt-budget.mjs';
+// R14: the diff splitter is UPSTREAM's, imported from the vendored packer. The wrapper no
+// longer re-exports it — it does not own it, and a re-export would blur that.
+import { parseUnifiedDiffFiles } from './vendor/diff-context.ts';
 import {
   NOT_REVIEWED_REASONS,
   SCOPE_SKIP_REASONS,
@@ -76,7 +79,7 @@ describe('buildCoverage — the fixture-driven red', () => {
     expect(coverage.diff.chars).toBe(137_015);
     expect(coverage.diff.files_diff).toBe(15);
     expect(coverage.diff.regime).toBe('SLICES');
-    expect(coverage.diff.per_file_budget).toBe(4_000);
+    expect(coverage.diff.slice_ceiling_observed).toBe(3_846); // R14: observed, not upstream's internal budget
   });
 
   it('reports tenantRoster.ts — the whole tenant-isolation primitive — as PARTIAL', () => {

@@ -54,7 +54,14 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 22
+          # R14. A LITERAL version, not a floor and not a range. The gate now imports the
+          # vendored TypeScript packer (scripts/ai-review-coverage/vendor/diff-context.ts)
+          # directly, which needs a runtime with UNFLAGGED type stripping. The measured
+          # pre-change value here was `22`; an earlier draft of the verification grepped for a
+          # version-SHAPED pattern, which `22` already satisfied — a probe that was green before
+          # the change and could not go red. The spec asserts this exact string, and separately
+          # asserts the capability BEHAVIOURALLY by importing the module in a bare node process.
+          node-version: 24.10.0
           cache: pnpm
 
       - name: Install dependencies
