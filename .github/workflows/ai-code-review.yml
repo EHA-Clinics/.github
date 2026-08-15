@@ -268,24 +268,40 @@ on:
         type: string
         default: ''
         description: >
-          Comma-separated usernames allowed to trigger a review.
+          Comma-separated usernames allowed to trigger a review. Exact match, whitespace
+          trimmed.
 
-          HONEST SCOPE — verified in elek@3748508 src/github/trigger.ts:52-77. At this pin
-          an explicit actor_filter does NOT narrow the HUMAN trigger surface.
-          `isActorAllowed` checks the list and then falls through to
-          `return !actor.endsWith("[bot]")`, so every non-bot actor is allowed either way:
-          the list is ADDITIVE, not exclusive. It therefore does NOT mitigate the v1.1.4
-          `getGitDiff` surface, where the head branch name is still interpolated into
-          execSync and git refnames legally permit shell metacharacters. That is tracked in
-          EHAC-2059; the real controls today are private repositories, fork PRs receiving no
-          secrets, and mode:review. An earlier revision of this description claimed the
-          opposite and was wrong.
+          AUTHORITATIVE AND EXCLUSIVE FOR HUMANS — verified in
+          EHA-Clinics/elek@4c08c1c9 src/github/trigger.ts:82-140, which is the ref the elek
+          step below actually installs. Setting this input NARROWS the human trigger surface
+          to exactly the listed names:
 
-          What setting it DOES buy: it documents intent, it is forward-compatible with the
-          post-v1.1.4 narrowing of the empty default (all humans -> owners/members/
-          collaborators), and it makes the bot deny explicit. Bots ARE declined while
-          `allowed_bots` is unset, which the coverage gate reports as NOT_REVIEWED (green +
-          a loud warning), so bot-authored PRs do not produce a red storm.
+            set    -> `listIncludes(actorFilter, actor)`, and isActorAuthorized then returns
+                      false WITHOUT consulting repo permissions — there is no fallback.
+            unset  -> isTrustedAssociation (OWNER|MEMBER|COLLABORATOR), falling back to a
+                      repo-permission lookup (admin|maintain|write|triage).
+
+          So an unlisted human gets NO review and NO fallback, behind a green check. Anyone
+          who joins the org after the list is written is silently unreviewed until someone
+          adds them: this list is live maintenance, not documentation. '*' disables the
+          narrowing entirely.
+
+          Bots never consult this list — they take the `allowed_bots` path above, which fork
+          patch P6 decoupled from this one. Bots stay declined while `allowed_bots` is unset,
+          which the coverage gate reports as NOT_REVIEWED (green + a loud warning), so
+          bot-authored PRs do not produce a red storm.
+
+          CORRECTION 2026-08-15: the previous revision said this list was "ADDITIVE, not
+          exclusive" and cited elek@3748508 — pre-fork v1.1.4, where isActorAllowed did fall
+          through to `return !actor.endsWith("[bot]")`. That fall-through does not exist at
+          the pinned fork. The old wording was accurate for the elek this workflow used to
+          install and wrong for the one it installs now; it was never re-verified when the
+          fork was vendored in #23.
+
+          It does NOT mitigate the `getGitDiff` surface, where the head branch name is
+          interpolated into execSync and git refnames legally permit shell metacharacters
+          (EHAC-2059). The real controls remain private repositories, fork PRs receiving no
+          secrets, and mode:review.
     secrets:
       OPENROUTER_API_KEY:
         required: true
