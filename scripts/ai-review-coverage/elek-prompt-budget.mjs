@@ -45,6 +45,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
+  applyExcludePaths,
   formatChangedFilesForPrompt,
   parseUnifiedDiffFiles,
 } from './vendor/diff-context.ts';
@@ -109,6 +110,13 @@ export const PROBE_PREFIX = 'zzz-eha-coverage-probe-8f21c4de/';
  * the ranking run omits nothing, so that every path is observable in the emitted order. */
 const PROBE_MAX_CHARS = 1_000_000_000;
 
+/** Padding per synthetic line. Ours, not upstream's: it exists only to make the ranking
+ * input's blocks large enough that forcing the slice regime omits nothing. Deliberately NOT
+ * equal to upstream's block-fit margin: reusing that value would trip (and deserve to trip)
+ * the no-restatement check, whether or not the reuse was coincidental. The digits are not
+ * written out even in this comment, because that check reads literals in comments too. */
+const PROBE_LINE_PAD_CHARS = 1_536;
+
 /**
  * Build one minimal unified-diff section. Used ONLY to construct the ranking input; the real
  * diff is never rewritten.
@@ -122,7 +130,16 @@ const PROBE_MAX_CHARS = 1_000_000_000;
  */
 function probeSection(path, deleted, token, addedLines) {
   const marker = deleted ? '\ndeleted file mode 100644' : '';
-  const body = Array.from({ length: addedLines }, (_, i) => `+${token}${i}`).join('\n');
+  // Each added line is padded so a section is substantially larger than the per-block
+  // bookkeeping the packer adds around it. With hairline sections the slice regime costs MORE
+  // characters than the inlined diff (a header per file, plus a fit margin, and nothing long
+  // enough to actually truncate), so the tail of the ranking input was dropped and those files
+  // read back with no priority at all. Padding makes each block genuinely truncatable, which
+  // is what lets every file survive the ranking run. The token stays at the START of the line
+  // so it survives truncation, and padding does not change churn — that is the line COUNT,
+  // which the caller still controls.
+  const pad = '.'.repeat(PROBE_LINE_PAD_CHARS);
+  const body = Array.from({ length: addedLines }, (_, i) => `+${token}${i}${pad}`).join('\n');
   return (
     `diff --git a/${path} b/${path}${marker}\n` +
     `index 1111111..2222222 100644\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n${body}\n`
@@ -172,10 +189,28 @@ export function derivePromptPriorities(files) {
     sections.push(probeSection(file.path, file.status === 'deleted', token, 1));
   });
 
-  // `fullDiffThresholdChars: 0` forces the slice regime, which is the only regime that sorts.
-  const ranked = formatChangedFilesForPrompt(sections.join(''), PROBE_MAX_CHARS, {
-    fullDiffThresholdChars: 0,
-  });
+  // Force the slice regime, which is the only regime that sorts.
+  //
+  // This used to pass `fullDiffThresholdChars: 0`. That option no longer exists — upstream
+  // deleted the separate full-diff threshold — and an unknown property is silently ignored,
+  // so the ranking run returned the FULL regime, nothing was ordered, and EVERY file was
+  // read back as the priority of the last reference. Source files then scored as priority 6
+  // and a starved review measured COMPLETE. Silent, and wrong in the dangerous direction.
+  //
+  // So force it by BUDGET instead, which no upstream option controls: the packer inlines the
+  // full diff only when overview+diff fits within maxChars, so measuring that exact length
+  // and asking for one character less guarantees slices. The length is OBSERVED from
+  // upstream's own FULL output rather than recomputed, so this survives any future change to
+  // the overview format, the caption, or the constants — none of which this file may name.
+  const probeDiff = sections.join('');
+  const inlined = formatChangedFilesForPrompt(probeDiff, PROBE_MAX_CHARS);
+  const ranked = formatChangedFilesForPrompt(probeDiff, Math.max(1, inlined.length - 1));
+  if (ranked.endsWith(probeDiff)) {
+    // Structural check, same relationship attributeCoverage uses to name the regime: if the
+    // emitted text still ends with the whole input, the ranking run did not slice and the
+    // order below is not upstream's ranking. Report it rather than derive from it.
+    anomalies.push('ranking run did not enter the slice regime; priorities are unreliable');
+  }
 
   const placed = markers
     .map((entry) => ({ ...entry, at: ranked.indexOf(`+${entry.token}0`) }))
@@ -284,10 +319,19 @@ export function shownCharsFromPrompt(prompt, patch) {
  */
 export function attributeCoverage(diffText, options = {}) {
   const text = typeof diffText === 'string' ? diffText : '';
-  const prompt = formatChangedFilesForPrompt(text, options.maxChars, {
-    fullDiffThresholdChars: options.fullDiffThresholdChars,
-  });
-  const parsed = text === '' ? [] : parseUnifiedDiffFiles(text);
+  const excludePaths = Array.isArray(options.excludePaths) ? options.excludePaths : [];
+  // `maxChars` and `excludePaths` are REPORTED by the elek run, not re-derived here. The
+  // budget is per-model and reservation-aware upstream; modelling it as a flat default with
+  // zero reservation made the gate believe the reviewer saw MORE than it did, which is a
+  // false green in a safety gate. `fullDiffThresholdChars` is gone: upstream deleted it, and
+  // continuing to pass it only made an ignored property look load-bearing.
+  const prompt = formatChangedFilesForPrompt(text, options.maxChars, { excludePaths });
+  const allParsed = text === '' ? [] : parseUnifiedDiffFiles(text);
+  // Files the run EXCLUDED were never sent, so they are not "unreviewed" — they are out of
+  // scope. Counting them as ABSENT would red every PR that touches an excluded path. The
+  // partition comes from the vendored helper so the gate and the packer cannot disagree
+  // about what an exclude glob matches.
+  const { kept: parsed, excluded } = applyExcludePaths(allParsed, excludePaths);
 
   const ranking =
     parsed.length === 0
@@ -326,6 +370,12 @@ export function attributeCoverage(diffText, options = {}) {
   };
 
   return {
+    // Echoed so a reader of the record can see WHICH budget the verdict was measured against,
+    // and whether it came from the run or from upstream's default.
+    budget_chars_used: options.maxChars ?? null,
+    budget_source: options.maxChars === undefined ? 'upstream-default' : 'reported-by-run',
+    excluded_paths: [...excludePaths],
+    excluded_files: excluded.map((file) => file.path),
     // The full diff is inlined verbatim in exactly one regime, so the emitted text ends with it.
     // Structural, not a marker grep: it reads the relationship between the two strings rather
     // than a caption upstream happens to print, which a paraphrase of that caption would fake.

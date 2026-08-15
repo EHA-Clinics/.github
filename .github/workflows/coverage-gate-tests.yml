@@ -75,7 +75,7 @@ jobs:
       # and a non-zero assert exit. If this step ever passes trivially, the gate is vacuous.
       - name: Prove the fixture-driven red end-to-end
         env:
-          ELEK_REF: 3748508413fb355ae696b8fa98d1075930d12106
+          ELEK_REF: 4c08c1c9bc02c027a49b54e0c68af4736543a467
           REQUESTED_STRATEGY: council
           EXECUTED_STRATEGY: council
           REVIEW_INPUT_TOKENS: '83000'
@@ -85,10 +85,20 @@ jobs:
           # step green even if PARTIAL_SOURCE detection broke completely, which is precisely
           # the vacuity this step exists to rule out. Every run below must succeed so that the
           # ONLY thing capable of redding this proof is the truncation itself.
+          # The prompt budget travels HERE, in the run's own report, exactly as in production.
+          # It must be supplied: the budget is per-model and reservation-aware, and at the
+          # packer's own default this 137,015-char diff is inlined WHOLE and cuts nothing — so
+          # without a reported budget this step would measure COMPLETE and correctly declare
+          # the gate vacuous. 61_000 is the budget at which this diff reproduces the rollup
+          # recorded before the version move (6 whole, 4 cut production files, 5 cut
+          # non-source), so the truncation proven here is the SAME truncation as before.
           REVIEW_SUMMARY_JSON: >-
             {"run":{"conclusion":"success"},
              "review":{"requestedStrategy":"council","executedStrategy":"council"},
              "cost":{"inputTokens":83000},
+             "promptBudgets":[
+               {"lensId":"risk","modelLabel":"deepseek/deepseek-v4-pro",
+                "reservedChars":259000,"diffPromptBudgetChars":61000,"excludePaths":[]}],
              "modelRuns":[
                {"role":"reviewer","lensId":"risk","modelLabel":"deepseek/deepseek-v4-pro","conclusion":"success"},
                {"role":"reviewer","lensId":"design","modelLabel":"xiaomi/mimo-v2.5-pro","conclusion":"success"},

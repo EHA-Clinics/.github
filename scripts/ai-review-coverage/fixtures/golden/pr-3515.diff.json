@@ -1,7 +1,11 @@
 {
-  "regime": "SLICES",
-  "slice_ceiling_observed": 3846,
-  "prompt_chars": 52715,
+  "budget_chars_used": null,
+  "budget_source": "upstream-default",
+  "excluded_paths": [],
+  "excluded_files": [],
+  "regime": "FULL",
+  "slice_ceiling_observed": null,
+  "prompt_chars": 138638,
   "diff_chars": 137015,
   "ranking_anomalies": [],
   "files": [
@@ -20,9 +24,9 @@
       "priority": 1,
       "status": "added",
       "patch_chars": 13931,
-      "shown_chars": 3825,
-      "pct": 27,
-      "verdict": "PARTIAL",
+      "shown_chars": 13931,
+      "pct": 100,
+      "verdict": "WHOLE",
       "path_parse_failed": false
     },
     {
@@ -40,9 +44,9 @@
       "priority": 0,
       "status": "modified",
       "patch_chars": 8596,
-      "shown_chars": 3846,
-      "pct": 44,
-      "verdict": "PARTIAL",
+      "shown_chars": 8596,
+      "pct": 100,
+      "verdict": "WHOLE",
       "path_parse_failed": false
     },
     {
@@ -50,9 +54,9 @@
       "priority": 1,
       "status": "added",
       "patch_chars": 14605,
-      "shown_chars": 3829,
-      "pct": 26,
-      "verdict": "PARTIAL",
+      "shown_chars": 14605,
+      "pct": 100,
+      "verdict": "WHOLE",
       "path_parse_failed": false
     },
     {
@@ -70,9 +74,9 @@
       "priority": 0,
       "status": "modified",
       "patch_chars": 6241,
-      "shown_chars": 3817,
-      "pct": 61,
-      "verdict": "PARTIAL",
+      "shown_chars": 6241,
+      "pct": 100,
+      "verdict": "WHOLE",
       "path_parse_failed": false
     },
     {
@@ -90,9 +94,9 @@
       "priority": 1,
       "status": "added",
       "patch_chars": 15888,
-      "shown_chars": 3827,
-      "pct": 24,
-      "verdict": "PARTIAL",
+      "shown_chars": 15888,
+      "pct": 100,
+      "verdict": "WHOLE",
       "path_parse_failed": false
     },
     {
@@ -110,9 +114,9 @@
       "priority": 0,
       "status": "modified",
       "patch_chars": 13725,
-      "shown_chars": 3782,
-      "pct": 27,
-      "verdict": "PARTIAL",
+      "shown_chars": 13725,
+      "pct": 100,
+      "verdict": "WHOLE",
       "path_parse_failed": false
     },
     {
@@ -130,9 +134,9 @@
       "priority": 1,
       "status": "added",
       "patch_chars": 11207,
-      "shown_chars": 3817,
-      "pct": 34,
-      "verdict": "PARTIAL",
+      "shown_chars": 11207,
+      "pct": 100,
+      "verdict": "WHOLE",
       "path_parse_failed": false
     },
     {
@@ -140,9 +144,9 @@
       "priority": 0,
       "status": "added",
       "patch_chars": 15215,
-      "shown_chars": 3822,
-      "pct": 25,
-      "verdict": "PARTIAL",
+      "shown_chars": 15215,
+      "pct": 100,
+      "verdict": "WHOLE",
       "path_parse_failed": false
     },
     {
@@ -150,18 +154,18 @@
       "priority": 1,
       "status": "added",
       "patch_chars": 23351,
-      "shown_chars": 3826,
-      "pct": 16,
-      "verdict": "PARTIAL",
+      "shown_chars": 23351,
+      "pct": 100,
+      "verdict": "WHOLE",
       "path_parse_failed": false
     }
   ],
   "rollup": {
     "files_total": 15,
-    "whole": 6,
-    "source_partial": 4,
+    "whole": 15,
+    "source_partial": 0,
     "source_absent": 0,
-    "non_source_partial": 5,
+    "non_source_partial": 0,
     "non_source_absent": 0,
     "unknown_paths": 0
   }

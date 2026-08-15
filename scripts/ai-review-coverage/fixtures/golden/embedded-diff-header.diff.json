@@ -1,4 +1,8 @@
 {
+  "budget_chars_used": null,
+  "budget_source": "upstream-default",
+  "excluded_paths": [],
+  "excluded_files": [],
   "regime": "FULL",
   "slice_ceiling_observed": null,
   "prompt_chars": 26366,

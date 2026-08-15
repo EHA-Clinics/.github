@@ -17,6 +17,29 @@ to make the divergence visible.
 
 ---
 
+## How the budget reaches these fixtures (changed 2026-08-15)
+
+The packer's diff budget is **per-model and reservation-aware**, and elek now REPORTS the value
+it used in `review_summary_json`. The gate consumes that report instead of assuming a default,
+because assuming one made it model a larger window than the reviewer actually had — the direction
+that produces a false green.
+
+For fixtures this has one visible consequence: **a truncation proof must supply a budget.** At the
+packer's own default, `pr-3515.diff` is now inlined WHOLE and cuts nothing, so a proof that relied
+on the fixture exceeding a hardcoded default would pass for the wrong reason — which the vendor
+manifest's coupling note warned about in advance, under item (4).
+
+The budget used is **61,000**, chosen because it is where this diff reproduces the ROLLUP recorded
+before the version move: 6 whole, 4 cut production files, 5 cut non-source, none dropped entirely.
+The counts are identical to the pre-move measurement, so the truncation being detected is the same
+truncation as before rather than a new artefact of the new packer.
+
+The fixtures themselves are unchanged, and the rule below still holds: they are real, verbatim
+`git diff` output. What changed is that the budget is now an explicit input rather than an implicit
+constant — which is also how production works.
+
+---
+
 ## `pr-3515.diff` — the truncating fixture (the gate's proof of failability)
 
 The diff of **`EHA-Clinics/eha_care` PR #3515** (EHAC-1986, tenant isolation), the PR on which
@@ -48,7 +71,8 @@ budget boundary produces the flaky red that gets `continue-on-error` added six w
 (verbatim `[size] changed_lines=2432 strategy=council max_council_changed_lines=1200; downgrading
 to crosscheck.` → `execution_strategy=crosscheck`); manual review `#4797970624`; PR #3515.
 
-**What the gate must conclude from it:** verdict `PARTIAL_SOURCE`, with
+**What the gate must conclude from it** (measured against a reported budget of 61,000; see the
+section above): verdict `PARTIAL_SOURCE`, with
 `apps/ehacare/frontend/src/common/services/tenantRoster.ts` PARTIAL (`shownChars < patchChars`),
 and a non-zero `assert-review-coverage.mjs` exit. The verdict string is asserted exactly, so the
 red is attributable to real truncation and never to an `UNKNOWN` shortcut.
@@ -66,9 +90,11 @@ git -c core.autocrlf=false -c diff.noprefix=false \
   > scripts/ai-review-coverage/fixtures/small-complete.diff
 ```
 
-14,599 utf8 units over 2 files. Overview + full diff stays under elek's
-`DEFAULT_FULL_DIFF_THRESHOLD_CHARS = 80_000`, so v1.1.4 inlines the whole diff and every file is
-`WHOLE` ⇒ verdict `COMPLETE`, exit 0. Without this control a gate that reds on everything would
+14,599 utf8 units over 2 files, inlined whole ⇒ every file `WHOLE` ⇒ verdict `COMPLETE`, exit 0.
+(It used to be described as staying under a separate `DEFAULT_FULL_DIFF_THRESHOLD_CHARS = 80_000`.
+That threshold no longer exists — upstream deleted it — and the only test now is whether overview
+plus diff fits the budget. This fixture fits either way, and its measured prompt size is unchanged
+to the character across the version move.) Without this control a gate that reds on everything would
 look identical to a gate that works.
 
 ---

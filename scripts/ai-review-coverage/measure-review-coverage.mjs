@@ -204,17 +204,73 @@ export function deriveModels(summary, env = {}) {
  *   inventoryCap?: number,
  * }} args
  */
+/**
+ * Read the prompt budget the run ACTUALLY used, from the run's own report.
+ *
+ * elek emits one entry per lens, because the budget is a function of the lens model's input
+ * window minus the characters reserved for body, comments, config block and user request. The
+ * gate produces a single verdict, so it must pick one, and it picks the SMALLEST — the most
+ * starved reviewer in the council. That is the conservative direction: measuring against the
+ * roomiest lens would let a lens that saw 5% of the code pass as covered, which is the class of
+ * false green this gate exists to prevent.
+ *
+ * When the field is absent — an older elek that does not report it — the packer's own default
+ * binds, exactly as before. That case is RECORDED rather than inferred away, so a reader can
+ * tell "measured against what the run reported" from "measured against a default we assumed".
+ *
+ * @param {any} summary parsed review_summary_json, or null
+ * @returns {{maxChars: number|undefined, excludePaths: string[], source: string, lenses: number}}
+ */
+function reportedPromptBudget(summary) {
+  const entries = Array.isArray(summary?.promptBudgets) ? summary.promptBudgets : [];
+  const budgets = entries
+    .map((entry) => Number(entry?.diffPromptBudgetChars))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const excludePaths = [
+    ...new Set(
+      entries.flatMap((entry) => (Array.isArray(entry?.excludePaths) ? entry.excludePaths : [])),
+    ),
+  ];
+  if (budgets.length === 0) {
+    return { maxChars: undefined, excludePaths, source: 'upstream-default', lenses: 0 };
+  }
+  return {
+    maxChars: Math.min(...budgets),
+    excludePaths,
+    source: 'reported-by-run',
+    lenses: budgets.length,
+  };
+}
+
 export function buildCoverage({ diffText, env = {}, context = {}, inventoryCap = DEFAULT_INVENTORY_CAP }) {
   /** @type {{branch: string, message: string}[]} */
   const unknown = [];
   const addUnknown = (branch, message) => unknown.push({ branch, message });
+
+  // The elek step's own report is parsed BEFORE measuring, because the measurement now
+  // consumes it: the diff budget is per-model and reservation-aware, so it is READ from the
+  // run rather than assumed. Modelling it as a flat default with zero reservation made the
+  // gate believe the reviewer saw more than it did — a false green in a safety gate.
+  let summary = null;
+  const rawSummary = typeof env.REVIEW_SUMMARY_JSON === 'string' ? env.REVIEW_SUMMARY_JSON.trim() : '';
+  if (rawSummary !== '') {
+    try {
+      summary = JSON.parse(rawSummary);
+    } catch (err) {
+      addUnknown('U5', `review_summary_json did not parse: ${err?.message ?? err}`);
+    }
+  }
+  const reported = reportedPromptBudget(summary);
 
   let attribution;
   try {
     if (typeof diffText !== 'string') {
       throw new Error(`diff text is ${diffText === undefined ? 'missing' : typeof diffText}`);
     }
-    attribution = attributeCoverage(diffText);
+    attribution = attributeCoverage(diffText, {
+      maxChars: reported.maxChars,
+      excludePaths: reported.excludePaths,
+    });
   } catch (err) {
     // A measurement bug must be RED, not silent.
     return unknownRecord(
@@ -229,21 +285,11 @@ export function buildCoverage({ diffText, env = {}, context = {}, inventoryCap =
   if (!pinOk) {
     addUnknown(
       'U1',
-      `elek pin is "${elekRef || '(unset)'}"; the prompt-budget model in elek-prompt-budget.mjs was verified against ${ELEK_REF_VERIFIED} and has not been re-verified. Re-read src/review/diff-context.ts at the new ref, update ELEK_REF_VERIFIED and BUDGET, and update the ELEK_REF literal in ai-code-review.yml.`,
+      `elek pin is "${elekRef || '(unset)'}"; the vendored packer is ${ELEK_REF_VERIFIED} and has not been re-verified against it. Re-vendor src/review/diff-context.ts at the new ref, update vendor/diff-context.manifest.json (upstream_commit + upstream_blob_sha), regenerate fixtures/golden/, and update the ELEK_REF literal in ai-code-review.yml. ELEK_REF_VERIFIED is READ from the manifest — never retype it, and there is no BUDGET constant to update (an earlier version of this message said there was).`,
     );
   }
 
   // ---- elek step outputs (U5) -----------------------------------------------------
-  let summary = null;
-  const rawSummary = typeof env.REVIEW_SUMMARY_JSON === 'string' ? env.REVIEW_SUMMARY_JSON.trim() : '';
-  if (rawSummary !== '') {
-    try {
-      summary = JSON.parse(rawSummary);
-    } catch (err) {
-      addUnknown('U5', `review_summary_json did not parse: ${err?.message ?? err}`);
-    }
-  }
-
   const requested =
     summary?.review?.requestedStrategy || (env.REQUESTED_STRATEGY ?? '').trim() || null;
   const executed =
@@ -381,6 +427,16 @@ export function buildCoverage({ diffText, env = {}, context = {}, inventoryCap =
       // published: an observation rather than a recomputation.
       slice_ceiling_observed: attribution.slice_ceiling_observed,
       prompt_chars: attribution.prompt_chars,
+      // WHICH budget produced this verdict, and where it came from. The budget is per-model
+      // and reservation-aware, so a verdict is only interpretable alongside it; and
+      // `budget_source` distinguishes a value the run REPORTED from the packer default we
+      // fell back to. Without this an operator cannot tell a genuinely starved review from a
+      // gate measuring against the wrong window.
+      budget_chars: attribution.budget_chars_used,
+      budget_source: attribution.budget_source,
+      budget_lenses_reported: reported.lenses,
+      exclude_paths: attribution.excluded_paths,
+      excluded_files: attribution.excluded_files,
       // Reference-ranking anomalies (a changed path colliding with the ranking prefix, or a
       // reference that did not come back). Non-empty means a priority reading is not
       // trustworthy; recorded so it is visible rather than absorbed.
@@ -449,6 +505,11 @@ function unknownRecord(reasons, { env = {}, context = {} } = {}) {
       regime: null,
       slice_ceiling_observed: null,
       prompt_chars: null,
+      budget_chars: null,
+      budget_source: null,
+      budget_lenses_reported: 0,
+      exclude_paths: [],
+      excluded_files: [],
       ranking_anomalies: [],
     },
     review: { conclusion: null, input_tokens: null, cost_usd: null, actor: null, event: null },
