@@ -352,7 +352,16 @@ export function buildCoverage({ diffText, env = {}, context = {}, inventoryCap =
     context.changedFilesApi === null || context.changedFilesApi === undefined
       ? null
       : Number(context.changedFilesApi);
-  if (attribution.rollup.files_total === 0) {
+  // A non-empty exclusion set is PROOF the diff parsed: files can only be excluded after they
+  // have been parsed out of it. So "zero reviewable files" with exclusions present is a
+  // deliberately empty scope, not a missing diff, and U2's premise does not hold.
+  //
+  // Without this, a pull request that touches ONLY excluded paths measures zero files, trips
+  // U2, and is blocked as UNKNOWN — with a message blaming getGitDiff for swallowing a failure
+  // that never happened. That is precisely the pull request exclude_paths exists to serve, so
+  // the feature would have red-lined its own primary use case.
+  const excludedCount = attribution.excluded_files.length;
+  if (attribution.rollup.files_total === 0 && excludedCount === 0) {
     addUnknown(
       'U2',
       changedFilesApi && changedFilesApi > 0

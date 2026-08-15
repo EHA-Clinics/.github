@@ -581,3 +581,54 @@ describe('buildCoverage — never throws, always emits', () => {
     expect(coverage.rollup.files_total).toBe(15);
   });
 });
+
+describe('exclusions and the empty-scope edge (buildCoverage)', () => {
+  const section = (path, body) =>
+    [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, '@@ -1,1 +1,2 @@', ' ctx', `+${body}`].join('\n');
+  const summaryWith = (excludePaths) =>
+    JSON.stringify({
+      promptBudgets: [
+        { lensId: 'risk', modelLabel: 'deepseek/deepseek-v4-pro', reservedChars: 1_000, diffPromptBudgetChars: 200_000, excludePaths },
+      ],
+    });
+
+  it('does not red a pull request that touches ONLY excluded paths', () => {
+    // The feature's primary use case. Zero reviewable files here is a deliberately empty
+    // scope, not a missing diff — reporting U2 would block exactly the pull request
+    // exclude_paths exists to serve, blaming getGitDiff for a failure that never happened.
+    const coverage = buildCoverage({
+      diffText: `${[section('.planning/a.md', 'x'), section('.planning/b.py', 'y')].join('\n')}\n`,
+      env: healthyEnv({ REVIEW_SUMMARY_JSON: summaryWith(['.planning/**']) }),
+      context: healthyContext({ changedFilesApi: 2 }),
+    });
+    expect(coverage.unknown_reasons).toEqual([]);
+    expect(coverage.verdict).toBe('COMPLETE');
+    expect(coverage.diff.files_diff).toBe(0);
+    expect(coverage.diff.excluded_files).toHaveLength(2);
+  });
+
+  it('STILL reds a genuinely empty diff even when exclusions are configured', () => {
+    // The safety complement. Exclusions being configured must not suppress U2 — only
+    // exclusions actually APPLIED prove the diff parsed, because a file can only be excluded
+    // after being parsed out of the diff.
+    const coverage = buildCoverage({
+      diffText: '',
+      env: healthyEnv({ REVIEW_SUMMARY_JSON: summaryWith(['.planning/**']) }),
+      context: healthyContext({ changedFilesApi: 2 }),
+    });
+    expect(coverage.verdict).toBe('UNKNOWN');
+    expect(coverage.unknown_reasons.map((u) => u.branch)).toContain('U2');
+  });
+
+  it('keeps measuring the reviewable remainder when only some files are excluded', () => {
+    const coverage = buildCoverage({
+      diffText: `${[section('.planning/a.md', 'x'), section('src/app.ts', 'y')].join('\n')}\n`,
+      env: healthyEnv({ REVIEW_SUMMARY_JSON: summaryWith(['.planning/**']) }),
+      context: healthyContext({ changedFilesApi: 2 }),
+    });
+    expect(coverage.unknown_reasons).toEqual([]);
+    expect(coverage.diff.files_diff).toBe(1);
+    expect(coverage.diff.excluded_files).toEqual(['.planning/a.md']);
+    expect(coverage.inventory.map((r) => r.path)).toEqual(['src/app.ts']);
+  });
+});

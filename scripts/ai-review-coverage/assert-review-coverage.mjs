@@ -116,7 +116,18 @@ export function deriveUnknownBranches(coverage) {
   // this file already follows (empty/unparseable COVERAGE_JSON is exit 1, not a pass).
   const filesDiff = num(coverage?.diff?.files_diff);
   const changedApi = num(coverage?.diff?.changed_files_api);
-  if ((filesDiff === null || filesDiff === 0) && (changedApi === null || changedApi > 0)) {
+  // Files can only be excluded AFTER being parsed out of the diff, so a non-empty exclusion
+  // list is proof the diff was measured. Zero reviewable files alongside exclusions is a
+  // deliberately empty scope, not an absent diff, and U2 must not claim otherwise — a pull
+  // request touching only excluded paths would otherwise be blocked as UNKNOWN.
+  //
+  // Absence still fails closed, per the doctrine above: a record with no exclusion field
+  // reads as zero exclusions and U2 fires exactly as it did before.
+  const excludedFiles = coverage?.diff?.excluded_files;
+  const excludedCount = Array.isArray(excludedFiles) ? excludedFiles.length : 0;
+  if (filesDiff === 0 && excludedCount > 0) {
+    // Deliberately empty scope — fall through without adding U2.
+  } else if ((filesDiff === null || filesDiff === 0) && (changedApi === null || changedApi > 0)) {
     const measured =
       filesDiff === null
         ? 'the coverage record does not report a measured file count'
