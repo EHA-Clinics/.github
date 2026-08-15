@@ -23,6 +23,32 @@ const read = (name) => readFileSync(fixturePath(name), 'utf8');
 const TENANT_ROSTER = 'apps/ehacare/frontend/src/common/services/tenantRoster.ts';
 const SDK_ADAPTER = 'apps/ehacare/frontend/src/common/services/sdkClientAdapter.ts';
 
+/**
+ * The diff budget these cases measure against, supplied the way production now supplies it —
+ * REPORTED by the run in review_summary_json, not assumed from a constant.
+ *
+ * Why a value has to be named at all: the packer's budget is per-model and reservation-aware,
+ * so there is no single default to lean on, and at the packer's own default this 137,015-char
+ * diff is inlined WHOLE and cuts nothing. A fixture that cannot truncate cannot prove the gate
+ * is able to go red, which is the one thing these cases exist to prove.
+ *
+ * Why THIS value: 61,000 is the budget at which the real #3515 diff reproduces the ROLLUP
+ * recorded before the version move — 6 whole, 4 cut production files, 5 cut non-source, none
+ * dropped entirely. The counts are identical to the pre-move measurement, so the truncation
+ * being detected is the same truncation as before, not a new artefact of the new packer.
+ */
+const INCIDENT_BUDGET_CHARS = 61_000;
+
+const promptBudgetSummary = (maxChars = INCIDENT_BUDGET_CHARS, excludePaths = []) =>
+  JSON.stringify({
+    // ONLY promptBudgets. Every other field is deliberately absent so strategy, conclusion,
+    // token and model resolution still fall back to the environment exactly as before, and
+    // these cases keep testing what they were written to test.
+    promptBudgets: [
+      { lensId: 'risk', modelLabel: 'deepseek/deepseek-v4-pro', reservedChars: 259_000, diffPromptBudgetChars: maxChars, excludePaths },
+    ],
+  });
+
 /** A clean, review-happened environment: nothing here should trip U1-U6. */
 const healthyEnv = (over = {}) => ({
   ELEK_REF: ELEK_REF_VERIFIED,
@@ -30,6 +56,7 @@ const healthyEnv = (over = {}) => ({
   EXECUTED_STRATEGY: 'council',
   REVIEW_CONCLUSION: 'success',
   REVIEW_INPUT_TOKENS: '83000',
+  REVIEW_SUMMARY_JSON: promptBudgetSummary(),
   ...over,
 });
 
@@ -79,7 +106,9 @@ describe('buildCoverage — the fixture-driven red', () => {
     expect(coverage.diff.chars).toBe(137_015);
     expect(coverage.diff.files_diff).toBe(15);
     expect(coverage.diff.regime).toBe('SLICES');
-    expect(coverage.diff.slice_ceiling_observed).toBe(3_846); // R14: observed, not upstream's internal budget
+    expect(coverage.diff.slice_ceiling_observed).toBe(3_738); // R14: observed, not upstream's internal budget
+    expect(coverage.diff.budget_chars).toBe(INCIDENT_BUDGET_CHARS);
+    expect(coverage.diff.budget_source).toBe('reported-by-run');
   });
 
   it('reports tenantRoster.ts — the whole tenant-isolation primitive — as PARTIAL', () => {
@@ -96,16 +125,19 @@ describe('buildCoverage — the fixture-driven red', () => {
     expect(roster.patch_chars).toBe(15_215);
     expect(roster.shown_chars).toBeLessThan(roster.patch_chars);
     expect(roster.shown_chars).toBeGreaterThan(0);
-    // MEASURED on the committed fixture, then independently confirmed two ways:
-    //  (a) by hand: patch.slice(0, 4000-140).replace(/\n[^\n]*$/,'') — the last newline
-    //      inside the 3,860-char cut sits at index 3,822;
-    //  (b) by executing the REAL elek@3748508 src/review/diff-context.ts
-    //      formatChangedFilesForPrompt(diff, 200_000) and asserting the emitted prompt
-    //      contains exactly patch.slice(0, 3822) and no further content for this file.
-    // 74% of the tenant-isolation primitive is still outside the prompt at v1.1.4 — which
-    // is why the pin bump alone was never the fix and this gate is load-bearing.
-    expect(roster.shown_chars).toBe(3_822);
-    expect(roster.pct).toBe(25);
+    // MEASURED on the committed fixture, then independently confirmed by hand:
+    // patch.slice(0, perFileBudget - 140).replace(/\n[^\n]*$/,'') — the last newline inside
+    // the cut sits at index 3,706. Re-derived for the current packer, not carried forward: the
+    // per-file budget is no longer a fixed 4,000, it is the reported diff budget shared across
+    // the changed files, which at the incident budget lands just under 3,878 for this diff.
+    // The hand-derivation is stable across that neighbourhood — 3,860 and 3,878 both cut at
+    // 3,706 — because the trim lands on the same line boundary either way.
+    //
+    // 76% of the tenant-isolation primitive is outside the prompt. That is the whole point:
+    // the review reported "no high-confidence issues" without having seen three quarters of
+    // the file, and the pin move alone was never the fix.
+    expect(roster.shown_chars).toBe(3_706);
+    expect(roster.pct).toBe(24);
   });
 
   it('derives shownChars from the ported packer — at least one file is genuinely cut', () => {
@@ -497,6 +529,8 @@ describe('CLI — --diff-file is EXPLICIT offline mode', () => {
           REQUESTED_STRATEGY: 'council',
           EXECUTED_STRATEGY: 'council',
           REVIEW_INPUT_TOKENS: '83000',
+          // The budget travels in the run's own report, exactly as in production.
+          REVIEW_SUMMARY_JSON: promptBudgetSummary(),
           GITHUB_OUTPUT: outputFile,
           GITHUB_STEP_SUMMARY: summaryFile,
         },
@@ -545,5 +579,56 @@ describe('buildCoverage — never throws, always emits', () => {
     expect(coverage.inventory_truncated).toBe(true);
     // The rollup counts stay whole-population even when the inventory is capped.
     expect(coverage.rollup.files_total).toBe(15);
+  });
+});
+
+describe('exclusions and the empty-scope edge (buildCoverage)', () => {
+  const section = (path, body) =>
+    [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, '@@ -1,1 +1,2 @@', ' ctx', `+${body}`].join('\n');
+  const summaryWith = (excludePaths) =>
+    JSON.stringify({
+      promptBudgets: [
+        { lensId: 'risk', modelLabel: 'deepseek/deepseek-v4-pro', reservedChars: 1_000, diffPromptBudgetChars: 200_000, excludePaths },
+      ],
+    });
+
+  it('does not red a pull request that touches ONLY excluded paths', () => {
+    // The feature's primary use case. Zero reviewable files here is a deliberately empty
+    // scope, not a missing diff — reporting U2 would block exactly the pull request
+    // exclude_paths exists to serve, blaming getGitDiff for a failure that never happened.
+    const coverage = buildCoverage({
+      diffText: `${[section('.planning/a.md', 'x'), section('.planning/b.py', 'y')].join('\n')}\n`,
+      env: healthyEnv({ REVIEW_SUMMARY_JSON: summaryWith(['.planning/**']) }),
+      context: healthyContext({ changedFilesApi: 2 }),
+    });
+    expect(coverage.unknown_reasons).toEqual([]);
+    expect(coverage.verdict).toBe('COMPLETE');
+    expect(coverage.diff.files_diff).toBe(0);
+    expect(coverage.diff.excluded_files).toHaveLength(2);
+  });
+
+  it('STILL reds a genuinely empty diff even when exclusions are configured', () => {
+    // The safety complement. Exclusions being configured must not suppress U2 — only
+    // exclusions actually APPLIED prove the diff parsed, because a file can only be excluded
+    // after being parsed out of the diff.
+    const coverage = buildCoverage({
+      diffText: '',
+      env: healthyEnv({ REVIEW_SUMMARY_JSON: summaryWith(['.planning/**']) }),
+      context: healthyContext({ changedFilesApi: 2 }),
+    });
+    expect(coverage.verdict).toBe('UNKNOWN');
+    expect(coverage.unknown_reasons.map((u) => u.branch)).toContain('U2');
+  });
+
+  it('keeps measuring the reviewable remainder when only some files are excluded', () => {
+    const coverage = buildCoverage({
+      diffText: `${[section('.planning/a.md', 'x'), section('src/app.ts', 'y')].join('\n')}\n`,
+      env: healthyEnv({ REVIEW_SUMMARY_JSON: summaryWith(['.planning/**']) }),
+      context: healthyContext({ changedFilesApi: 2 }),
+    });
+    expect(coverage.unknown_reasons).toEqual([]);
+    expect(coverage.diff.files_diff).toBe(1);
+    expect(coverage.diff.excluded_files).toEqual(['.planning/a.md']);
+    expect(coverage.inventory.map((r) => r.path)).toEqual(['src/app.ts']);
   });
 });

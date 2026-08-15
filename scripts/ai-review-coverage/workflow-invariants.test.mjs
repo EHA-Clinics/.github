@@ -346,7 +346,7 @@ describe('every cross-repo gate checkout is pinned to a SHA, never a branch', ()
 
 describe('the elek step matches the verified budget model', () => {
   it('pins elek to exactly ELEK_REF_VERIFIED', () => {
-    const match = source().match(/uses: selimozten\/elek@([0-9a-f]{40})/);
+    const match = source().match(/uses: EHA-Clinics\/elek@([0-9a-f]{40})/);
     expect(match).not.toBeNull();
     // If these ever diverge the gate reds by design (U1) — but a failing unit test with a
     // clear message beats surprising a PR author.
@@ -357,12 +357,23 @@ describe('the elek step matches the verified budget model', () => {
     expect(source()).toMatch(/^ {8}id: review\s*$/m);
   });
 
-  it('wires both new inputs through to elek', () => {
+  it('wires actor_filter through to elek', () => {
     const text = source();
-    for (const key of ['max_council_changed_lines', 'actor_filter']) {
+    for (const key of ['actor_filter']) {
       expect(text).toMatch(new RegExp(`^ {6}${key}:\\s*$`, 'm')); // workflow_call input
       expect(text).toMatch(new RegExp(`^ {10}${key}: \\$\\{\\{ inputs\\.${key} \\}\\}\\s*$`, 'm'));
     }
+  });
+
+  it('accepts max_council_changed_lines but no longer forwards it', () => {
+    // The pinned action no longer declares this input, so forwarding it produced a permanent
+    // yellow "unexpected input" annotation on every run. It is still ACCEPTED so that no caller
+    // breaks by continuing to pass it, and it was already inert at its '0' default. Both halves
+    // are asserted: dropping the input would break callers, and restoring the passthrough would
+    // bring the annotation back.
+    const text = source();
+    expect(text).toMatch(/^ {6}max_council_changed_lines:\s*$/m);
+    expect(text).not.toMatch(/^ {10}max_council_changed_lines: \$\{\{ inputs\./m);
   });
 
   it('no longer carries the superseded pin or its obsolete justification', () => {

@@ -145,8 +145,18 @@ on:
         description: 'Minimum severity to surface: critical | important | minor.'
       max_cost_usd:
         type: string
-        default: '0.25'
+        default: '1.00'
         description: 'Per-review USD budget cap (string; elek expects a string, not a number).'
+        # RAISED 0.25 -> 1.00 (2026-08-15). Not a spend decision — a correctness one. A breach
+        # does not warn: selectReviewPlanWithinBudget DOWNGRADES council -> crosscheck -> solo,
+        # which makes strategy.requested != strategy.executed, which the coverage gate reports
+        # as U3 -> UNKNOWN -> exit 1. So a cap set near the true cost converts a normal review
+        # into a red required check. Anchored to a measured run: kemiqa PR #362 logged
+        # planned_minimum_input_cost $0.1392 against a 200,000-char budget with a 4-lens council
+        # plus validator; the packer's default budget is now 320,000, which scales that to
+        # ~$0.223 against the old $0.25 cap — inside the noise. Real cost falls well below 1.00
+        # once exclude_paths drops planning artifacts and lockfiles from the prompt; the cap
+        # exists for the worst case, not the typical one.
       cost_rates:
         type: string
         # EHAC-2166: re-derived from the OpenRouter models API on 2026-08-10, not carried over.
@@ -166,6 +176,14 @@ on:
         type: string
         default: '0'
         description: >
+          RETIRED 2026-08-15 — ACCEPTED BUT NO LONGER FORWARDED. The pinned elek no longer
+          declares this input, so passing it produced a permanent yellow "unexpected input"
+          annotation on every run. It is still accepted here so no caller breaks by continuing
+          to pass it, and it is inert either way: the default was already '0', which disabled
+          it. The behaviour it once guarded is gone at the pin, not merely switched off — the
+          for(;;) downgrade loop it mitigated no longer exists. Do not restore the passthrough
+          without first confirming the action declares the input again.
+          Historical note follows.
           Changed-line warning threshold for council/thermos; '0' disables it.
           EHAC-2057 Fault 5: at the OLD pin (88813716) the default was 1_200 and a
           for(;;) loop silently downgraded council -> crosscheck -> solo on any large
@@ -175,7 +193,11 @@ on:
           self-documenting and pin-independent (CONTEXT D-05(i)).
       disable_mcp:
         type: string
-        default: '1'
+        # FLIPPED '1' -> '0' (2026-08-15). The EHAC-2165 root cause was a FLOATING pi-mcp-adapter
+        # install resolving to a broken release on every run. The pinned fork commits a lockfile
+        # and installs with `npm ci`, so the adapter is version-pinned and no longer floats.
+        # Restores inline PR comments, which this workaround has been costing fleet-wide.
+        default: '0'
         description: >
           EHAC-2165 workaround, defaulted ON because reviews are currently 100% broken without
           it. '1' makes pi run --no-extensions so it never loads pi-mcp-adapter, whose
@@ -387,7 +409,7 @@ jobs:
         # cost_usd / conclusion as outputs at EVERY ref, and all of them were unreachable
         # purely for want of a step id. The coverage measurement below consumes them.
         id: review
-        uses: selimozten/elek@3748508413fb355ae696b8fa98d1075930d12106 # v1.1.4
+        uses: EHA-Clinics/elek@4c08c1c9bc02c027a49b54e0c68af4736543a467 # eha-v1.2.1 (public soft fork of selimozten/elek)
         with:
           # pi's native openrouter adapter — elek's tested path. The OpenAI-compatible
           # Databricks AI Gateway (provider: openai) hung pi indefinitely on tool-enabled
@@ -402,7 +424,6 @@ jobs:
           max_cost_usd: ${{ inputs.max_cost_usd }}
           cost_rates: ${{ inputs.cost_rates }}
           # EHAC-2057 Fault 5 mitigation + T-2057-02 compensating control.
-          max_council_changed_lines: ${{ inputs.max_council_changed_lines }}
           actor_filter: ${{ inputs.actor_filter }}
           # Primary/fallback model + reasoning knobs.
           model: ${{ inputs.model }}
@@ -512,7 +533,7 @@ jobs:
           # code change underneath a pinned caller — the exact pin-drift class EHAC-2057 is
           # about. EHA-Clinics/.github is PUBLIC, so the default GITHUB_TOKEN reads it from
           # either private caller and no new secret is introduced.
-          ref: 3322a33fb3b55257ded10c296a87bf41091169f6
+          ref: 5e9e381b6dec1f014bcc0903923b05ce008d43ac
           path: .ai-review-gate
           sparse-checkout: scripts/ai-review-coverage
           persist-credentials: false
@@ -555,7 +576,7 @@ jobs:
           REVIEW_COST_USD: ${{ steps.review.outputs.cost_usd }}
           # The LITERAL pinned SHA, not an expression: this is what makes branch U1 detect a
           # future elek bump that forgets to re-verify elek-prompt-budget.mjs.
-          ELEK_REF: 3748508413fb355ae696b8fa98d1075930d12106
+          ELEK_REF: 4c08c1c9bc02c027a49b54e0c68af4736543a467
           REQUESTED_STRATEGY: ${{ inputs.review_strategy }}
           ACTOR_FILTER: ${{ inputs.actor_filter }}
           # EHAC-2103: the CONFIGURED council, so the coverage record can put what we asked for
@@ -593,7 +614,7 @@ jobs:
         with:
           repository: EHA-Clinics/.github
           # Same pinned SHA as the producer, for the same reason (T-2057-01).
-          ref: 3322a33fb3b55257ded10c296a87bf41091169f6
+          ref: 5e9e381b6dec1f014bcc0903923b05ce008d43ac
           path: .ai-review-gate
           sparse-checkout: scripts/ai-review-coverage
           persist-credentials: false

@@ -190,6 +190,44 @@ describe('UNKNOWN branches — every one exits non-zero', () => {
     expectUnknown({ COVERAGE_JSON: JSON.stringify(base) }, 'U2');
   });
 
+  // A pull request touching ONLY excluded paths measures zero reviewable files. That is a
+  // deliberately empty scope, not a missing diff — and it is the exact pull request
+  // exclude_paths exists to serve, so treating it as U2 would red-line the feature's own
+  // primary use case with a message blaming getGitDiff for a failure that never happened.
+  //
+  // Files can only be excluded AFTER being parsed out of the diff, so a non-empty exclusion
+  // list is itself proof the diff was measured.
+  it('U2 does NOT fire when zero reviewable files is explained by exclusions', () => {
+    const base = JSON.parse(payload());
+    base.diff = {
+      ...base.diff,
+      files_diff: 0,
+      changed_files_api: 2,
+      excluded_files: ['.planning/a.md', '.planning/b.py'],
+    };
+    const result = run({ COVERAGE_JSON: JSON.stringify(base) });
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('U2');
+  });
+
+  // The complement, and the one that matters for safety: exclusions being CONFIGURED must not
+  // suppress U2. Only exclusions actually APPLIED prove the diff parsed. An empty list here
+  // means nothing was excluded, so a zero file count is still an unexplained empty diff.
+  it('U2 still fires when the exclusion list is present but empty', () => {
+    const base = JSON.parse(payload());
+    base.diff = { ...base.diff, files_diff: 0, changed_files_api: 15, excluded_files: [] };
+    expectUnknown({ COVERAGE_JSON: JSON.stringify(base) }, 'U2');
+  });
+
+  // Fail-closed for records written by an older gate that has no exclusion field at all:
+  // absence reads as zero exclusions, and U2 behaves exactly as it did before.
+  it('U2 still fires when the exclusion field is absent entirely', () => {
+    const base = JSON.parse(payload());
+    base.diff = { ...base.diff, files_diff: 0, changed_files_api: 15 };
+    delete base.diff.excluded_files;
+    expectUnknown({ COVERAGE_JSON: JSON.stringify(base) }, 'U2');
+  });
+
   // EHAC-2164 — RED on known-bad. Before the fix `num()` returned null for the absent field,
   // `null === 0` was false, U2 never fired, and this exact record exited 0 as COMPLETE.
   // The rollup below is deliberately VALID so U5's rollup check cannot be what reds it —

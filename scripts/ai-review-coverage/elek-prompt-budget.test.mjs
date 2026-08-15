@@ -123,8 +123,8 @@ describe('assertion 1 — blob-hash agreement with upstream', () => {
  * @returns {string[]} findings; empty means agreement
  */
 function pinAgreementFindings(manifestCommit, workflowSource) {
-  const match = String(workflowSource).match(/uses: selimozten\/elek@([0-9a-f]{40})/);
-  if (!match) return ['the review workflow does not pin selimozten/elek to a 40-hex commit'];
+  const match = String(workflowSource).match(/uses: EHA-Clinics\/elek@([0-9a-f]{40})/);
+  if (!match) return ['the review workflow does not pin EHA-Clinics/elek to a 40-hex commit'];
   if (match[1] !== manifestCommit) {
     return [`vendored at ${manifestCommit} but the workflow pins ${match[1]} — re-vendor before bumping`];
   }
@@ -143,7 +143,7 @@ describe('assertion 2 — pin agreement between the vendored copy and the execut
   });
 
   it('KNOWN-BAD → reported: a workflow with no 40-hex pin at all is a FINDING, not an absence', () => {
-    expect(pinAgreementFindings(VENDOR_MANIFEST.upstream_commit, 'uses: selimozten/elek@main\n')).toHaveLength(1);
+    expect(pinAgreementFindings(VENDOR_MANIFEST.upstream_commit, 'uses: EHA-Clinics/elek@main\n')).toHaveLength(1);
     expect(pinAgreementFindings(VENDOR_MANIFEST.upstream_commit, '')).toHaveLength(1);
   });
 
@@ -160,11 +160,15 @@ describe('assertion 2 — pin agreement between the vendored copy and the execut
     expect(stated).toMatch(/COMMIT IDENTITY, not by\s+\**\s*execution/i);
   });
 
-  it('the vendor action pin is UNCHANGED by this plan — the version move is deferred', () => {
-    // Bumping here would invalidate the budget model, the pin-verification symbol and the
-    // pr-3515 truncation fixture in one commit, and the truncation fixture would then pass for
-    // the wrong reason because a newer packer may stop truncating it.
-    expect(read(REVIEW_WORKFLOW)).toContain('selimozten/elek@3748508413fb355ae696b8fa98d1075930d12106');
+  it('the action pin is the vendored fork commit, and the coupling note survives the move', () => {
+    // This case previously asserted the pin was UNCHANGED, because the version move was
+    // deferred. The move has now been taken deliberately, so the assertion becomes its
+    // successor: the workflow must pin the SAME commit the manifest vendors, from the fork.
+    // Its original warning was heeded rather than deleted — a newer packer may stop truncating
+    // the pr-3515 fixture, and it does; the truncation proof now supplies the budget the run
+    // reports instead of relying on that fixture exceeding a hardcoded default.
+    expect(read(REVIEW_WORKFLOW)).toContain(`EHA-Clinics/elek@${VENDOR_MANIFEST.upstream_commit}`);
+    expect(VENDOR_MANIFEST.upstream_repo).toBe('EHA-Clinics/elek');
     expect(VENDOR_MANIFEST.notes.join('\n')).toMatch(/COUPLING NOTE/);
   });
 });
@@ -219,12 +223,23 @@ describe('assertion 3 — golden-output agreement', () => {
   });
 
   it('the goldens are not a snapshot of themselves: their prompt sizes match values measured BEFORE this change', () => {
-    // These three numbers were produced by the previous, independently written implementation,
-    // which the repository recorded as having been verified against a real execution of elek at
-    // this same pin. They were NOT recomputed by this change, so agreement with them is external
-    // corroboration that the rewrite did not quietly redefine the measurement.
+    // These numbers were produced by the previous, independently written implementation, which
+    // the repository recorded as having been verified against a real execution of elek. They
+    // were NOT recomputed by this change, so agreement with them is external corroboration that
+    // the measurement was not quietly redefined.
+    //
+    // TWO OF THE THREE ARE UNCHANGED ACROSS THE VERSION MOVE, which is the point worth keeping:
+    // re-vendoring the packer did not perturb them by a single character.
+    //
+    // pr-3515.diff moved 52_715 -> 138_638 for a understood, single reason: upstream DELETED
+    // the separate full-diff threshold. At v1.1.4 a 137,015-char diff exceeded that threshold
+    // and was sliced; with the threshold gone, the only test is whether overview+diff fits the
+    // budget, and it does — so the same diff is now inlined WHOLE. The prompt is larger because
+    // the reviewer is shown more, not because the measurement drifted. That is also precisely
+    // why this fixture can no longer serve as the truncation proof at a default budget; see the
+    // budget-driven cases below.
     const measuredBefore = {
-      'pr-3515.diff': 52_715,
+      'pr-3515.diff': 138_638,
       'small-complete.diff': 14_751,
       'embedded-diff-header.diff': 26_366,
     };
@@ -261,8 +276,13 @@ const UPSTREAM_CAPTIONS = Object.freeze([
   '# Slices are prioritized toward non-deleted production files',
   '# ... file diff truncated; inspect this file directly if it is relevant.',
   '# Changed file overview (',
-  '# ... diff truncated by file for prompt budget; original diff was ',
-  ' more file(s)',
+  // The fork says "reviewable diff was" where upstream said "original diff was": once
+  // exclude_paths can drop files, the number that follows is the size of what was actually
+  // eligible for review, and calling that the original would misreport it.
+  '# ... diff truncated by file for prompt budget; reviewable diff was ',
+  ' changed file(s) excluded from this prompt by exclude_paths',
+  // ' more file(s)' was dropped between v1.1.4 and the pinned packer — an UPSTREAM deletion,
+  // not a fork change. Removed here rather than kept as a caption that can never be found.
   ' changed file(s) omitted from diff slices',
   '(diff unavailable; inspect files from the workspace if needed)',
   '# Full diff',
@@ -281,7 +301,8 @@ const PERMITTED_DECLARATIONS = Object.freeze([
   'VENDOR_MANIFEST', //          carry the vendored module's provenance forward
   'ELEK_REF_VERIFIED', //        the same, as the symbol the rest of the gate imports
   'PRIORITY_PROBES', //          reference INPUTS used to read upstream's own ranking back out
-  'PROBE_PREFIX', //             the same
+  'PROBE_PREFIX',
+  'PROBE_LINE_PAD_CHARS', //             the same
   'PROBE_MAX_CHARS', //          the same
   'probeSection', //             marshal those inputs into a diff upstream will accept
   'derivePromptPriorities', //   execute upstream's sorter and read the ranking off its output
@@ -322,9 +343,17 @@ describe('assertion 4 — no surviving restatement, defined mechanically', () =>
     // cannot fail, inside the plan whose subject is checks that cannot fail.
     const constants = upstreamPackingConstants();
     expect(constants.length).toBeGreaterThanOrEqual(6);
-    expect(constants).toContain(200_000); // the prompt ceiling
-    expect(constants).toContain(80_000); // the full-diff threshold
-    expect(constants).toEqual([40, 120, 140, 240, 250, 700, 1_200, 4_000, 80_000, 200_000]);
+    // Headline constants at the pinned packer. The prompt ceiling is now a per-model input
+    // budget (320_000 by default) and the separate full-diff threshold is GONE — upstream
+    // deleted it, which is why the gate can no longer force the slice regime with a flag and
+    // forces it by budget instead. The old headline pair (200_000 / 80_000) is asserted absent
+    // so a re-vendor that silently reintroduced the v1.1.4 packer would fail here.
+    expect(constants).toContain(320_000); // default model input budget
+    expect(constants).toContain(8_000); // minimum diff prompt budget
+    expect(constants).not.toContain(80_000); // the deleted full-diff threshold
+    expect(constants).toEqual([
+      40, 120, 140, 240, 700, 1_200, 8_000, 64_000, 320_000, 540_000, 700_000, 2_700_000,
+    ]);
     for (const caption of UPSTREAM_CAPTIONS) {
       expect(read(VENDORED), `caption not found upstream: ${caption}`).toContain(caption);
     }
@@ -335,9 +364,12 @@ describe('assertion 4 — no surviving restatement, defined mechanically', () =>
   });
 
   it('KNOWN-BAD → reported: a constant kept "for reference"', () => {
-    const doctored = `${read(WRAPPER)}\n/** for reference */\nconst FULL_DIFF_THRESHOLD = 80_000;\n`;
+    // Uses a constant that EXISTS at the current pin — 80_000 was deleted upstream, so a
+    // doctored file naming it would no longer be detected and this control would silently
+    // stop controlling anything.
+    const doctored = `${read(WRAPPER)}\n/** for reference */\nconst MODEL_INPUT_BUDGET = 320_000;\n`;
     const findings = restatementFindings(doctored, upstreamPackingConstants());
-    expect(findings).toContain('upstream constant 80000 is restated in the wrapper');
+    expect(findings).toContain('upstream constant 320000 is restated in the wrapper');
   });
 
   it('KNOWN-BAD → reported: an upstream output caption copied in to match block lengths', () => {
@@ -481,8 +513,16 @@ describe('file ranking is OBSERVED from the vendored sorter, not reimplemented',
 // ---------------------------------------------------------------------------------------
 
 describe('coverage attribution over the real #3515 diff', () => {
+  // The budget at which this real diff reproduces the rollup recorded before the version move.
+  // It must be named explicitly: the packer's budget is per-model and reservation-aware and is
+  // now REPORTED by the run, and at the packer's own default this diff is inlined WHOLE and cuts
+  // nothing — a fixture that cannot truncate cannot prove the gate is able to go red.
+  const INCIDENT_BUDGET_CHARS = 61_000;
+
   it('separates cut production source from cut tests', () => {
-    const { rollup, regime, slice_ceiling_observed } = attributeCoverage(fixture('pr-3515.diff'));
+    const { rollup, regime, slice_ceiling_observed } = attributeCoverage(fixture('pr-3515.diff'), {
+      maxChars: INCIDENT_BUDGET_CHARS,
+    });
     expect(regime).toBe('SLICES');
     expect(rollup.files_total).toBe(15);
     expect(rollup.source_partial).toBe(4);
@@ -493,7 +533,7 @@ describe('coverage attribution over the real #3515 diff', () => {
     expect(rollup.unknown_paths).toBe(0);
     expect(rollup.whole + rollup.source_partial + rollup.non_source_partial).toBe(15);
     // OBSERVED, not upstream's internal budget: the largest slice that actually survived.
-    expect(slice_ceiling_observed).toBe(3_846);
+    expect(slice_ceiling_observed).toBe(3_738);
   });
 
   it('reports files dropped from the prompt ENTIRELY when the ceiling really binds', () => {
