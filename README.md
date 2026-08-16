@@ -41,13 +41,30 @@ jobs:
 | `review_models` | string | `deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,deepseek/deepseek-v4-flash` | Comma-separated OpenRouter model IDs round-robined across the 4 lenses. |
 | `validator_model` | string | `deepseek/deepseek-v4-pro` | Model that synthesizes lens findings and posts the single deduplicated review. |
 | `thinking` | string | `high` | Reasoning effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. |
-| `max_turns` | number | `20` | Max conversation turns per reviewer. |
+| `max_turns` | number | `30` | Max conversation turns per reviewer. Raised from `20` on 2026-08-16: the `tests` lane was flaking against the ceiling rather than the diff, failing twice at 20 and then passing at 18 on a near-identical diff. |
 | `severity_threshold` | string | `important` | Minimum severity to post (`info`, `important`, `critical`). |
-| `max_cost_usd` | string | `0.25` | Per-PR cost guardrail; elek auto-downgrades council → crosscheck → solo on large diffs to stay within budget. |
+| `max_cost_usd` | string | `1.00` | Per-PR cost guardrail; elek auto-downgrades council → crosscheck → solo on large diffs to stay within budget. |
 | `cost_rates` | string | `xiaomi/mimo-v2.5-pro=0.435:0.87,deepseek/deepseek-v4-flash=0.14:0.28` | `model=input:output` USD-per-million-token overrides for models without built-in OpenRouter pricing. DeepSeek uses OpenRouter's built-in rates. |
 | `mode` | string | `review` | `review` (read-only) or `review+edit` (pushes fixes). |
-| `model` | string | (unset) | Single-model override for `solo` strategy; ignored under `council`. |
+| `model` | string | `deepseek/deepseek-v4-pro` | Single-model override for `solo` strategy; ignored under `council`. |
 | `trigger_phrase` | string | `@ai-review` | Comment phrase that triggers an on-demand review. |
+| `scope_paths` | string | (unset) | Comma-separated globs limiting which changed files are in scope. Evaluated **inside** this workflow, so an out-of-scope PR reports a green `NOT_REVIEWED` rather than no check run at all. Prefer this over a `paths:` filter on the caller — see the note below the table. |
+| `actor_filter` | string | (unset) | Allowlist of **human** actors. **Authoritative and exclusive when set**: `isActorAuthorized` returns the list result and never consults repo permissions, so anyone absent is denied. When unset, falls back to `OWNER`/`MEMBER`/`COLLABORATOR` and then a repo-permission lookup. |
+| `allowed_bots` | string | (unset) | Allowlist of bot actors (`*` permits all). Without it, a bot-authored PR cannot be reviewed at all. ⚠ Setting `allowed_bots` **without** `actor_filter` on a post-v1.1.4 pin flips the actor gate to strict-deny for humans — see the caution below. |
+| `run_timeout_seconds` | string | `600` | Per-run budget for the elek step. Cannot exceed the job's own cap. |
+| `disable_mcp` | string | `0` | `1` disables MCP, which also disables inline PR comments. |
+| `max_council_changed_lines` | string | `0` | **RETIRED 2026-08-15 — accepted but no longer forwarded.** The pinned elek no longer declares this input, so passing it produced a permanent yellow "unexpected input" annotation. Kept only so existing callers do not break; setting it has no effect. |
+| `prompt` | string | `Please review this PR for correctness, security, and potential issues.` | The review instruction, so a repo can shape its own review. Only honoured on `pull_request` events — a caller cannot inject a prompt on an on-demand run. |
+| `pr_number` | number | (unset) | Target PR for on-demand runs, where the event carries no PR context. |
+
+> **`workflow_dispatch` is not a review path.** elek rejects the event outright
+> (`Unsupported event: workflow_dispatch`) before any model call, so a dispatch cannot be used to
+> green-prove a change. Use `@ai-review` on a live PR, or close/reopen to force a genuine run.
+
+> **Do not add a `paths:` filter to a caller whose check is a required status context.** A
+> paths-filtered workflow never dispatches on an out-of-scope PR, so no check run is created and the
+> required context stays pending forever. Use `scope_paths` instead: it turns "out of scope" from an
+> absent check into a green `NOT_REVIEWED` one, and still skips the model call.
 
 **Secrets:**
 
