@@ -280,6 +280,89 @@ describe('UNKNOWN branches — every one exits non-zero', () => {
     expectUnknown({ COVERAGE_JSON: JSON.stringify(base) }, 'U7');
   });
 
+  // EHAC-2231 — the QUORUM rule. These reproduce the live block: on 2026-08-17 four PRs
+  // (#3680 a security fix, #3671, #3291, #3233) were all BLOCKED because a single council run
+  // did not return. The measured cause was two unrelated modes — VOLUME and STALL — and NOT a
+  // bad model: lens->model binding is positional, so per-model blame is an artifact.
+  const council = (over = []) => {
+    const base = JSON.parse(payload());
+    base.models.runs = [
+      { role: 'reviewer', lens_id: 'risk', model_label: 'deepseek/deepseek-v4-pro', conclusion: 'success' },
+      { role: 'reviewer', lens_id: 'design', model_label: 'xiaomi/mimo-v2.5-pro', conclusion: 'success' },
+      { role: 'reviewer', lens_id: 'tests', model_label: 'deepseek/deepseek-v4-flash', conclusion: 'success' },
+      { role: 'reviewer', lens_id: 'operations', model_label: 'deepseek/deepseek-v4-pro', conclusion: 'success' },
+      { role: 'validator-review', lens_id: 'validator-self-review', model_label: 'deepseek/deepseek-v4-pro', conclusion: 'success' },
+      { role: 'validator', lens_id: null, model_label: 'deepseek/deepseek-v4-pro', conclusion: 'success' },
+    ];
+    for (const [idx, conclusion] of over) base.models.runs[idx].conclusion = conclusion;
+    return JSON.stringify(base);
+  };
+
+  // The exact shape of PR #3680: `tests` (slot 3) dropped, everything else returned.
+  it('U7 quorum: one dropped reviewer lens PASSES, loudly', () => {
+    const result = run({ COVERAGE_JSON: council([[2, 'failure']]) });
+    expect(result.status).toBe(0);
+    // Never silent — a green with no annotation is the defect this file exists to prevent.
+    expect(result.stdout).toContain('::warning::');
+    expect(result.stdout).toContain('DEGRADED');
+    expect(result.stdout).toContain('tests');
+    expect(result.stdout).toContain('deepseek/deepseek-v4-flash');
+    expect(result.stdout).not.toContain('::error::');
+  });
+
+  it('U7 quorum: two dropped reviewer lenses RED — above tolerance', () => {
+    const result = run({ COVERAGE_JSON: council([[2, 'failure'], [1, 'failure']]) });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('U7');
+    expect(result.stdout).toContain('above the tolerance of 1');
+    // The full census, not just the decisive run.
+    expect(result.stdout).toContain('design');
+    expect(result.stdout).toContain('tests');
+  });
+
+  it('U7 quorum: a failed validator REDS even though only one run dropped', () => {
+    const result = run({ COVERAGE_JSON: council([[5, 'failure']]) });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('U7');
+    expect(result.stdout).toContain('nothing reconciled the lens findings');
+  });
+
+  it('U7 quorum: every reviewer lens down REDS even at a permissive tolerance', () => {
+    const result = run({
+      COUNCIL_MAX_DEGRADED: '9',
+      COVERAGE_JSON: council([[0, 'failure'], [1, 'failure'], [2, 'failure'], [3, 'failure']]),
+    });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('No reviewer lens succeeded');
+  });
+
+  it('U7 quorum: a failed run with an unrecognised role fails CLOSED', () => {
+    const base = JSON.parse(council());
+    base.models.runs[2].role = 'sidecar';
+    base.models.runs[2].conclusion = 'failure';
+    const result = run({ COVERAGE_JSON: JSON.stringify(base) });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('neither reviewer nor validator');
+  });
+
+  it('U7 quorum: COUNCIL_MAX_DEGRADED=0 restores strict unanimity', () => {
+    const result = run({ COUNCIL_MAX_DEGRADED: '0', COVERAGE_JSON: council([[2, 'failure']]) });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('U7');
+  });
+
+  // A misconfigured knob must never WIDEN what the gate tolerates.
+  it.each(['banana', '-1', '1.5'])('U7 quorum: COUNCIL_MAX_DEGRADED=%s fails closed', (value) => {
+    const result = run({ COUNCIL_MAX_DEGRADED: value, COVERAGE_JSON: council([[2, 'failure']]) });
+    expect(result.status).toBe(1);
+  });
+
+  it('U7 quorum: a fully healthy council is silent', () => {
+    const result = run({ COVERAGE_JSON: council() });
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('DEGRADED');
+  });
+
   it('U3: executed strategy differs from requested', () => {
     const base = JSON.parse(payload());
     base.strategy = { requested: 'council', executed: 'crosscheck', match: false };
