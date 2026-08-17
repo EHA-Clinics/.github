@@ -1,0 +1,95 @@
+{
+  "schema": 1,
+  "verdict": "COMPLETE",
+  "not_reviewed": null,
+  "unknown_reasons": [],
+  "elek": {
+    "ref": "ed50490ef7139f67b23ea574ef89a90927cf7d04",
+    "ref_verified": "ed50490ef7139f67b23ea574ef89a90927cf7d04",
+    "pin_ok": true
+  },
+  "strategy": {
+    "requested": "council",
+    "executed": "council",
+    "match": true
+  },
+  "refs": {
+    "base_ref": "v2",
+    "head_ref": "feat/x",
+    "head_sha_git": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "head_sha_event": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sha_match": true,
+    "shallow": false
+  },
+  "diff": {
+    "chars": 14599,
+    "files_diff": 2,
+    "changed_files_api": 2,
+    "regime": "FULL",
+    "slice_ceiling_observed": null,
+    "prompt_chars": 14700
+  },
+  "review": {
+    "conclusion": "failure",
+    "input_tokens": 0,
+    "cost_usd": 0.0496,
+    "actor": "adothompson",
+    "event": "pull_request",
+    "terminal_reason": "configuration_error",
+    "skip_reason": null,
+    "failure_message": "GITHUB_TOKEN not available"
+  },
+  "models": {
+    "runs": [],
+    "attempts": null,
+    "configured": {
+      "review_models": [
+        "openrouter/deepseek/deepseek-v4-pro",
+        "openrouter/xiaomi/mimo-v2.5-pro",
+        "openrouter/deepseek/deepseek-v4-flash"
+      ],
+      "validator_model": "openrouter/deepseek/deepseek-v4-pro"
+    },
+    "policy": {
+      "producer_max_degraded": 1,
+      "producer_max_degraded_raw": "1",
+      "elek_configured_max_degraded": 1,
+      "elek_effective_max_degraded": 1,
+      "elek_status": "healthy",
+      "elek_failed_reviewer_lens_ids": [],
+      "elek_warnings": []
+    },
+    "distinct_models": [],
+    "rollup": {
+      "runs_total": 0,
+      "reviewer_lenses_total": 0,
+      "reviewer_lenses_failed": 0,
+      "validator_runs_total": 0,
+      "validator_runs_failed": 0,
+      "failed_lens_ids": [],
+      "attempts_total": null,
+      "failover_attempts": null
+    }
+  },
+  "rollup": {
+    "files_total": 2,
+    "whole": 2,
+    "source_partial": 0,
+    "source_absent": 0,
+    "non_source_partial": 0,
+    "non_source_absent": 0,
+    "unknown_paths": 0
+  },
+  "inventory": [
+    {
+      "path": "apps/ehacare/frontend/src/common/services/tenantRoster.ts",
+      "priority": 0,
+      "patch_chars": 15215,
+      "shown_chars": 15215,
+      "pct": 100,
+      "status": "added",
+      "verdict": "WHOLE"
+    }
+  ],
+  "inventory_truncated": false
+}

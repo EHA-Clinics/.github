@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -757,5 +758,243 @@ describe('R12 — review record sets are bucketed by verdict', () => {
       expect(bucketReviewRecords(undefined)).toEqual({ real: [], declined: [], unknown: [] });
       expect(evaluateRecordSet([]).exitCode).toBe(1);
     });
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════════
+ * EHAC-2231 — ONE declared tolerance, evaluated twice, and the census that goes with it.
+ *
+ * Every load-bearing rule below is demonstrated in BOTH directions: a known-bad record fails
+ * for the intended reason token, and the paired known-good record passes. A passing test on its
+ * own is not evidence that a gate can fail.
+ * ═══════════════════════════════════════════════════════════════════════════════════════════ */
+
+const COUNCIL_FIXTURES = join(import.meta.dirname, 'fixtures', 'council');
+const councilFixture = (name) => readFileSync(join(COUNCIL_FIXTURES, `${name}.json`), 'utf8');
+
+/**
+ * A council record with the given per-lens outcomes, on the CURRENT schema, with the recorded
+ * producer tolerance ALIGNED to the tolerance the gate will be given.
+ *
+ * Alignment is not a convenience: it is the production invariant. One declared value reaches
+ * both consumers, so a quorum test that left them different would be testing U8 drift instead
+ * of the quorum, and would go red for the wrong reason.
+ */
+const council = (runs, tolerance, over = {}) => {
+  const base = JSON.parse(councilFixture('healthy-council'));
+  base.models.runs = runs;
+  base.models.policy = {
+    ...base.models.policy,
+    producer_max_degraded: Number(tolerance),
+    producer_max_degraded_raw: String(tolerance),
+    elek_configured_max_degraded: Number(tolerance),
+    elek_effective_max_degraded: Number(tolerance),
+  };
+  const failed = (r) => r.conclusion !== 'success';
+  const reviewers = runs.filter((r) => r.role === 'reviewer');
+  const validators = runs.filter((r) => r.role === 'validator' || r.role === 'validator-review');
+  base.models.rollup = {
+    ...base.models.rollup,
+    runs_total: runs.length,
+    reviewer_lenses_total: reviewers.length,
+    reviewer_lenses_failed: reviewers.filter(failed).length,
+    validator_runs_total: validators.length,
+    validator_runs_failed: validators.filter(failed).length,
+    failed_lens_ids: runs.filter(failed).map((r) => r.lens_id ?? r.role ?? '(unknown)'),
+  };
+  return JSON.stringify({ ...base, ...over });
+};
+
+const lens = (lens_id, conclusion, over = {}) => ({
+  role: 'reviewer',
+  lens_id,
+  model_label: 'openrouter/deepseek/deepseek-v4-pro',
+  conclusion,
+  failure_class: conclusion === 'success' ? null : 'stall',
+  assigned_model_label: 'openrouter/deepseek/deepseek-v4-pro',
+  actual_model_label: 'openrouter/deepseek/deepseek-v4-pro',
+  failover_used: false,
+  attempt_count: 1,
+  ...over,
+});
+const VALIDATOR_RUN = { role: 'validator', lens_id: null, model_label: 'openrouter/deepseek/deepseek-v4-pro', conclusion: 'success' };
+const ADVISOR_RUN = { role: 'validator-review', lens_id: 'validator-self-review', model_label: 'openrouter/deepseek/deepseek-v4-pro', conclusion: 'success' };
+
+describe('offline replay — every council outcome through the real CLI', () => {
+  it('healthy council: exit 0, COMPLETE, and NO degraded warning', () => {
+    const proc = run({ COVERAGE_JSON: councilFixture('healthy-council'), COUNCIL_MAX_DEGRADED: '1' });
+    expect(proc.status).toBe(0);
+    expect(proc.stdout).toContain('COMPLETE');
+    expect(proc.stdout).not.toContain('DEGRADED');
+  });
+
+  it('successful failover: exit 0 and NO degraded warning — the logical lens succeeded', () => {
+    // The retry is visible in the attempt history, but a lens that succeeded on its
+    // replacement model is not a dropout and must not be reported as one.
+    const proc = run({ COVERAGE_JSON: councilFixture('failover-succeeded'), COUNCIL_MAX_DEGRADED: '1' });
+    expect(proc.status).toBe(0);
+    expect(proc.stdout).not.toContain('DEGRADED');
+  });
+
+  it('one degraded reviewer: exit 0 with a warning at 1, exit 1 with U7 at 0', () => {
+    const record = councilFixture('one-reviewer-degraded');
+    const tolerant = run({ COVERAGE_JSON: record, COUNCIL_MAX_DEGRADED: '1' });
+    expect(tolerant.status).toBe(0);
+    expect(tolerant.stdout).toContain('::warning::the council ran DEGRADED');
+    expect(tolerant.stdout).toContain('tests');
+
+    // THE PAIRED DIRECTION. Same bytes, stricter policy, and it must go red — otherwise the
+    // tolerance is not what is deciding the outcome.
+    const strict = run({ COVERAGE_JSON: record, COUNCIL_MAX_DEGRADED: '0' });
+    expect(strict.status).toBe(1);
+    expect(strict.stdout).toContain('U7');
+    expect(strict.stdout).toContain('above the tolerance of 0');
+  });
+
+  it('tolerance breached: exit 1 with U7 naming the count', () => {
+    const proc = run({ COVERAGE_JSON: councilFixture('tolerance-breached'), COUNCIL_MAX_DEGRADED: '1' });
+    expect(proc.status).toBe(1);
+    expect(proc.stdout).toContain('U7');
+    expect(proc.stdout).toContain('above the tolerance of 1');
+  });
+
+  it('validator failure: exit 1 with U7 at every tolerance', () => {
+    for (const tolerance of ['0', '1', '2', '3']) {
+      const proc = run({ COVERAGE_JSON: councilFixture('validator-failed'), COUNCIL_MAX_DEGRADED: tolerance });
+      expect(proc.status, `tolerance=${tolerance}`).toBe(1);
+      expect(proc.stdout).toContain('The validator did not succeed');
+    }
+  });
+
+  it('zero runs: exit 1 with U5, never read as zero failures', () => {
+    const proc = run({ COVERAGE_JSON: councilFixture('zero-runs'), COUNCIL_MAX_DEGRADED: '1' });
+    expect(proc.status).toBe(1);
+    expect(proc.stdout).toContain('U5');
+  });
+
+  it('producer/gate policy mismatch: exit 1 with U8, a DISTINCT reason from U7', () => {
+    const record = councilFixture('policy-mismatch');
+    const drifted = run({ COVERAGE_JSON: record, COUNCIL_MAX_DEGRADED: '0' });
+    expect(drifted.status).toBe(1);
+    expect(drifted.stdout).toContain('U8');
+    expect(drifted.stdout).toContain('producer/gate council-policy drift');
+    // Not U7 — the council itself is healthy in this record. A shared token would send the
+    // next person to debug a model failure that never happened.
+    expect(drifted.stdout).not.toContain('U7');
+
+    // PAIRED: the same record, with both halves given the same value, passes.
+    const aligned = run({ COVERAGE_JSON: record, COUNCIL_MAX_DEGRADED: '1' });
+    expect(aligned.status).toBe(0);
+  });
+});
+
+describe('council quorum — every rule, in both directions', () => {
+  const FOUR_OK = [lens('risk', 'success'), lens('design', 'success'), lens('tests', 'success'), lens('operations', 'success')];
+  /** Same declared value on both sides, exactly as production wires it. */
+  const at = (runs, tolerance) =>
+    run({ COVERAGE_JSON: council(runs, tolerance), COUNCIL_MAX_DEGRADED: String(tolerance) });
+
+  it('passes a healthy panel and fails one dropout, at tolerance 0', () => {
+    expect(at([...FOUR_OK, ADVISOR_RUN, VALIDATOR_RUN], 0).status).toBe(0);
+    const one = [lens('risk', 'success'), lens('design', 'success'), lens('tests', 'failure'), lens('operations', 'success')];
+    const strict = at([...one, ADVISOR_RUN, VALIDATOR_RUN], 0);
+    expect(strict.status).toBe(1);
+    expect(strict.stdout).toContain('U7');
+  });
+
+  it('fails two dropouts at tolerance 1 and passes one', () => {
+    const two = [lens('risk', 'failure'), lens('design', 'success'), lens('tests', 'failure'), lens('operations', 'success')];
+    expect(at([...two, ADVISOR_RUN, VALIDATOR_RUN], 1).status).toBe(1);
+    const one = [lens('risk', 'success'), lens('design', 'success'), lens('tests', 'failure'), lens('operations', 'success')];
+    expect(at([...one, ADVISOR_RUN, VALIDATOR_RUN], 1).status).toBe(0);
+  });
+
+  it('fails a wiped reviewer panel however permissive the tolerance', () => {
+    const none = [lens('risk', 'failure'), lens('design', 'failure')];
+    for (const tolerance of [2, 5, 99]) {
+      const proc = at([...none, ADVISOR_RUN, VALIDATOR_RUN], tolerance);
+      expect(proc.status, `tolerance=${tolerance}`).toBe(1);
+      expect(proc.stdout).toContain('No reviewer lens succeeded');
+    }
+  });
+
+  it('fails an unclassifiable failed run and passes the same panel when it succeeds', () => {
+    const mystery = { role: 'oracle', lens_id: 'who', model_label: 'm', conclusion: 'failure' };
+    const bad = at([...FOUR_OK, mystery, VALIDATOR_RUN], 1);
+    expect(bad.status).toBe(1);
+    expect(bad.stdout).toContain('neither reviewer nor validator');
+
+    const good = at([...FOUR_OK, { ...mystery, conclusion: 'success' }, VALIDATOR_RUN], 1);
+    expect(good.status).toBe(0);
+  });
+
+  it('resolves an unparseable tolerance to strict 0, never to the default', () => {
+    // The producer side is left unrecorded here so U8 cannot fire: the subject is what the
+    // GATE does with a value it cannot read, and it must narrow rather than widen.
+    const base = JSON.parse(council([lens('risk', 'success'), lens('design', 'success'), lens('tests', 'failure'), lens('operations', 'success'), ADVISOR_RUN, VALIDATOR_RUN], 1));
+    base.models.policy = { ...base.models.policy, producer_max_degraded: null, producer_max_degraded_raw: null, elek_configured_max_degraded: null, elek_effective_max_degraded: null };
+    const record = JSON.stringify(base);
+    for (const bad of ['banana', '-1', '1.5']) {
+      const proc = run({ COVERAGE_JSON: record, COUNCIL_MAX_DEGRADED: bad });
+      expect(proc.status, `raw=${bad}`).toBe(1);
+      expect(proc.stdout).toContain('above the tolerance of 0');
+    }
+    // PAIRED: the same record with a READABLE tolerance of 1 passes, so the red above is
+    // attributable to the unreadable value and not to the record.
+    expect(run({ COVERAGE_JSON: record, COUNCIL_MAX_DEGRADED: '1' }).status).toBe(0);
+  });
+});
+
+describe('a record from an older elek pin is not invalidated by missing new fields', () => {
+  it('passes when runs carry no failure_class, attempts or policy block', () => {
+    // The additive EHAC-2231 fields must be read as "not reported", never as a failure. A rule
+    // that reds every consumer still on an older pin gets switched off within a week.
+    const base = JSON.parse(councilFixture('healthy-council'));
+    base.models.runs = base.models.runs.map(({ role, lens_id, model_label, conclusion }) => ({ role, lens_id, model_label, conclusion }));
+    delete base.models.attempts;
+    delete base.models.policy;
+    const proc = run({ COVERAGE_JSON: JSON.stringify(base), COUNCIL_MAX_DEGRADED: '1' });
+    expect(proc.status).toBe(0);
+  });
+
+  it('does not report policy drift when the producer never recorded a tolerance', () => {
+    const base = JSON.parse(councilFixture('healthy-council'));
+    base.models.policy = { ...base.models.policy, producer_max_degraded: null, producer_max_degraded_raw: null, elek_effective_max_degraded: null, elek_configured_max_degraded: null };
+    const proc = run({ COVERAGE_JSON: JSON.stringify(base), COUNCIL_MAX_DEGRADED: '0' });
+    expect(proc.status).toBe(0);
+    expect(proc.stdout).not.toContain('U8');
+  });
+});
+
+describe('a failed review job stays red but now reports what it knows', () => {
+  it('prints the per-lens census and terminal classes, and still exits 1', () => {
+    const proc = run({ REVIEW_RESULT: 'failure', COVERAGE_JSON: councilFixture('one-reviewer-degraded'), COUNCIL_MAX_DEGRADED: '1' });
+    // The RESULT is unconditional: a failed review job is red regardless of the record.
+    expect(proc.status).toBe(1);
+    expect(proc.stdout).toContain('::error::');
+    // ...and the evidence is no longer thrown away before it is read.
+    expect(proc.stdout).toContain('Failed council runs');
+    expect(proc.stdout).toContain('tests');
+    expect(proc.stdout).toContain('class stall');
+    expect(proc.stdout).toContain('Attempt history');
+  });
+
+  it('reports elek’s declared terminal reason when the council policy was breached', () => {
+    const proc = run({ REVIEW_RESULT: 'failure', COVERAGE_JSON: councilFixture('tolerance-breached'), COUNCIL_MAX_DEGRADED: '1' });
+    expect(proc.status).toBe(1);
+    expect(proc.stdout).toContain('council_policy_breached');
+    expect(proc.stdout).toContain('Council policy breached');
+  });
+
+  it('says so plainly when a failed review job exported no record at all', () => {
+    const proc = run({ REVIEW_RESULT: 'failure', COVERAGE_JSON: '' });
+    expect(proc.status).toBe(1);
+    expect(proc.stdout).toContain('no coverage record was exported');
+  });
+
+  it('never lets the diagnostics lower the exit code', () => {
+    // Belt and braces: a perfectly healthy record alongside a failed job is still red.
+    const proc = run({ REVIEW_RESULT: 'failure', COVERAGE_JSON: councilFixture('healthy-council'), COUNCIL_MAX_DEGRADED: '1' });
+    expect(proc.status).toBe(1);
   });
 });

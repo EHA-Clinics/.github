@@ -75,10 +75,13 @@ jobs:
       # and a non-zero assert exit. If this step ever passes trivially, the gate is vacuous.
       - name: Prove the fixture-driven red end-to-end
         env:
-          ELEK_REF: 4c08c1c9bc02c027a49b54e0c68af4736543a467
+          ELEK_REF: ed50490ef7139f67b23ea574ef89a90927cf7d04
           REQUESTED_STRATEGY: council
           EXECUTED_STRATEGY: council
           REVIEW_INPUT_TOKENS: '83000'
+          # EHAC-2231. Supplied EXPLICITLY, and identically to what the asserter is given below,
+          # so U8 (producer/gate policy drift) cannot fire here. Same reasoning as the healthy
+          # council above: the ONLY thing capable of redding this proof must be the truncation.
           # EHAC-2162: a HEALTHY council must be supplied here. Without it the record carries
           # no modelRuns while input_tokens is positive, U7 fires, and this step still exits 1
           # — passing for a reason that has nothing to do with truncation. That would leave the
@@ -106,11 +109,11 @@ jobs:
                {"role":"validator","modelLabel":"openrouter/z-ai/glm-5.1","conclusion":"success"}]}
         run: |
           set -euo pipefail
-          COV="$(node scripts/ai-review-coverage/measure-review-coverage.mjs \
+          COV="$(COUNCIL_MAX_DEGRADED=1 node scripts/ai-review-coverage/measure-review-coverage.mjs \
                    --diff-file scripts/ai-review-coverage/fixtures/pr-3515.diff)"
           node -e 'const c=JSON.parse(process.argv[1]);if(c.verdict!=="PARTIAL_SOURCE")throw new Error("expected PARTIAL_SOURCE, got "+c.verdict)' "$COV"
           rc=0
-          OUT="$(REVIEW_RESULT=success COVERAGE_JSON="$COV" \
+          OUT="$(REVIEW_RESULT=success COVERAGE_JSON="$COV" COUNCIL_MAX_DEGRADED=1 \
             node scripts/ai-review-coverage/assert-review-coverage.mjs)" || rc=$?
           printf '%s\n' "$OUT"
           if [ "$rc" -ne 1 ]; then
@@ -125,5 +128,8 @@ jobs:
           esac
           case "$OUT" in
             *U7*) echo "::error::U7 fired in the truncation proof — the fixture council is not healthy, so this step is no longer a truncation test"; exit 1 ;;
+          esac
+          case "$OUT" in
+            *U8*) echo "::error::U8 fired in the truncation proof — producer and asserter were given different tolerances, so this step is no longer a truncation test"; exit 1 ;;
           esac
           echo "fixture-driven red proven (assert exited $rc, verdict PARTIAL_SOURCE, no unrelated branches)"
