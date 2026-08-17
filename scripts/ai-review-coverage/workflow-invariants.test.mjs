@@ -516,3 +516,99 @@ describe('the review job names are unchanged (branch-protection interface contra
     expect(jobBlock(source(), /^ {4}name: AI Code Review \(/).key).toBe('review');
   });
 });
+
+/**
+ * README parity — the published interface must match the shipped one.
+ *
+ * Added 2026-08-16 after an audit found the README documenting 11 of 19 workflow_call
+ * inputs, and 2 of those 11 wrong: `max_cost_usd` shown as `0.25` when the workflow had
+ * defaulted to `1.00` since the guardrail was widened, and `model` shown as unset when it
+ * carries a real default. Eight inputs were absent entirely — including `actor_filter`,
+ * whose semantics had JUST been corrected in PR #24, and `allowed_bots`, which flips the
+ * actor gate to strict-deny for humans when set alone.
+ *
+ * That is the same failure family the rest of this file guards, one level up: not a gate
+ * that cannot fail, but DOCUMENTATION that cannot be wrong-flagged. A consumer repo
+ * configures this workflow from the README; a README that disagrees with the YAML is a
+ * silent misconfiguration generator, and every caller inherits it.
+ *
+ * Dependency-free like the rest of this spec: the inputs block is isolated by indentation
+ * rather than parsed with a YAML library, for the reason given in the file header.
+ */
+describe('the README documents the workflow_call interface accurately', () => {
+  const README = join(import.meta.dirname, '..', '..', 'README.md');
+
+  /** Extract `name -> default` for every workflow_call input, by indentation. */
+  const workflowInputs = () => {
+    const lines = source().split('\n');
+    const start = lines.findIndex((l) => /^ {4}inputs:\s*$/.test(l));
+    if (start < 0) throw new Error('workflow_call inputs block not found');
+    const out = new Map();
+    let current = null;
+    for (let i = start + 1; i < lines.length; i++) {
+      const line = lines[i];
+      if (/^ {0,4}\S/.test(line) && line.trim() !== '') break; // dedented out of the block
+      const key = line.match(/^ {6}([a-z_]+):\s*$/);
+      if (key) {
+        current = key[1];
+        out.set(current, null);
+        continue;
+      }
+      const def = line.match(/^ {8}default:\s*(.+?)\s*$/);
+      if (def && current && out.get(current) === null) {
+        out.set(current, def[1].replace(/^'(.*)'$/, '$1'));
+      }
+    }
+    return out;
+  };
+
+  /** Extract `name -> documented default` from the README's input table. */
+  const readmeRows = () => {
+    const rows = new Map();
+    const re = /^\|\s*`([a-z_]+)`\s*\|\s*[a-z]+\s*\|\s*([^|]*?)\s*\|/gm;
+    for (const m of readFileSync(README, 'utf8').matchAll(re)) {
+      rows.set(m[1], m[2].trim().replace(/^`(.*)`$/, '$1'));
+    }
+    return rows;
+  };
+
+  it('documents every workflow_call input', () => {
+    const undocumented = [...workflowInputs().keys()].filter((k) => !readmeRows().has(k));
+    expect(undocumented, `inputs missing from the README table: ${undocumented.join(', ')}`).toEqual([]);
+  });
+
+  it('states the correct default for every input it documents', () => {
+    const inputs = workflowInputs();
+    const rows = readmeRows();
+    const wrong = [];
+    for (const [name, actual] of inputs) {
+      if (!rows.has(name)) continue;
+      const documented = rows.get(name);
+      // `(unset)` is the table's way of saying "no default". Four inputs (`actor_filter`,
+      // `allowed_bots`, `scope_paths`, `pr_number`) declare `default: ''`, which is
+      // functionally unset — a caller that omits them and a caller that passes the empty
+      // string are indistinguishable downstream — so both spellings satisfy `(unset)`.
+      // Any other value must match byte-for-byte.
+      const unset = actual === null || actual === "''" || actual === '';
+      if (documented === '(unset)') {
+        if (!unset) wrong.push(`${name}: README says unset, workflow defaults to ${actual}`);
+        continue;
+      }
+      if (unset) {
+        wrong.push(`${name}: README says ${documented}, workflow declares no default`);
+        continue;
+      }
+      if (documented !== actual) {
+        wrong.push(`${name}: README says ${documented}, workflow defaults to ${actual}`);
+      }
+    }
+    expect(wrong, wrong.join('; ')).toEqual([]);
+  });
+
+  it('finds a non-trivial number of inputs, so neither assertion can pass vacuously', () => {
+    // Both checks above are satisfied by an empty extraction. If the indentation walk or the
+    // table regex stops matching, they would go green while checking nothing.
+    expect(workflowInputs().size).toBeGreaterThanOrEqual(15);
+    expect(readmeRows().size).toBeGreaterThanOrEqual(15);
+  });
+});
