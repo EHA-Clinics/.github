@@ -25,8 +25,11 @@
  *   U1 elek pin drift        U2 empty/unmeasured diff      U3 strategy downgrade
  *   U4 head-SHA mismatch     U5 record structurally incomplete / no prompt built
  *   U6 unparseable file header
- *   U7 a council model run that did not succeed (EHAC-2162) — the aggregate
- *      `review.conclusion` can say "success" while individual lenses failed.
+ *   U7 the council did not reach QUORUM (EHAC-2162; quorum rule EHAC-2231) — the aggregate
+ *      `review.conclusion` can say "success" while individual lenses failed. Up to
+ *      `COUNCIL_MAX_DEGRADED` (default 1) reviewer lenses may drop with a ::warning:: and
+ *      exit 0; a failed validator, a wiped reviewer panel, or an unclassifiable failed run
+ *      still reds.
  *
  * It never posts a PR comment: elek's sticky comment is the review surface.
  *
@@ -40,7 +43,12 @@ import { appendFileSync } from 'node:fs';
 import { basename } from 'node:path';
 
 import { ELEK_REF_VERIFIED } from './elek-prompt-budget.mjs';
-import { NOT_REVIEWED_REASONS, computeVerdict } from './measure-review-coverage.mjs';
+import {
+  NOT_REVIEWED_REASONS,
+  REVIEWER_ROLES,
+  VALIDATOR_ROLES,
+  computeVerdict,
+} from './measure-review-coverage.mjs';
 
 /** needs.<job>.result values that mean there is no coverage evidence to audit. */
 const BROKEN_REVIEW_RESULTS = new Set(['failure', 'cancelled', 'skipped']);
@@ -52,14 +60,157 @@ const warning = (message) => out(`::warning::${message}`);
 const num = (value) => (Number.isFinite(Number(value)) ? Number(value) : null);
 
 /**
+ * Reviewer lenses that may drop while the council still counts as having reviewed.
+ *
+ * 1, not 0, because a council is a REDUNDANCY mechanism and unanimity-of-availability throws
+ * that redundancy away (see `deriveCouncilQuorum`). 1, not 2, because two simultaneous
+ * dropouts out of four reviewer lenses is half the panel — at that point the check name
+ * genuinely does overstate the work.
+ */
+export const DEFAULT_COUNCIL_MAX_DEGRADED = 1;
+
+/**
+ * Read the degraded-lens tolerance from the environment, failing CLOSED on anything
+ * unreadable. An unparseable or negative value becomes 0 (unanimity) rather than the default:
+ * a misconfigured knob must never widen what the gate tolerates.
+ *
+ * @param {Record<string, string|undefined>} env
+ * @returns {number}
+ */
+export function readCouncilMaxDegraded(env = {}) {
+  const raw = env.COUNCIL_MAX_DEGRADED;
+  if (raw === undefined || String(raw).trim() === '') return DEFAULT_COUNCIL_MAX_DEGRADED;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) return 0;
+  return parsed;
+}
+
+/**
+ * Decide whether the council reached quorum, and how loudly to say so.
+ *
+ * WHY A QUORUM AND NOT UNANIMITY. This branch used to red whenever ANY of the runs did not
+ * succeed. That scores a redundancy mechanism as a serial reliability chain: with 6 runs a
+ * single dropout reds a REQUIRED check, which makes the council strictly less reliable than
+ * the least reliable model in it, and leaves the whole repo unmergeable behind one hung HTTP
+ * request. Four PRs — #3680 (a security fix), #3671, #3291, #3233 — were blocked at once this
+ * way.
+ *
+ * EHAC-2231 measured what is actually behind the dropouts, and it is NOT one bad model:
+ *   * VOLUME — a genuinely oversized prompt that cannot finish in the wall-clock budget.
+ *   * STALL  — a hung request on a 3,612-char prompt, deterministic per diff, immune to both
+ *              retries and a larger cap.
+ * It also established that per-model blame is a POSITION ARTIFACT: lens->model binding is
+ * positional over `review_models`, so whichever model occupies a slot wears that slot's
+ * failures. The "offender" appeared to rotate three times under that misreading.
+ *
+ * A quorum makes STALL non-blocking WITHOUT pretending to fix STALL, and it stays correct
+ * across that rotation. The dropout is never swallowed: a quorate-but-degraded council is
+ * reported as a `::warning::` naming the lens, because a green with no annotation is the very
+ * defect this file exists to prevent.
+ *
+ * What is never tolerated is a council that cannot claim to have reviewed — the PR #3564
+ * defect this branch was created for (EHAC-2162), where the `tests` lens and
+ * `validator-self-review` both failed, the validator reconciled anyway, and the check still
+ * reported "analysis complete":
+ *   * the validator did not run          -> nothing reconciled the lens findings
+ *   * no reviewer lens succeeded         -> nothing read the diff
+ *   * more than `maxDegraded` lenses down
+ *   * a failed run whose role is neither -> it cannot be weighed, so it fails closed
+ *
+ * Re-derived from `models.runs`, never from `models.rollup`, consistent with every other
+ * branch in this file: the producer's own arithmetic is never the authority.
+ *
+ * @param {any} coverage
+ * @param {number} maxDegraded
+ * @returns {{status: 'ok'|'degraded'|'breached', message: string|null}}
+ */
+export function deriveCouncilQuorum(coverage, maxDegraded = DEFAULT_COUNCIL_MAX_DEGRADED) {
+  const ok = { status: /** @type {const} */ ('ok'), message: null };
+  if (coverage?.not_reviewed) return ok;
+
+  const runs = coverage?.models?.runs ?? null;
+  const inputTokens = num(coverage?.review?.input_tokens);
+
+  if (!Array.isArray(runs)) {
+    // Absent modelRuns is only an unknown when a review demonstrably ran. Records from before
+    // this field existed, or from a genuinely skipped review, are already covered by U5 and
+    // must not be double-reported here.
+    if (inputTokens !== null && inputTokens > 0) {
+      return {
+        status: 'breached',
+        message:
+          'U7 the review reported input tokens but the coverage record carries no per-lens model runs — which models actually ran cannot be established.',
+      };
+    }
+    return ok;
+  }
+
+  const failed = (r) => r?.conclusion !== 'success';
+  const name = (r) =>
+    `${r?.lens_id ?? r?.role ?? '(unknown)'} (${r?.model_label ?? 'unknown model'} -> ${r?.conclusion ?? 'no conclusion'})`;
+  const isReviewer = (r) => REVIEWER_ROLES.includes(r?.role);
+  const isValidator = (r) => VALIDATOR_ROLES.includes(r?.role);
+
+  const failedRuns = runs.filter(failed);
+  if (failedRuns.length === 0) return ok;
+
+  // Every outcome below leads with the SAME full census of what dropped, and only then gives
+  // the rule-specific reason. Naming just the run that tripped the rule would hide the rest of
+  // the damage from whoever has to diagnose it — on PR #3564 two runs failed and an operator
+  // needs to see both, not only the validator that happened to be decisive.
+  const census = `${failedRuns.length} of ${runs.length} council model run(s) did not succeed: ${failedRuns.map(name).join(', ')}.`;
+
+  const reviewers = runs.filter(isReviewer);
+  const failedReviewers = reviewers.filter(failed);
+  const failedValidators = failedRuns.filter(isValidator);
+  const failedUnclassified = failedRuns.filter((r) => !isReviewer(r) && !isValidator(r));
+
+  // A failed run carrying an unrecognised (or absent) role cannot be weighed against either
+  // budget, so it is not tolerated. Fail closed — the same doctrine as an absent file count.
+  if (failedUnclassified.length > 0) {
+    return {
+      status: 'breached',
+      message: `U7 ${census} ${failedUnclassified.length} of them carry a role that is neither reviewer nor validator, and an unclassifiable run cannot be weighed against the quorum, so it fails closed.`,
+    };
+  }
+
+  if (failedValidators.length > 0) {
+    return {
+      status: 'breached',
+      message: `U7 ${census} The validator did not succeed, so nothing reconciled the lens findings and the posted review is not a reconciled review.`,
+    };
+  }
+
+  if (reviewers.length > 0 && failedReviewers.length >= reviewers.length) {
+    return {
+      status: 'breached',
+      message: `U7 ${census} No reviewer lens succeeded — nothing read the diff, so the check name reports work that did not happen.`,
+    };
+  }
+
+  if (failedReviewers.length > maxDegraded) {
+    return {
+      status: 'breached',
+      message: `U7 ${census} That is ${failedReviewers.length} of ${reviewers.length} reviewer lens(es), above the tolerance of ${maxDegraded}, so the council did not reach quorum.`,
+    };
+  }
+
+  return {
+    status: 'degraded',
+    message: `the council ran DEGRADED — ${census} That is ${failedReviewers.length} of ${reviewers.length} reviewer lens(es), within the tolerance of ${maxDegraded}, and the validator reconciled, so coverage is not blocked. The review is still thinner than the check name implies: repeated degradation is a defect to chase (EHAC-2231), not a steady state to accept.`,
+  };
+}
+
+/**
  * Independently re-derive every UNKNOWN branch from the coverage record's own fields, then
  * union that with any branch the producer recorded. Re-derivation is what makes this half
  * genuinely independent of the producer's judgement.
  *
  * @param {any} coverage
+ * @param {number} [maxDegraded]
  * @returns {{branch: string, message: string}[]}
  */
-export function deriveUnknownBranches(coverage) {
+export function deriveUnknownBranches(coverage, maxDegraded = DEFAULT_COUNCIL_MAX_DEGRADED) {
   /** @type {{branch: string, message: string}[]} */
   const found = [];
   const add = (branch, message) => found.push({ branch, message });
@@ -168,42 +319,14 @@ export function deriveUnknownBranches(coverage) {
     );
   }
 
-  // U7 — a council lens that did not succeed (EHAC-2162).
+  // U7 — the council did not reach quorum (EHAC-2162; quorum rule EHAC-2231).
   //
-  // The gate previously audited only the AGGREGATE `review.conclusion`. On eha_care PR #3564
-  // (run 31223046934) the `tests` reviewer lens and `validator-self-review` BOTH returned
-  // conclusion "failure", the validator reconciled anyway, and the check reported "analysis
-  // complete" with full diff coverage. A 3-lens council that ran 2 lenses is the same defect
-  // as U3 — the check name reports work that did not happen — so it reds for the same reason.
-  //
-  // Re-derived from `models.runs` here rather than read from `models.rollup`, consistent with
-  // every other branch in this function: the producer's own arithmetic is never the authority.
-  const notReviewedForModels = coverage?.not_reviewed ?? null;
-  if (!notReviewedForModels) {
-    const runs = coverage?.models?.runs ?? null;
-    const inputTokensForModels = num(coverage?.review?.input_tokens);
-    if (!Array.isArray(runs)) {
-      // Absent modelRuns is only an unknown when a review demonstrably ran. Records from
-      // before this field existed, or from a genuinely skipped review, are already covered by
-      // U5 and must not be double-reported here.
-      if (inputTokensForModels !== null && inputTokensForModels > 0) {
-        add(
-          'U7',
-          'U7 the review reported input tokens but the coverage record carries no per-lens model runs — which models actually ran cannot be established.',
-        );
-      }
-    } else {
-      const failedRuns = runs.filter((r) => r?.conclusion !== 'success');
-      if (failedRuns.length > 0) {
-        const named = failedRuns
-          .map((r) => `${r?.lens_id ?? r?.role ?? '(unknown)'} (${r?.model_label ?? 'unknown model'} -> ${r?.conclusion ?? 'no conclusion'})`)
-          .join(', ');
-        add(
-          'U7',
-          `U7 ${failedRuns.length} of ${runs.length} council model run(s) did not succeed: ${named}. The review is degraded — part of the council never returned, so the check name overstates the work performed.`,
-        );
-      }
-    }
+  // Only a BREACH is an UNKNOWN. A quorate-but-degraded council is reported by the caller as
+  // a ::warning:: instead, so that one hung request cannot red a required check. The full
+  // reasoning, and what is still never tolerated, lives on `deriveCouncilQuorum`.
+  const quorum = deriveCouncilQuorum(coverage, maxDegraded);
+  if (quorum.status === 'breached' && quorum.message) {
+    add('U7', quorum.message);
   }
 
   // Union with what the producer recorded, de-duplicated by message.
@@ -227,7 +350,8 @@ export function deriveUnknownBranches(coverage) {
  * @param {{reviewResult: string|undefined, coverageRaw: string|undefined}} args
  * @returns {{exitCode: number, verdict: string, lines: string[], summary: string[]}}
  */
-export function evaluate({ reviewResult, coverageRaw }) {
+export function evaluate({ reviewResult, coverageRaw, env = process.env }) {
+  const maxDegraded = readCouncilMaxDegraded(env);
   const lines = [];
   const summary = ['## AI Review Coverage — gate', ''];
   const result = String(reviewResult ?? '').trim();
@@ -282,7 +406,16 @@ export function evaluate({ reviewResult, coverageRaw }) {
   }
 
   // 4. Re-derive every UNKNOWN branch from the record's own fields.
-  const derived = deriveUnknownBranches(coverage);
+  const derived = deriveUnknownBranches(coverage, maxDegraded);
+
+  // A quorate-but-degraded council passes, but it is never silent: the lens that dropped is
+  // named on the check. A green with no annotation here would be the same defect this whole
+  // file exists to prevent — a check reporting more work than was performed.
+  const quorum = deriveCouncilQuorum(coverage, maxDegraded);
+  if (quorum.status === 'degraded' && quorum.message) {
+    lines.push(`::warning::${quorum.message}`);
+    summary.push(`> **Council degraded** — ${quorum.message}`);
+  }
   const effective = notReviewed ? derived.filter((d) => d.branch === 'U1') : derived;
 
   // 5. Recompute the verdict from the rollup counts — never trust coverage.verdict.
