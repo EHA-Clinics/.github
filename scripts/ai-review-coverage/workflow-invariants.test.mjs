@@ -679,3 +679,29 @@ describe('the stall watchdog and the degradation tolerance are wired end to end'
   // legitimately contains ("NO `continue-on-error:` here, deliberately"). A second, naive copy
   // of that rule would red on the comment explaining why the rule exists.
 });
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════════
+ * EHAC-2231 — the job ceiling is adjustable, and defaults to what the literal used to be.
+ * ═══════════════════════════════════════════════════════════════════════════════════════════ */
+describe('the review job ceiling is an input, defaulting to the previous literal', () => {
+  it('declares job_timeout_minutes with default 30', () => {
+    expect(source()).toMatch(/^ {6}job_timeout_minutes:\n {8}type: number/m);
+    expect(source(), 'a default other than 30 would change every consumer silently').toMatch(
+      /^ {6}job_timeout_minutes:[\s\S]{0,3000}?^ {8}default: 30\s*$/m,
+    );
+  });
+
+  it('drives the REVIEW job timeout from that input, not a literal', () => {
+    const review = jobBlock(source(), /^ {4}name: AI Code Review \(/);
+    expect(withoutComments(review.block)).toMatch(
+      /^ {4}timeout-minutes: \$\{\{ inputs\.job_timeout_minutes \}\}\s*$/m,
+    );
+  });
+
+  it('leaves the coverage-gate job on its own small literal cap', () => {
+    // The asserter is a few seconds of Node. Tying it to the council's ceiling would be
+    // meaningless, and a 45-minute cap on it would hide a hung gate script.
+    const gate = jobBlock(source(), /^ {4}name: AI Review Coverage\s*$/);
+    expect(withoutComments(gate.block)).toMatch(/^ {4}timeout-minutes: \d+\s*$/m);
+  });
+});

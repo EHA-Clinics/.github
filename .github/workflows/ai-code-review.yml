@@ -245,6 +245,34 @@ on:
           ("turns=1, tools=0"). Benchmarking on 2026-08-10 agreed — glm-5.1 emitted nothing in
           620s and nothing at reasoning effort "low" in 284s. The fix for a non-converging
           model is a different model (EHAC-2166), not more time.
+      job_timeout_minutes:
+        type: number
+        # DEFAULT 30 — byte-identical to the literal this replaced, so no consumer's
+        # behaviour changes by upgrading. Only a caller that opts in gets more.
+        #
+        # Why it needs to be adjustable at all: the review job's real bound is
+        # SERIAL, `setup + reviewer_cap + validator_cap`, because the four reviewer
+        # lenses run in parallel but the validator runs after them. Measured setup on
+        # eha_care is 37s, so at `run_timeout_seconds: '600'`:
+        #
+        #     37 + 600 + 600           = 1237s   fits in 1800s
+        #     37 + 600 + 600 + 600     = 1837s   OVER 1800s  <- the retry made it over
+        #
+        # The second line was reachable until elek eha-v1.3.1 stopped `timeout` from
+        # consuming the outer retry. A job killed by this cap yields NO coverage
+        # record at all, which is strictly worse than an honest red — so this ceiling
+        # is a correctness knob, not a cost knob.
+        #
+        # Raising it is close to free: GitHub bills elapsed minutes, not the cap, so a
+        # higher ceiling changes the outcome only for runs that would otherwise be
+        # guillotined mid-review. Raise it BEFORE raising run_timeout_seconds, never
+        # after, and check the serial arithmetic above rather than one run's budget.
+        default: 30
+        description: >
+          EHAC-2231. Wall-clock ceiling for the whole review job, in minutes. This is the
+          ceiling for the ENTIRE council plus the validator, not for one model run — see
+          run_timeout_seconds for the per-run budget and the serial arithmetic that
+          relates them. A job killed by this cap loses the coverage record entirely.
       stall_timeout_seconds:
         type: string
         default: '0'
@@ -431,7 +459,9 @@ jobs:
     # Costs nothing on the common path: GitHub bills elapsed minutes, not the cap, and the
     # median run is under 4 minutes. It only changes the outcome for runs that would
     # otherwise be guillotined mid-review.
-    timeout-minutes: 30
+    # EHAC-2231: was a literal 30. See the job_timeout_minutes input for the serial
+    # `setup + reviewer_cap + validator_cap` arithmetic this ceiling has to clear.
+    timeout-minutes: ${{ inputs.job_timeout_minutes }}
     steps:
       - name: Checkout PR
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -531,7 +561,7 @@ jobs:
         # cost_usd / conclusion as outputs at EVERY ref, and all of them were unreachable
         # purely for want of a step id. The coverage measurement below consumes them.
         id: review
-        uses: EHA-Clinics/elek@ed50490ef7139f67b23ea574ef89a90927cf7d04 # eha-v1.3.0 (public soft fork of selimozten/elek)
+        uses: EHA-Clinics/elek@d89f99f69c73f790040ebe22e34136e3979203ac # eha-v1.3.1 (public soft fork of selimozten/elek)
         with:
           # pi's native openrouter adapter — elek's tested path. The OpenAI-compatible
           # Databricks AI Gateway (provider: openai) hung pi indefinitely on tool-enabled
@@ -660,7 +690,7 @@ jobs:
           # code change underneath a pinned caller — the exact pin-drift class EHAC-2057 is
           # about. EHA-Clinics/.github is PUBLIC, so the default GITHUB_TOKEN reads it from
           # either private caller and no new secret is introduced.
-          ref: c702ca2427270af439ffaa14ba41a00eea881453
+          ref: 8f77efe8b420d7d04910b7c6c43ec331ef8f805d
           path: .ai-review-gate
           sparse-checkout: scripts/ai-review-coverage
           persist-credentials: false
@@ -703,7 +733,7 @@ jobs:
           REVIEW_COST_USD: ${{ steps.review.outputs.cost_usd }}
           # The LITERAL pinned SHA, not an expression: this is what makes branch U1 detect a
           # future elek bump that forgets to re-verify elek-prompt-budget.mjs.
-          ELEK_REF: ed50490ef7139f67b23ea574ef89a90927cf7d04
+          ELEK_REF: d89f99f69c73f790040ebe22e34136e3979203ac
           REQUESTED_STRATEGY: ${{ inputs.review_strategy }}
           ACTOR_FILTER: ${{ inputs.actor_filter }}
           # EHAC-2103: the CONFIGURED council, so the coverage record can put what we asked for
@@ -746,7 +776,7 @@ jobs:
         with:
           repository: EHA-Clinics/.github
           # Same pinned SHA as the producer, for the same reason (T-2057-01).
-          ref: c702ca2427270af439ffaa14ba41a00eea881453
+          ref: 8f77efe8b420d7d04910b7c6c43ec331ef8f805d
           path: .ai-review-gate
           sparse-checkout: scripts/ai-review-coverage
           persist-credentials: false

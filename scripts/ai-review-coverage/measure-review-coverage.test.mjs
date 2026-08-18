@@ -602,9 +602,30 @@ describe('exclusions and the empty-scope edge (buildCoverage)', () => {
       context: healthyContext({ changedFilesApi: 2 }),
     });
     expect(coverage.unknown_reasons).toEqual([]);
-    expect(coverage.verdict).toBe('COMPLETE');
     expect(coverage.diff.files_diff).toBe(0);
     expect(coverage.diff.excluded_files).toHaveLength(2);
+    // EHAC-2231 — this assertion CHANGED from 'COMPLETE' to 'NOT_REVIEWED', and the test's
+    // intent is unchanged: the pull request still does not red. What changed is that the
+    // record no longer CLAIMS completeness for a review that inspected nothing. 'COMPLETE'
+    // here printed as "all 0 changed file(s) reached the review prompt in full" — a green
+    // announced as a full review, which is the shape this gate exists to prevent, and it
+    // became reachable the moment a repo converted a broad ignore_paths list into real
+    // exclude_paths.
+    expect(coverage.verdict).toBe('NOT_REVIEWED');
+    expect(coverage.not_reviewed).toMatchObject({ reason: 'all_changed_files_excluded', excluded_files: 2 });
+  });
+
+  it('still reports U2 for an EMPTY diff with no exclusions — absence is not an empty scope', () => {
+    // The paired direction. The new branch requires excludedCount > 0 precisely so it cannot
+    // absorb a genuinely missing diff and explain it away as "everything was excluded".
+    const coverage = buildCoverage({
+      diffText: '',
+      env: healthyEnv(),
+      context: healthyContext({ changedFilesApi: 2 }),
+    });
+    expect(coverage.verdict).toBe('UNKNOWN');
+    expect(coverage.unknown_reasons.map((u) => u.branch)).toContain('U2');
+    expect(coverage.not_reviewed).toBeNull();
   });
 
   it('STILL reds a genuinely empty diff even when exclusions are configured', () => {

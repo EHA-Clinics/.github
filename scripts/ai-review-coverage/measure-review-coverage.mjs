@@ -48,6 +48,19 @@ export const NOT_REVIEWED_REASONS = Object.freeze([
   // check: a required context that is never reported blocks the PR forever.
   'no_files_in_review_scope',
   'pull_request_is_draft',
+  // EHAC-2231. Every changed file matched `exclude_paths`, so the reviewer was handed a diff
+  // with nothing reviewable in it. Before this existed the rollup read `files_total: 0` and
+  // computeVerdict returned COMPLETE — a GREEN check announced as "all 0 changed file(s)
+  // reached the review prompt in full", for a review that inspected nothing. That is the
+  // "green that isn't" shape this whole gate exists to prevent, and it became reachable the
+  // moment a repo converted a broad `ignore_paths` list into real `exclude_paths`.
+  //
+  // Routing it here rather than inventing a branch buys two things. The verdict is NAMED, so
+  // the warning says why nothing was reviewed instead of claiming completeness; and the record
+  // buckets as `declined` rather than `real` in evaluateRecordSet, so a run of test-only pull
+  // requests cannot read as a window of healthy real reviews — the EHAC-2165 lesson that the
+  // greens can be the lie.
+  'all_changed_files_excluded',
 ]);
 
 /** The subset of NOT_REVIEWED_REASONS that the workflow decides, not the actor precheck. */
@@ -476,11 +489,26 @@ export function buildCoverage({ diffText, env = {}, context = {}, inventoryCap =
     );
   }
 
-  const effectiveUnknown = notReviewed ? unknown.filter((u) => u.branch === 'U1') : unknown;
+  // EHAC-2231 — a diff whose every file was excluded is a DECLARED non-review, not a complete
+  // one. Derived here rather than in computeNotReviewed() because it depends on the measurement
+  // (files_total and the exclusion list), not on the actor/event precheck.
+  //
+  // Guarded by the same doctrine as computeNotReviewed: a review that demonstrably ran wins.
+  // `excludedCount > 0` is required, so an EMPTY diff still falls through to U2 rather than
+  // being explained away as "everything was excluded".
+  const allFilesExcluded =
+    !notReviewed &&
+    attribution.rollup.files_total === 0 &&
+    excludedCount > 0;
+  const effectiveNotReviewed = allFilesExcluded
+    ? { reason: 'all_changed_files_excluded', actor: actor || null, excluded_files: excludedCount }
+    : notReviewed;
+
+  const effectiveUnknown = effectiveNotReviewed ? unknown.filter((u) => u.branch === 'U1') : unknown;
   const verdict = computeVerdict({
     rollup: attribution.rollup,
     unknownReasons: effectiveUnknown,
-    notReviewed,
+    notReviewed: effectiveNotReviewed,
   });
 
   const inventory = attribution.files.slice(0, inventoryCap).map((file) => ({
@@ -496,7 +524,7 @@ export function buildCoverage({ diffText, env = {}, context = {}, inventoryCap =
   return {
     schema: 1,
     verdict,
-    not_reviewed: notReviewed,
+    not_reviewed: effectiveNotReviewed,
     unknown_reasons: effectiveUnknown,
     elek: { ref: elekRef || null, ref_verified: ELEK_REF_VERIFIED, pin_ok: pinOk },
     strategy: { requested, executed, match: requested && executed ? requested === executed : null },
