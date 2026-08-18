@@ -998,3 +998,32 @@ describe('a failed review job stays red but now reports what it knows', () => {
     expect(proc.status).toBe(1);
   });
 });
+
+describe('a fully-excluded diff is a DECLARED non-review, not a complete one', () => {
+  const allExcluded = () => {
+    const base = JSON.parse(councilFixture('healthy-council'));
+    base.not_reviewed = { reason: 'all_changed_files_excluded', actor: 'adothompson', excluded_files: 9 };
+    base.rollup = { ...base.rollup, files_total: 0, whole: 0 };
+    base.inventory = [];
+    base.diff = { ...base.diff, files_diff: 0, excluded_files: ['a.test.ts'] };
+    return JSON.stringify(base);
+  };
+
+  it('exits 0 with a warning that NAMES the reason, never a bare COMPLETE', () => {
+    const proc = run({ COVERAGE_JSON: allExcluded(), COUNCIL_MAX_DEGRADED: '1' });
+    expect(proc.status).toBe(0);
+    expect(proc.stdout).toContain('NOT_REVIEWED');
+    expect(proc.stdout).toContain('all_changed_files_excluded');
+    expect(proc.stdout).toContain('::warning::');
+    // The old shape: a green announced as a full review of nothing.
+    expect(proc.stdout).not.toContain('reached the review prompt in full');
+  });
+
+  it('is inside the closed allowlist, so it is a recognised decline and not a fail-open', () => {
+    const base = JSON.parse(allExcluded());
+    base.not_reviewed.reason = 'everything_was_excluded_honest';
+    const proc = run({ COVERAGE_JSON: JSON.stringify(base), COUNCIL_MAX_DEGRADED: '1' });
+    expect(proc.status).toBe(1);
+    expect(proc.stdout).toContain('outside the closed allowlist');
+  });
+});
