@@ -155,7 +155,9 @@ export function deriveModels(summary, env = {}) {
   };
 
   const rawRuns = Array.isArray(summary?.modelRuns) ? summary.modelRuns : null;
-  if (!rawRuns) return { runs: null, configured, distinct_models: [], rollup: null };
+  if (!rawRuns) {
+    return { runs: null, attempts: null, configured, policy: derivePolicy(summary, env), distinct_models: [], rollup: null };
+  }
 
   const runs = rawRuns.map((r) => ({
     role: typeof r?.role === 'string' ? r.role : null,
@@ -168,15 +170,62 @@ export function deriveModels(summary, env = {}) {
     input_tokens: Number.isFinite(Number(r?.inputTokens)) ? Number(r.inputTokens) : null,
     output_tokens: Number.isFinite(Number(r?.outputTokens)) ? Number(r.outputTokens) : null,
     cost_usd: Number.isFinite(Number(r?.costUsd)) ? Number(r.costUsd) : null,
+    // EHAC-2231, all ADDITIVE and all null-safe. A record produced by an older elek pin simply
+    // carries nulls here; nothing downstream may treat a null as a pass or as a failure, only
+    // as "not reported". The census prints them because "which lens dropped, on which model,
+    // and how" is the question an operator actually has, and answering it from the run log
+    // meant reading six interleaved pi transcripts.
+    failure_class: typeof r?.failureClass === 'string' ? r.failureClass : null,
+    assigned_model_label: typeof r?.assignedModelLabel === 'string' ? r.assignedModelLabel : null,
+    actual_model_label:
+      typeof r?.actualModelLabel === 'string'
+        ? r.actualModelLabel
+        : typeof r?.modelLabel === 'string'
+          ? r.modelLabel
+          : null,
+    failover_used: typeof r?.failoverUsed === 'boolean' ? r.failoverUsed : null,
+    attempt_count: Number.isFinite(Number(r?.attemptCount)) ? Number(r.attemptCount) : null,
   }));
 
   const failed = (r) => r.conclusion !== 'success';
   const reviewers = runs.filter((r) => REVIEWER_ROLES.includes(r.role));
   const validators = runs.filter((r) => VALIDATOR_ROLES.includes(r.role));
 
+  // Every PHYSICAL attempt. Separate from `runs` on purpose: a retried lens is ONE logical
+  // lens for quorum arithmetic but TWO executions for cost, latency and diagnosis. Folding
+  // them together is what made the previous retry invisible in the record — it was known to
+  // have happened, but not what it cost, what it changed, or why it was attempted.
+  const rawAttempts = Array.isArray(summary?.attempts) ? summary.attempts : null;
+  const attempts = rawAttempts
+    ? rawAttempts.map((a) => ({
+        lens_id: typeof a?.lensId === 'string' ? a.lensId : null,
+        role: typeof a?.role === 'string' ? a.role : null,
+        attempt: Number.isFinite(Number(a?.attempt)) ? Number(a.attempt) : null,
+        assigned_model: typeof a?.assignedModel === 'string' ? a.assignedModel : null,
+        actual_model: typeof a?.actualModel === 'string' ? a.actualModel : null,
+        failover: typeof a?.failover === 'boolean' ? a.failover : null,
+        conclusion: typeof a?.conclusion === 'string' ? a.conclusion : null,
+        failure_class: typeof a?.failureClass === 'string' ? a.failureClass : null,
+        termination_reason: typeof a?.terminationReason === 'string' ? a.terminationReason : null,
+        duration_seconds: Number.isFinite(Number(a?.durationSeconds)) ? Number(a.durationSeconds) : null,
+        turns_used: Number.isFinite(Number(a?.turnsUsed)) ? Number(a.turnsUsed) : null,
+        provider_retries: Number.isFinite(Number(a?.providerRetries)) ? Number(a.providerRetries) : null,
+        input_tokens: Number.isFinite(Number(a?.inputTokens)) ? Number(a.inputTokens) : null,
+        cost_usd: Number.isFinite(Number(a?.costUsd)) ? Number(a.costUsd) : null,
+        time_to_first_event_seconds: Number.isFinite(Number(a?.timeToFirstEventSeconds))
+          ? Number(a.timeToFirstEventSeconds)
+          : null,
+        max_idle_seconds_observed: Number.isFinite(Number(a?.maxIdleSecondsObserved))
+          ? Number(a.maxIdleSecondsObserved)
+          : null,
+      }))
+    : null;
+
   return {
     runs,
+    attempts,
     configured,
+    policy: derivePolicy(summary, env),
     distinct_models: [...new Set(runs.map((r) => r.model_label).filter(Boolean))].sort(),
     rollup: {
       runs_total: runs.length,
@@ -185,7 +234,45 @@ export function deriveModels(summary, env = {}) {
       validator_runs_total: validators.length,
       validator_runs_failed: validators.filter(failed).length,
       failed_lens_ids: runs.filter(failed).map((r) => r.lens_id ?? r.role ?? '(unknown)'),
+      // Physical attempts vs logical lenses. `attempts_total > runs_total` is a retry having
+      // happened, which the previous record could not express at all.
+      attempts_total: attempts ? attempts.length : null,
+      failover_attempts: attempts ? attempts.filter((a) => a.failover === true).length : null,
     },
+  };
+}
+
+/**
+ * The degraded-lens tolerance, from BOTH sides, recorded side by side.
+ *
+ * `producer_max_degraded` is the value THIS job was handed by the reusable workflow.
+ * `elek_*` is what the review run reports it actually applied. The asserter compares its own
+ * COUNCIL_MAX_DEGRADED against these and fails closed, with a distinct reason, when they
+ * disagree — because a producer and a gate silently applying different policies while both
+ * report success is the same defect family as a gate that cannot fail.
+ *
+ * Everything is null-safe: a record from an older elek pin reports no policy, and "not
+ * reported" must never be read as agreement.
+ *
+ * @param {any} summary
+ * @param {Record<string, string|undefined>} env
+ */
+export function derivePolicy(summary, env = {}) {
+  const raw = env.COUNCIL_MAX_DEGRADED;
+  const producer =
+    raw === undefined || String(raw).trim() === '' ? null : Number(String(raw).trim());
+  const p = summary?.councilPolicy ?? null;
+  const int = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
+  return {
+    producer_max_degraded: Number.isInteger(producer) && producer >= 0 ? producer : producer === null ? null : 0,
+    producer_max_degraded_raw: raw === undefined ? null : String(raw),
+    elek_configured_max_degraded: p ? int(p.configuredMaxDegradedLenses) : null,
+    elek_effective_max_degraded: p ? int(p.effectiveMaxDegradedLenses) : null,
+    elek_status: typeof p?.status === 'string' ? p.status : null,
+    elek_failed_reviewer_lens_ids: Array.isArray(p?.failedReviewerLensIds)
+      ? p.failedReviewerLensIds
+      : null,
+    elek_warnings: Array.isArray(p?.warnings) ? p.warnings : null,
   };
 }
 
@@ -457,6 +544,17 @@ export function buildCoverage({ diffText, env = {}, context = {}, inventoryCap =
       cost_usd: costUsd,
       actor: actor || null,
       event: eventName || null,
+      // EHAC-2231. WHICH terminal path elek exited through, declared by elek rather than
+      // inferred here from an empty output. Inferring a decline from an absence is the exact
+      // fail-open computeNotReviewed() exists to avoid, so this is recorded as evidence and
+      // NOT used to widen NOT_REVIEWED — that allowlist stays closed and stays ours.
+      terminal_reason: typeof summary?.review?.terminalReason === 'string' ? summary.review.terminalReason : null,
+      skip_reason: typeof summary?.review?.skipReason === 'string' && summary.review.skipReason !== ''
+        ? summary.review.skipReason
+        : null,
+      failure_message: typeof summary?.review?.failureMessage === 'string' && summary.review.failureMessage !== ''
+        ? summary.review.failureMessage
+        : null,
     },
     models,
     rollup: attribution.rollup,
@@ -521,11 +619,27 @@ function unknownRecord(reasons, { env = {}, context = {} } = {}) {
       excluded_files: [],
       ranking_anomalies: [],
     },
-    review: { conclusion: null, input_tokens: null, cost_usd: null, actor: null, event: null },
+    review: {
+      conclusion: null,
+      input_tokens: null,
+      cost_usd: null,
+      actor: null,
+      event: null,
+      terminal_reason: null,
+      skip_reason: null,
+      failure_message: null,
+    },
     // Shape-consistent with buildCoverage so the asserter never has to special-case which
     // producer path emitted the record. A null `runs` means "not measured", which the
     // asserter's U7 treats as unknown when a review demonstrably ran — never as a pass.
-    models: { runs: null, configured: { review_models: [], validator_model: null }, distinct_models: [], rollup: null },
+    models: {
+      runs: null,
+      attempts: null,
+      configured: { review_models: [], validator_model: null },
+      policy: derivePolicy(null, env),
+      distinct_models: [],
+      rollup: null,
+    },
     rollup: null,
     inventory: [],
     inventory_truncated: false,

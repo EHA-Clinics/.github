@@ -25,6 +25,9 @@
  *   U1 elek pin drift        U2 empty/unmeasured diff      U3 strategy downgrade
  *   U4 head-SHA mismatch     U5 record structurally incomplete / no prompt built
  *   U6 unparseable file header
+ *   U8 producer/gate council-policy drift (EHAC-2231) — the tolerance the review job was
+ *      given is not the tolerance this gate was given, so the two halves are enforcing
+ *      different policies while both could report success
  *   U7 the council did not reach QUORUM (EHAC-2162; quorum rule EHAC-2231) — the aggregate
  *      `review.conclusion` can say "success" while individual lenses failed. Up to
  *      `COUNCIL_MAX_DEGRADED` (default 1) reviewer lenses may drop with a ::warning:: and
@@ -202,6 +205,97 @@ export function deriveCouncilQuorum(coverage, maxDegraded = DEFAULT_COUNCIL_MAX_
 }
 
 /**
+ * U8 — the producer and the gate must be enforcing the SAME tolerance.
+ *
+ * `max_degraded_lenses` is declared ONCE by the reusable workflow and handed to three
+ * consumers: elek (which enforces it while the review runs), the coverage producer (which
+ * records it), and this asserter (which re-derives the verdict from the recorded runs). The
+ * two evaluations are deliberately independent — this file never trusts elek's own status —
+ * but they must be independent evaluations OF ONE VALUE.
+ *
+ * Two unrelated defaults that merely happen to agree is not the same property, and it breaks
+ * silently the first time one side moves: a producer tolerating one dropout while the gate
+ * tolerates none would still report success on every healthy run, and would only diverge on
+ * exactly the run where the tolerance mattered.
+ *
+ * NOT REPORTED IS NOT AGREEMENT. A record from an older elek pin carries no policy block, and
+ * a workflow that never set COUNCIL_MAX_DEGRADED on the producer carries null. Those are
+ * treated as "cannot compare" and pass — because failing them closed would red every consumer
+ * still on an older pin, and a rule that reds everyone is switched off within a week. What is
+ * NOT tolerated is two values that are both present and different.
+ *
+ * @param {any} coverage
+ * @param {number} gateMaxDegraded the value THIS process was given
+ * @returns {{branch: string, message: string}|null}
+ */
+export function derivePolicyDrift(coverage, gateMaxDegraded) {
+  const policy = coverage?.models?.policy ?? null;
+  if (!policy) return null;
+
+  const producer = policy.producer_max_degraded;
+  if (Number.isInteger(producer) && producer !== gateMaxDegraded) {
+    return {
+      branch: 'U8',
+      message: `U8 producer/gate council-policy drift: the review job was given max_degraded_lenses=${producer} but this gate was given ${gateMaxDegraded}. One declared value must reach both consumers; two values means the review and the check are enforcing different policies.`,
+    };
+  }
+
+  const elekEffective = policy.elek_effective_max_degraded;
+  if (Number.isInteger(elekEffective) && Number.isInteger(producer) && elekEffective !== producer) {
+    // elek clamps a tolerance that is not below the reviewer count, so a difference here is
+    // usually a misconfiguration elek already corrected — but it is still a policy this gate
+    // did not apply, and it is reported rather than absorbed.
+    return {
+      branch: 'U8',
+      message: `U8 council-policy drift: the review job was configured with max_degraded_lenses=${producer} but elek reports it actually applied ${elekEffective}${Array.isArray(policy.elek_warnings) && policy.elek_warnings.length ? ` (${policy.elek_warnings.join('; ')})` : ''}. The gate cannot certify a review against a tolerance it did not evaluate.`,
+    };
+  }
+  return null;
+}
+
+/**
+ * The failed-run census, in the form an operator actually needs (EHAC-2231).
+ *
+ * Printed on EVERY terminal path that has a record, including a failed review job. "Which lens
+ * dropped, on which model, and how it failed" used to require reading six interleaved pi
+ * transcripts out of a job log — and on the failure path the gate returned before it had even
+ * parsed the record, so it printed nothing at all.
+ *
+ * @param {any} coverage
+ * @returns {string[]}
+ */
+export function renderFailureCensus(coverage) {
+  const runs = Array.isArray(coverage?.models?.runs) ? coverage.models.runs : [];
+  const failed = runs.filter((r) => r?.conclusion !== 'success');
+  const lines = [];
+  if (failed.length > 0) {
+    lines.push(`Failed council runs (${failed.length} of ${runs.length}):`);
+    for (const r of failed) {
+      const assigned = r?.assigned_model_label ?? r?.model_label ?? 'unknown model';
+      const actual = r?.actual_model_label ?? r?.model_label ?? 'unknown model';
+      const moved = assigned !== actual ? ` (failed over from ${assigned})` : '';
+      lines.push(
+        `  - ${r?.lens_id ?? r?.role ?? '(unknown lens)'} [${r?.role ?? 'no role'}] on ${actual}${moved}` +
+          ` -> ${r?.conclusion ?? 'no conclusion'}, class ${r?.failure_class ?? 'unreported'}`,
+      );
+    }
+  }
+  const attempts = Array.isArray(coverage?.models?.attempts) ? coverage.models.attempts : [];
+  const notable = attempts.filter((a) => a?.conclusion !== 'success' || a?.failover === true);
+  if (notable.length > 0) {
+    lines.push(`Attempt history (${attempts.length} physical attempt(s) across ${runs.length} logical run(s)):`);
+    for (const a of notable) {
+      lines.push(
+        `  - ${a?.lens_id ?? '(unknown)'} attempt ${a?.attempt ?? '?'} on ${a?.actual_model ?? 'unknown model'}` +
+          `${a?.failover ? ' [failover]' : ''} -> ${a?.conclusion ?? 'no conclusion'}, class ${a?.failure_class ?? 'unreported'}` +
+          `, ${a?.duration_seconds ?? '?'}s, max_idle ${a?.max_idle_seconds_observed ?? '?'}s`,
+      );
+    }
+  }
+  return lines;
+}
+
+/**
  * Independently re-derive every UNKNOWN branch from the coverage record's own fields, then
  * union that with any branch the producer recorded. Re-derivation is what makes this half
  * genuinely independent of the producer's judgement.
@@ -329,6 +423,10 @@ export function deriveUnknownBranches(coverage, maxDegraded = DEFAULT_COUNCIL_MA
     add('U7', quorum.message);
   }
 
+  // U8 — the producer and this gate must be enforcing ONE declared tolerance (EHAC-2231).
+  const drift = derivePolicyDrift(coverage, maxDegraded);
+  if (drift) add(drift.branch, drift.message);
+
   // Union with what the producer recorded, de-duplicated by message.
   const seen = new Set(found.map((f) => f.message));
   for (const reason of coverage?.unknown_reasons ?? []) {
@@ -341,6 +439,47 @@ export function deriveUnknownBranches(coverage, maxDegraded = DEFAULT_COUNCIL_MA
   }
 
   return found;
+}
+
+/**
+ * Diagnostics for a review job that did not complete. NEVER affects the exit code.
+ *
+ * Kept deliberately total and non-throwing: this runs on the path where something already went
+ * wrong, and a diagnostic that throws would replace a legible red with a stack trace.
+ *
+ * @param {string|undefined} coverageRaw
+ * @returns {string[]}
+ */
+export function describeBrokenReviewEvidence(coverageRaw) {
+  const raw = String(coverageRaw ?? '').trim();
+  if (raw === '') {
+    return [
+      'no coverage record was exported alongside the failed review job, so there is no per-lens evidence to report.',
+    ];
+  }
+  let coverage;
+  try {
+    coverage = JSON.parse(raw);
+  } catch (err) {
+    return [`a coverage record was exported but did not parse (${err?.message ?? err}).`];
+  }
+  const out = [];
+  const terminal = coverage?.review?.terminal_reason;
+  if (terminal) out.push(`elek reported terminal reason "${terminal}".`);
+  const failureMessage = coverage?.review?.failure_message;
+  if (failureMessage) out.push(`elek reported: ${failureMessage}`);
+  const policy = coverage?.models?.policy;
+  if (policy?.elek_status) {
+    out.push(
+      `council policy status "${policy.elek_status}" at effective tolerance ` +
+        `${policy.elek_effective_max_degraded ?? 'unreported'}.`,
+    );
+  }
+  out.push(...renderFailureCensus(coverage));
+  if (out.length === 0) {
+    out.push('a coverage record was exported but names no failed run — the failure is outside the council.');
+  }
+  return out;
 }
 
 /**
@@ -369,6 +508,18 @@ export function evaluate({ reviewResult, coverageRaw, env = process.env }) {
       `::error::the AI review job reported "${result}", so it produced no coverage evidence. A review that did not complete cannot certify that every changed file was inspected.`,
     );
     summary.push(`**UNKNOWN** — the review job reported \`${result}\`.`);
+    // EHAC-2231. The RESULT is unchanged and unconditional — a failed review job is red, full
+    // stop, regardless of what the record says. What changes is that the record is now READ
+    // when one exists. elek emits `review_summary_json` on every supported terminal path as of
+    // eha-v1.3.0, so on the failure path there is usually a full per-lens census available;
+    // returning before parsing it threw away the evidence exactly when "which lens died?"
+    // matters most, and left operators reading six interleaved pi transcripts out of a job log.
+    //
+    // This is diagnostics only. Nothing below can lower the exit code.
+    for (const line of describeBrokenReviewEvidence(coverageRaw)) {
+      lines.push(line);
+      summary.push(line.startsWith('::') ? line : `- ${line}`);
+    }
     return { exitCode: 1, verdict: 'UNKNOWN', lines, summary };
   }
 
@@ -415,6 +566,10 @@ export function evaluate({ reviewResult, coverageRaw, env = process.env }) {
   if (quorum.status === 'degraded' && quorum.message) {
     lines.push(`::warning::${quorum.message}`);
     summary.push(`> **Council degraded** — ${quorum.message}`);
+    for (const line of renderFailureCensus(coverage)) {
+      lines.push(line);
+      summary.push(`- ${line}`);
+    }
   }
   const effective = notReviewed ? derived.filter((d) => d.branch === 'U1') : derived;
 
@@ -437,6 +592,14 @@ export function evaluate({ reviewResult, coverageRaw, env = process.env }) {
     for (const branch of effective) {
       lines.push(`::error::UNKNOWN ${branch.message}`);
       summary.push(`- **${branch.branch}** — ${branch.message}`);
+    }
+    // The census, again as diagnostics only. A U7 message names the runs that tripped the rule;
+    // this names the assigned model, the actual model, the terminal class and the attempt
+    // history behind each of them, which is what an operator needs to decide whether a lens is
+    // failing because of the model, the prompt, or the provider.
+    for (const line of renderFailureCensus(coverage)) {
+      lines.push(line);
+      summary.push(`- ${line}`);
     }
     return { exitCode: 1, verdict, lines, summary };
   }

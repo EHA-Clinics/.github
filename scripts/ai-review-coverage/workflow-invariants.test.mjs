@@ -612,3 +612,70 @@ describe('the README documents the workflow_call interface accurately', () => {
     expect(readmeRows().size).toBeGreaterThanOrEqual(15);
   });
 });
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════════
+ * EHAC-2231 — ONE declared tolerance must reach BOTH consumers, and the watchdog must reach
+ * elek. These are wiring assertions, not behaviour assertions: the behaviour is proven in
+ * assert-review-coverage.test.mjs, and it is worth nothing if the value never arrives.
+ *
+ * The specific defect being guarded: `max_degraded_lenses` declared and passed to elek but NOT
+ * to the asserter would leave the gate on its own default. Every healthy run would still pass,
+ * and the two halves would diverge only on the run where the tolerance actually mattered —
+ * which is the run nobody is watching.
+ * ═══════════════════════════════════════════════════════════════════════════════════════════ */
+describe('the stall watchdog and the degradation tolerance are wired end to end', () => {
+  for (const key of ['stall_timeout_seconds', 'max_degraded_lenses']) {
+    it(`declares ${key} as a workflow_call input with a default`, () => {
+      expect(source(), `${key} is not declared as a workflow_call input`).toMatch(
+        new RegExp(`^ {6}${key}:\\n {8}type: string`, 'm'),
+      );
+      expect(source(), `${key} is declared without a default`).toMatch(
+        new RegExp(`^ {6}${key}:[\\s\\S]{0,2000}?^ {8}default: '`, 'm'),
+      );
+    });
+
+    it(`passes ${key} through to the elek step`, () => {
+      expect(source(), `${key} is declared but never reaches elek`).toMatch(
+        new RegExp(`^ {10}${key}: \\$\\{\\{ inputs\\.${key} \\}\\}\\s*$`, 'm'),
+      );
+    });
+  }
+
+  it('passes the SAME max_degraded_lenses to the producer and to the asserter', () => {
+    // Exactly two COUNCIL_MAX_DEGRADED lines, both sourced from the same input expression.
+    const passthroughs = [...source().matchAll(/^ {10}COUNCIL_MAX_DEGRADED: (.+?)\s*$/gm)].map((m) => m[1]);
+    expect(passthroughs, 'COUNCIL_MAX_DEGRADED must reach BOTH the producer and the asserter').toHaveLength(2);
+    expect(new Set(passthroughs).size, 'the two consumers were given DIFFERENT expressions').toBe(1);
+    expect(passthroughs[0]).toBe('${{ inputs.max_degraded_lenses }}');
+  });
+
+  it('gives COUNCIL_MAX_DEGRADED to the coverage-gate job, not only to the review job', () => {
+    const gate = jobBlock(source(), /^ {4}name: AI Review Coverage\s*$/);
+    expect(withoutComments(gate.block)).toMatch(/COUNCIL_MAX_DEGRADED: \$\{\{ inputs\.max_degraded_lenses \}\}/);
+  });
+
+  it('defaults max_degraded_lenses to 1 — the tolerance consumers already have', () => {
+    // Declaring 0 here would revert every consumer of this workflow to unanimity, because
+    // assert-review-coverage.mjs has shipped DEFAULT_COUNCIL_MAX_DEGRADED = 1 since the quorum
+    // landed. That is the defect EHAC-2231 exists to remove, reintroduced as a side effect.
+    expect(source()).toMatch(/^ {6}max_degraded_lenses:[\s\S]{0,3000}?^ {8}default: '1'\s*$/m);
+  });
+
+  it('defaults stall_timeout_seconds to 0 — a threshold must be measured, not guessed', () => {
+    // A non-zero fleet-wide default would convert healthy slow lenses into false stalls on
+    // repositories whose idle telemetry nobody has looked at yet.
+    expect(source()).toMatch(/^ {6}stall_timeout_seconds:[\s\S]{0,3000}?^ {8}default: '0'\s*$/m);
+  });
+
+  it('keeps the two review job names unchanged (branch-protection contract)', () => {
+    // Re-asserted HERE as well as in its own describe, because this change touches both jobs'
+    // env blocks and the required context string is `<caller job name> / AI Review Coverage`.
+    expect(source()).toMatch(/^ {4}name: AI Review Coverage\s*$/m);
+    expect(source()).toMatch(/^ {4}name: AI Code Review \(\$\{\{ inputs\.review_strategy \}\}\)\s*$/m);
+  });
+
+  // Deliberately NOT re-asserting "no continue-on-error" here: the canonical check lives in
+  // the caller-shape describe above and strips comments first, which this file's prose
+  // legitimately contains ("NO `continue-on-error:` here, deliberately"). A second, naive copy
+  // of that rule would red on the comment explaining why the rule exists.
+});

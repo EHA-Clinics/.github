@@ -245,6 +245,66 @@ on:
           ("turns=1, tools=0"). Benchmarking on 2026-08-10 agreed — glm-5.1 emitted nothing in
           620s and nothing at reasoning effort "low" in 284s. The fix for a non-converging
           model is a different model (EHAC-2166), not more time.
+      stall_timeout_seconds:
+        type: string
+        default: '0'
+        description: >
+          EHAC-2231. Stream-idle watchdog, in seconds, passed through to elek. A model run that
+          emits no valid pi stream event for this long is terminated and reported with failure
+          class `stall` — which `run_timeout_seconds` alone CANNOT distinguish from genuinely
+          slow work, because one wall-clock timer gives both populations the same answer.
+
+          Measured on eha_care #3291, job 95521213463: four lenses finished in 47-148s, then the
+          `tests` lens produced 600 seconds of complete silence on a 3,612-character prompt, and
+          its retry produced another 600 seconds of the same. Raising the wall clock does nothing
+          for that shape; it only makes the silence longer.
+
+          Default '0' — DISABLED — deliberately. A threshold has to be CALIBRATED from measured
+          idle gaps on successful runs, and elek reports `timeToFirstEventSeconds` and
+          `maxIdleSecondsObserved` for exactly that purpose. Imposing a guessed value fleet-wide
+          would convert healthy slow lenses into false stalls, which is a worse failure than the
+          one it replaces. Set it per caller once its own canary telemetry supports the number.
+
+          Rule of thumb once you have the data: at least 3x the p99 successful idle gap, rounded
+          up, and comfortably below run_timeout_seconds.
+
+          Invalid values are a configuration FAILURE in elek and refuse to run — a watchdog that
+          silently disables itself on a typo is not a watchdog.
+      max_degraded_lenses:
+        type: string
+        # ONE VALUE, TWO INDEPENDENT DECISIONS. This input is passed to elek (which enforces it
+        # while the review runs) AND to the coverage asserter as COUNCIL_MAX_DEGRADED (which
+        # re-derives the same verdict from the recorded runs). They must not carry separate
+        # defaults that merely happen to agree: that is indistinguishable from agreement by
+        # accident, and it breaks silently the first time one side moves. The asserter fails
+        # closed with a distinct policy-drift reason when the two disagree.
+        #
+        # DEFAULT '1', NOT '0'. The plan for this change proposed '0' for "backward-compatible
+        # strict behavior". That is right for the PUBLIC elek action, which had no such input and
+        # whose behaviour was strict. It is WRONG here: assert-review-coverage.mjs has shipped
+        # DEFAULT_COUNCIL_MAX_DEGRADED = 1 since EHAC-2231's quorum landed in #26, so 1 is the
+        # tolerance every consumer of this workflow already has. Declaring '0' and passing it
+        # explicitly would revert eleven repositories to unanimity-of-availability — reintroducing
+        # the exact defect that blocked four eha_care pull requests at once — as a side effect of
+        # a change nobody asked to make. '1' is therefore the value that preserves behaviour.
+        default: '1'
+        description: >
+          EHAC-2231. How many reviewer lenses may fail while the review still counts as having
+          happened. Passed to BOTH elek and the coverage gate, which evaluate it independently.
+
+          A council is a redundancy mechanism. Scoring it by unanimity-of-availability throws that
+          redundancy away: with six model runs a single hung request reds a REQUIRED check, which
+          makes the council strictly less reliable than the least reliable model in it.
+
+          NEVER tolerated, at any value: a failed validator or validator-review run (nothing
+          audited or reconciled the findings), a wiped reviewer panel (nothing read the diff), a
+          failed run whose role is neither (it cannot be weighed), and a value that is not below
+          the reviewer lens count. A degraded council is never silent either — it emits a warning
+          naming every failed lens, its assigned model, its actual model and its failure class.
+
+          Fails CLOSED on both sides: an invalid, negative or fractional value resolves to 0
+          (strict), never to the default. A misconfigured tolerance must never widen what the
+          gate accepts.
       allowed_bots:
         type: string
         default: ''
@@ -295,7 +355,7 @@ on:
           trimmed.
 
           AUTHORITATIVE AND EXCLUSIVE FOR HUMANS — verified in
-          EHA-Clinics/elek@4c08c1c9 src/github/trigger.ts:82-140, which is the ref the elek
+          EHA-Clinics/elek@ed50490e src/github/trigger.ts:82-140, which is the ref the elek
           step below actually installs. Setting this input NARROWS the human trigger surface
           to exactly the listed names:
 
@@ -471,7 +531,7 @@ jobs:
         # cost_usd / conclusion as outputs at EVERY ref, and all of them were unreachable
         # purely for want of a step id. The coverage measurement below consumes them.
         id: review
-        uses: EHA-Clinics/elek@4c08c1c9bc02c027a49b54e0c68af4736543a467 # eha-v1.2.1 (public soft fork of selimozten/elek)
+        uses: EHA-Clinics/elek@ed50490ef7139f67b23ea574ef89a90927cf7d04 # eha-v1.3.0 (public soft fork of selimozten/elek)
         with:
           # pi's native openrouter adapter — elek's tested path. The OpenAI-compatible
           # Databricks AI Gateway (provider: openai) hung pi indefinitely on tool-enabled
@@ -533,6 +593,11 @@ jobs:
           # caller cannot raise the per-run budget below the job's 20-minute cap.
           allowed_bots: ${{ inputs.allowed_bots }}
           run_timeout_seconds: ${{ inputs.run_timeout_seconds }}
+          # EHAC-2231. The stream-idle watchdog and the reviewer-degradation tolerance. Both
+          # default to a value that preserves existing behaviour, and both are declared as
+          # workflow inputs so a caller opts in explicitly rather than inheriting a guess.
+          stall_timeout_seconds: ${{ inputs.stall_timeout_seconds }}
+          max_degraded_lenses: ${{ inputs.max_degraded_lenses }}
           sticky_comment: true
           # Structural safety: elek's MCP server only exposes create_inline_comment
           # and update_tracking_comment. No approve/merge/close code paths exist.
@@ -595,7 +660,7 @@ jobs:
           # code change underneath a pinned caller — the exact pin-drift class EHAC-2057 is
           # about. EHA-Clinics/.github is PUBLIC, so the default GITHUB_TOKEN reads it from
           # either private caller and no new secret is introduced.
-          ref: a63e497a86d7019b0dc057779964e5d074084a45
+          ref: c702ca2427270af439ffaa14ba41a00eea881453
           path: .ai-review-gate
           sparse-checkout: scripts/ai-review-coverage
           persist-credentials: false
@@ -638,7 +703,7 @@ jobs:
           REVIEW_COST_USD: ${{ steps.review.outputs.cost_usd }}
           # The LITERAL pinned SHA, not an expression: this is what makes branch U1 detect a
           # future elek bump that forgets to re-verify elek-prompt-budget.mjs.
-          ELEK_REF: 4c08c1c9bc02c027a49b54e0c68af4736543a467
+          ELEK_REF: ed50490ef7139f67b23ea574ef89a90927cf7d04
           REQUESTED_STRATEGY: ${{ inputs.review_strategy }}
           ACTOR_FILTER: ${{ inputs.actor_filter }}
           # EHAC-2103: the CONFIGURED council, so the coverage record can put what we asked for
@@ -651,6 +716,11 @@ jobs:
           # The producer turns this into a deterministic NOT_REVIEWED verdict (green + a
           # warning), which is what makes an out-of-scope PR reportable rather than absent.
           SKIP_REASON: ${{ steps.scope.outputs.skip_reason }}
+          # EHAC-2231. The SAME declared value elek was given, carried into COVERAGE_JSON so the
+          # asserter can compare what the producer was told against what IT was told. Without
+          # this the two halves would each apply their own tolerance and a mismatch would be
+          # invisible — a gate and a producer disagreeing about policy while both report success.
+          COUNCIL_MAX_DEGRADED: ${{ inputs.max_degraded_lenses }}
           # For the `gh api repos/{repo}/pulls/{n}` lookup on the issue_comment path.
           GITHUB_TOKEN: ${{ github.token }}
         run: node .ai-review-gate/scripts/ai-review-coverage/measure-review-coverage.mjs
@@ -676,7 +746,7 @@ jobs:
         with:
           repository: EHA-Clinics/.github
           # Same pinned SHA as the producer, for the same reason (T-2057-01).
-          ref: a63e497a86d7019b0dc057779964e5d074084a45
+          ref: c702ca2427270af439ffaa14ba41a00eea881453
           path: .ai-review-gate
           sparse-checkout: scripts/ai-review-coverage
           persist-credentials: false
@@ -686,4 +756,9 @@ jobs:
         env:
           REVIEW_RESULT: ${{ needs.review.result }}
           COVERAGE_JSON: ${{ needs.review.outputs.coverage_json }}
+          # EHAC-2231. The same declared value the producer and elek received. The asserter
+          # re-derives the quorum verdict from the recorded runs independently — it never trusts
+          # elek's own status — and fails closed with a distinct policy-drift reason if the
+          # producer was told something different.
+          COUNCIL_MAX_DEGRADED: ${{ inputs.max_degraded_lenses }}
         run: node .ai-review-gate/scripts/ai-review-coverage/assert-review-coverage.mjs
