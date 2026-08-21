@@ -653,3 +653,87 @@ describe('exclusions and the empty-scope edge (buildCoverage)', () => {
     expect(coverage.inventory.map((r) => r.path)).toEqual(['src/app.ts']);
   });
 });
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════════
+ * EHAC-2280 (AC #1) — the coverage record carries WHICH ENDPOINT SERVED each run.
+ * ═══════════════════════════════════════════════════════════════════════════════════════════ */
+describe('deriveModels — OpenRouter serving-endpoint capture (EHAC-2280)', () => {
+  // Shaped exactly as elek eha-v1.4.0 emits it. The two provider names are the ones the live
+  // two-endpoint positive control returned in run 32527705565 (DeepInfra != Novita), which is
+  // what proves the field DISCRIMINATES rather than echoing a constant.
+  const RUNS = [
+    {
+      role: 'reviewer',
+      lensId: 'risk',
+      modelLabel: 'deepseek/deepseek-v4-pro',
+      conclusion: 'success',
+      servingProvider: 'DeepInfra',
+      quantization: null,
+      nativeTokensReasoning: 0,
+      generationTimeMs: 10277,
+      latencyMs: 812,
+    },
+    {
+      role: 'reviewer',
+      lensId: 'design',
+      modelLabel: 'deepseek/deepseek-v4-pro',
+      conclusion: 'success',
+      servingProvider: 'Novita',
+      quantization: null,
+      nativeTokensReasoning: 10,
+      generationTimeMs: 1174,
+      latencyMs: 402,
+    },
+  ];
+
+  it('records the serving endpoint per run, and distinguishes two endpoints of ONE model', () => {
+    const runs = deriveModels({ modelRuns: RUNS }).runs;
+    expect(runs.map((r) => r.serving_provider)).toEqual(['DeepInfra', 'Novita']);
+    // The discriminating claim. Both runs carry the SAME model_label, so a field that merely
+    // echoed the model — or a constant — would pass a mere presence check and fail this one.
+    expect(new Set(runs.map((r) => r.model_label)).size).toBe(1);
+    expect(new Set(runs.map((r) => r.serving_provider)).size).toBe(2);
+  });
+
+  it('carries the provider-side latency and reasoning spend that pi Usage lacks', () => {
+    const runs = deriveModels({ modelRuns: RUNS }).runs;
+    expect(runs.map((r) => r.generation_time_ms)).toEqual([10277, 1174]);
+    expect(runs.map((r) => r.native_tokens_reasoning)).toEqual([0, 10]);
+    // 0 must survive as 0, never collapse to null: "the provider billed no reasoning tokens"
+    // and "we did not measure" are different facts, and a falsy-check would merge them.
+    expect(runs[0].native_tokens_reasoning).not.toBeNull();
+  });
+
+  it('reports quantization as null — looked for, and not offered by the API', () => {
+    const runs = deriveModels({ modelRuns: RUNS }).runs;
+    for (const r of runs) {
+      expect(r).toHaveProperty('quantization');
+      expect(r.quantization).toBeNull();
+    }
+  });
+
+  // BACKWARD COMPATIBILITY. A record produced by the PREVIOUS elek pin has none of these keys.
+  // They must read as "not reported" — null — and must never be mistaken for a measurement.
+  it('degrades to null on a record from an older elek pin, never to a value', () => {
+    const legacy = [{ role: 'reviewer', lensId: 'risk', modelLabel: 'm', conclusion: 'success' }];
+    const [run] = deriveModels({ modelRuns: legacy }).runs;
+    expect(run.serving_provider).toBeNull();
+    expect(run.quantization).toBeNull();
+    expect(run.native_tokens_reasoning).toBeNull();
+    expect(run.generation_time_ms).toBeNull();
+    // The pre-existing fields must be untouched by this addition.
+    expect(run.conclusion).toBe('success');
+    expect(run.model_label).toBe('m');
+  });
+
+  it('rejects a non-string serving provider rather than coercing it', () => {
+    const junk = [
+      { role: 'reviewer', lensId: 'a', conclusion: 'success', servingProvider: 42 },
+      { role: 'reviewer', lensId: 'b', conclusion: 'success', servingProvider: { name: 'x' } },
+      { role: 'reviewer', lensId: 'c', conclusion: 'success', generationTimeMs: 'fast' },
+    ];
+    const runs = deriveModels({ modelRuns: junk }).runs;
+    expect(runs.map((r) => r.serving_provider)).toEqual([null, null, null]);
+    expect(runs[2].generation_time_ms).toBeNull();
+  });
+});

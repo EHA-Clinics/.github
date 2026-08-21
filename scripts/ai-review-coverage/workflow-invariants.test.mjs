@@ -705,3 +705,111 @@ describe('the review job ceiling is an input, defaulting to the previous literal
     expect(withoutComments(gate.block)).toMatch(/^ {4}timeout-minutes: \d+\s*$/m);
   });
 });
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════════
+ * EHAC-2280 — three inputs reach elek, and the coverage record becomes a first-class artifact.
+ *
+ * Written RED against the unchanged workflow and recorded that way before the YAML moved.
+ * A workflow invariant that has only ever been observed green is indistinguishable from a
+ * tautology, and this repo's own defect history (EHAC-2057) is exactly that shape.
+ * ═══════════════════════════════════════════════════════════════════════════════════════════ */
+describe('EHAC-2280 — the serial-budget guard and routing knobs reach elek', () => {
+  const review = () => jobBlock(source(), /^ {4}name: AI Code Review \(/);
+
+  // THE defect this case exists for: `job_timeout_minutes` has been a workflow_call input
+  // since EHAC-2231 and drives `timeout-minutes:`, but it was never forwarded to the action.
+  // elek's serial-arithmetic guard (eha-v1.4.0) reads it from its own inputs, so without this
+  // line the guard reports `unchecked` on every run in the fleet and the ENFORCING half of
+  // AC #4 is inert — a check that is shipped, wired and incapable of firing.
+  it('forwards job_timeout_minutes to the elek step, not just to timeout-minutes', () => {
+    expect(withoutComments(review().block)).toMatch(
+      /^ {10}job_timeout_minutes: \$\{\{ inputs\.job_timeout_minutes \}\}\s*$/m,
+    );
+  });
+
+  it('declares and forwards openrouter_provider_preferences and reasoning_max_tokens', () => {
+    const text = source();
+    const block = withoutComments(review().block);
+    for (const key of ['openrouter_provider_preferences', 'reasoning_max_tokens']) {
+      expect(text, `${key} is not a workflow_call input`).toMatch(
+        new RegExp(`^ {6}${key}:\\n {8}type: string`, 'm'),
+      );
+      expect(block, `${key} is declared but never reaches elek`).toMatch(
+        new RegExp(`^ {10}${key}: \\$\\{\\{ inputs\\.${key} \\}\\}\\s*$`, 'm'),
+      );
+    }
+  });
+
+  // Both new inputs must stay UNSET by default. A default here would change behaviour for
+  // twelve repos that never opted in — the blast-radius argument the T9 release rested on.
+  it('leaves both new inputs unset by default', () => {
+    const text = source();
+    for (const key of ['openrouter_provider_preferences', 'reasoning_max_tokens']) {
+      const decl = text.match(new RegExp(`^ {6}${key}:\\n([\\s\\S]*?)(?=^ {6}[a-z_]+:$)`, 'm'));
+      expect(decl, `${key} declaration not found`).not.toBeNull();
+      expect(decl[1], `${key} must not carry a default`).not.toMatch(/^ {8}default:/m);
+    }
+  });
+});
+
+describe('EHAC-2280 — the coverage record is uploaded as a first-class artifact', () => {
+  const review = () => jobBlock(source(), /^ {4}name: AI Code Review \(/);
+
+  /** The `- name: X` step slice inside a job block, comments included. */
+  function stepBlock(block, name) {
+    const lines = block.split('\n');
+    const hit = lines.findIndex((l) => l.trim() === `- name: ${name}`);
+    if (hit < 0) throw new Error(`step "${name}" not found`);
+    let end = hit + 1;
+    while (end < lines.length && !/^ {6}- name: /.test(lines[end])) end++;
+    return lines.slice(hit, end).join('\n');
+  }
+
+  // WHY THIS EXISTS. Before it, the coverage record's only post-hoc surface was the RUNNER'S
+  // INCIDENTAL ECHO of the COVERAGE_JSON env block in the gate job's log — a side effect of
+  // Actions' env rendering, not a resource anyone published. The job summary omits the failure
+  // class entirely. Any reader scraping that log reports a PERFECT streak when the echo is
+  // absent, which is the vacuous-read defect AC #3 exists to prevent. This makes the record a
+  // durable, addressable artifact instead.
+  it('writes the record to a file and uploads it, both with if: always()', () => {
+    const block = review().block;
+    const write = stepBlock(block, 'Persist coverage record');
+    const upload = stepBlock(block, 'Upload coverage record');
+    for (const [label, step] of [['write', write], ['upload', upload]]) {
+      expect(step, `${label} step must run even when the review failed`).toMatch(
+        /^ {8}if: always\(\)\s*$/m,
+      );
+      // `continue-on-error` makes a failing step report GREEN — the mechanism EHAC-2057 was.
+      expect(withoutComments(step), `${label} step carries an error suppressor`).not.toMatch(
+        /^\s*continue-on-error:/m,
+      );
+    }
+  });
+
+  it('pins actions/upload-artifact to a 40-hex SHA and errors when the file is missing', () => {
+    const upload = stepBlock(review().block, 'Upload coverage record');
+    expect(upload).toMatch(/uses: actions\/upload-artifact@[0-9a-f]{40}/);
+    expect(upload).toMatch(/^ {10}name: ai-review-coverage\s*$/m);
+    // Without this, a run that produced no record uploads nothing and reports success —
+    // the reader would then see an ABSENT artifact as an ordinary miss rather than a fault.
+    expect(upload).toMatch(/^ {10}if-no-files-found: error\s*$/m);
+    expect(upload).toMatch(/^ {10}retention-days: \d+\s*$/m);
+  });
+
+  // T-2280-04. `${{ }}` interpolated into a `run:` body is a script-injection sink: the
+  // expression is substituted textually BEFORE the shell sees it. The record must reach the
+  // script through an `env:` variable and be read as "$COVERAGE_JSON".
+  it('never interpolates the coverage expression into a run: body', () => {
+    const write = stepBlock(review().block, 'Persist coverage record');
+    // Anchor on the real `run:` KEY LINE, and strip comments first. Slicing at the first
+    // literal "run:" matched this step's own prose explaining the rule — an assertion that
+    // reds on the comment justifying it is noise, not a finding.
+    const body = withoutComments(write).split('\n');
+    const at = body.findIndex((l) => /^ {8}run: /.test(l));
+    expect(at, 'the persist step has no run: key').toBeGreaterThan(-1);
+    const runBody = body.slice(at).join('\n');
+    expect(runBody).not.toContain('steps.coverage.outputs.coverage_json');
+    expect(write).toMatch(/^ {10}COVERAGE_JSON: \$\{\{ steps\.coverage\.outputs\.coverage_json \}\}\s*$/m);
+    expect(runBody).toContain('"$COVERAGE_JSON"');
+  });
+});

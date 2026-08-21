@@ -333,6 +333,39 @@ on:
           Fails CLOSED on both sides: an invalid, negative or fractional value resolves to 0
           (strict), never to the default. A misconfigured tolerance must never widen what the
           gate accepts.
+      openrouter_provider_preferences:
+        type: string
+        # NO DEFAULT, deliberately. Absent means elek sends no `provider` object at all and
+        # OpenRouter routes exactly as it does today, so every caller that does not opt in is
+        # byte-identical to before. A default here would change routing for twelve repos that
+        # never asked for it.
+        description: >
+          EHAC-2280. OpenRouter provider-routing preferences, as a JSON OBJECT STRING, passed
+          through to elek and merged into the request's `provider` field.
+
+          WHY THIS EXISTS. EHAC-2280's premise is that unmanaged routing — not model choice —
+          drives the 600s/900s exhaustion, and elek run 32527705565 produced the first hard
+          number behind it: two concurrent observations of the SAME endpoint (`deepinfra/fp8`),
+          seconds apart, reported generation times of 386 ms and 10,277 ms. A ~26x swing on one
+          named endpoint, LARGER than the 8.8x spread measured between two different endpoints.
+
+          That measurement is also why `order` pinning is not the answer and is rejected in
+          CONTEXT: the pinned endpoint is itself wildly variable under load, so pinning trades a
+          latency problem for an availability problem and does not even fix the latency.
+
+          Parsed FAIL-CLOSED in elek: unparseable JSON, a non-object, or any key outside the
+          thirteen documented OpenRouter routing keys refuses the run rather than silently
+          routing unmanaged. Keep `allow_fallbacks` true — see the caller's own comment for why.
+      reasoning_max_tokens:
+        type: string
+        # NO DEFAULT, and no caller sets it today. Shipped unset on purpose (R-4): the cap is
+        # only now becoming measurable — `native_tokens_reasoning` came back 0 (DeepInfra) vs
+        # 10 (Novita) in the same run — and a guessed ceiling would truncate reasoning models
+        # mid-thought for a saving nobody has sized.
+        description: >
+          EHAC-2280. Upper bound on reasoning tokens per model run, passed through to elek.
+          Unset everywhere by design; set it only once a caller's own
+          `native_tokens_reasoning` telemetry supports the number.
       allowed_bots:
         type: string
         default: ''
@@ -561,7 +594,7 @@ jobs:
         # cost_usd / conclusion as outputs at EVERY ref, and all of them were unreachable
         # purely for want of a step id. The coverage measurement below consumes them.
         id: review
-        uses: EHA-Clinics/elek@d89f99f69c73f790040ebe22e34136e3979203ac # eha-v1.3.1 (public soft fork of selimozten/elek)
+        uses: EHA-Clinics/elek@fc894d6d3e43847eb2be57d4fef7b95a03a86b0a # eha-v1.4.0 (public soft fork of selimozten/elek)
         with:
           # pi's native openrouter adapter — elek's tested path. The OpenAI-compatible
           # Databricks AI Gateway (provider: openai) hung pi indefinitely on tool-enabled
@@ -628,6 +661,24 @@ jobs:
           # workflow inputs so a caller opts in explicitly rather than inheriting a guess.
           stall_timeout_seconds: ${{ inputs.stall_timeout_seconds }}
           max_degraded_lenses: ${{ inputs.max_degraded_lenses }}
+          # EHAC-2280. THE JOB CAP, forwarded to elek so its serial-arithmetic guard can
+          # actually see it. This input has existed since EHAC-2231 and has always driven
+          # `timeout-minutes:` above — but it was never passed to the action, so elek could
+          # not check `setup + reviewer_cap + validator_cap` against the ceiling that will
+          # kill the job. Without this line elek's guard reports `unchecked` on EVERY run in
+          # the fleet: shipped, wired, and structurally incapable of firing.
+          #
+          # The guard has three outcomes, and only the first two are conclusions: PASS (the
+          # arithmetic fits), FAIL (it does not — refused loudly, before any model runs,
+          # naming both numbers), and `unchecked` + a `::warning::` when the caller sends no
+          # job cap. It never reports that the arithmetic was checked and fine when it could
+          # not check.
+          job_timeout_minutes: ${{ inputs.job_timeout_minutes }}
+          # EHAC-2280. Both UNSET fleet-wide unless a caller opts in; see the input
+          # declarations for the measurement behind the routing knob and for why the
+          # reasoning cap ships unset.
+          openrouter_provider_preferences: ${{ inputs.openrouter_provider_preferences }}
+          reasoning_max_tokens: ${{ inputs.reasoning_max_tokens }}
           sticky_comment: true
           # Structural safety: elek's MCP server only exposes create_inline_comment
           # and update_tracking_comment. No approve/merge/close code paths exist.
@@ -733,7 +784,7 @@ jobs:
           REVIEW_COST_USD: ${{ steps.review.outputs.cost_usd }}
           # The LITERAL pinned SHA, not an expression: this is what makes branch U1 detect a
           # future elek bump that forgets to re-verify elek-prompt-budget.mjs.
-          ELEK_REF: d89f99f69c73f790040ebe22e34136e3979203ac
+          ELEK_REF: fc894d6d3e43847eb2be57d4fef7b95a03a86b0a
           REQUESTED_STRATEGY: ${{ inputs.review_strategy }}
           ACTOR_FILTER: ${{ inputs.actor_filter }}
           # EHAC-2103: the CONFIGURED council, so the coverage record can put what we asked for
@@ -754,6 +805,67 @@ jobs:
           # For the `gh api repos/{repo}/pulls/{n}` lookup on the issue_comment path.
           GITHUB_TOKEN: ${{ github.token }}
         run: node .ai-review-gate/scripts/ai-review-coverage/measure-review-coverage.mjs
+
+      # ═══════════════════════════════════════════════════════════════════════════════════
+      # EHAC-2280 — make the coverage record a FIRST-CLASS, ADDRESSABLE RESOURCE.
+      #
+      # Until now the record's only post-hoc surface was the runner's INCIDENTAL ECHO of the
+      # `COVERAGE_JSON` env block in the `AI Review Coverage` job log. That echo is a side
+      # effect of how Actions renders a step's environment — nobody published it, nothing
+      # guarantees it, and its format is not a contract. The job summary is no substitute:
+      # `renderJobSummary` prints Role/Lens/Model/Result and omits the failure class entirely.
+      #
+      # The consequence is the defect AC #3 exists to prevent. Any reader scraping that log
+      # sees an ABSENT echo and a CLEAN parse as the same thing, so it reports a PERFECT
+      # STREAK from an empty read — a measurement that cannot come out badly. Giving the
+      # record a real artifact removes the ambiguity at its root: the artifact is either
+      # there and parses, or the reader says so and exits non-zero.
+      # ═══════════════════════════════════════════════════════════════════════════════════
+      - name: Persist coverage record
+        # `if: always()` for the same reason the producer carries it: a BROKEN review is
+        # exactly when the record matters, and a step with no `if:` defaults to success().
+        if: always()
+        env:
+          # T-2280-04. The record reaches the script through an ENV VARIABLE and is read as
+          # "$COVERAGE_JSON". It is never interpolated into the `run:` body — `${{ }}` is
+          # substituted TEXTUALLY before the shell parses the line, so a record containing
+          # shell metacharacters would execute. workflow-invariants.test.mjs asserts the
+          # expression does not appear in this run: body.
+          COVERAGE_JSON: ${{ steps.coverage.outputs.coverage_json }}
+        # NO `continue-on-error:` here or on the upload below, deliberately: that key is an
+        # error SUPPRESSOR and workflow-invariants.test.mjs rejects it repo-wide. If the
+        # record cannot be persisted, that is a fault and must read as one.
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$COVERAGE_JSON" > "${RUNNER_TEMP}/coverage.json"
+          # Validate it is a JSON OBJECT before upload. An empty output would otherwise
+          # upload a zero-byte artifact that every reader would have to special-case —
+          # which is how "absent" quietly becomes "fine" again.
+          node -e '
+            const fs = require("node:fs");
+            const raw = fs.readFileSync(process.env.RUNNER_TEMP + "/coverage.json", "utf8").trim();
+            if (!raw) throw new Error("coverage record is EMPTY — the producer emitted no output");
+            const parsed = JSON.parse(raw);
+            if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+              throw new Error("coverage record is not a JSON object: " + typeof parsed);
+            console.log("coverage record persisted, " + raw.length + " bytes");
+          '
+
+      - name: Upload coverage record
+        if: always()
+        # v4.6.2, resolved from the tag to a 40-hex SHA (T-2280-06). A floating `@v4` would
+        # let a third party's code change underneath a pinned caller.
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ai-review-coverage
+          path: ${{ runner.temp }}/coverage.json
+          # A run that produced no record must FAIL here rather than upload nothing and
+          # report success — an absent artifact would otherwise read to the streak reader
+          # as an ordinary miss instead of a fault.
+          if-no-files-found: error
+          retention-days: 90
+        # No permissions change is needed: upload-artifact v4 authenticates with the runtime
+        # token, not the GITHUB_TOKEN scopes declared at the top of this file.
 
   coverage-gate:
     # The job NAME below is a branch-protection API contract string: the required-check
