@@ -198,6 +198,34 @@ export function deriveModels(summary, env = {}) {
           : null,
     failover_used: typeof r?.failoverUsed === 'boolean' ? r.failoverUsed : null,
     attempt_count: Number.isFinite(Number(r?.attemptCount)) ? Number(r.attemptCount) : null,
+    // EHAC-2280 (AC #1). WHAT ACTUALLY SERVED THIS RUN. All ADDITIVE and all null-safe, in the
+    // same idiom as the EHAC-2231 block above: a record produced by an older elek pin, or by a
+    // run that did not go through OpenRouter, simply carries nulls, and nothing downstream may
+    // read a null as a pass or as a failure — only as "not reported".
+    //
+    // WHY IT MATTERS. `model_label` says which MODEL was asked; it says nothing about which of
+    // OpenRouter's endpoints answered. Measured on elek run 32527705565: the same endpoint tag
+    // (`deepinfra/fp8`), observed twice seconds apart in concurrently running jobs, reported
+    // generation times of 386 ms and 10,277 ms — a ~26x swing, LARGER than the 8.8x spread
+    // between two different endpoints. Without this field the record cannot distinguish "the
+    // model is slow" from "the endpoint that served us was slow", which is the whole question
+    // EHAC-2280 asks.
+    serving_provider: typeof r?.servingProvider === 'string' ? r.servingProvider : null,
+    // ALWAYS null, and honestly so. `quantization` is NOT a field of OpenRouter's generation
+    // endpoint — confirmed live against the live API, not inferred from docs. It is constrained
+    // on the REQUEST side by the `quantizations` routing preference and is not observable
+    // per run. Recording the field as null is the point: it states that we looked and it is not
+    // there, which an ABSENT key would leave indistinguishable from nobody having tried.
+    quantization: r?.quantization ?? null,
+    // The reasoning spend the PROVIDER billed — the measurement pi's own Usage object lacks,
+    // and the one that should size any future `reasoning_max_tokens` cap. Observed 0
+    // (DeepInfra) vs 10 (Novita) on the same prompt, which is also why that cap ships unset.
+    native_tokens_reasoning: Number.isFinite(Number(r?.nativeTokensReasoning))
+      ? Number(r.nativeTokensReasoning)
+      : null,
+    // Provider-side latency, distinct from anything elek can time from outside the request.
+    generation_time_ms: Number.isFinite(Number(r?.generationTimeMs)) ? Number(r.generationTimeMs) : null,
+    latency_ms: Number.isFinite(Number(r?.latencyMs)) ? Number(r.latencyMs) : null,
   }));
 
   const failed = (r) => r.conclusion !== 'success';

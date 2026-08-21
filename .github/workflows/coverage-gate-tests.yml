@@ -75,7 +75,7 @@ jobs:
       # and a non-zero assert exit. If this step ever passes trivially, the gate is vacuous.
       - name: Prove the fixture-driven red end-to-end
         env:
-          ELEK_REF: d89f99f69c73f790040ebe22e34136e3979203ac
+          ELEK_REF: fc894d6d3e43847eb2be57d4fef7b95a03a86b0a
           REQUESTED_STRATEGY: council
           EXECUTED_STRATEGY: council
           REVIEW_INPUT_TOKENS: '83000'
