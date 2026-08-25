@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { ELEK_REF_VERIFIED } from './elek-prompt-budget.mjs';
+import { NOT_REVIEWED_REASONS } from './measure-review-coverage.mjs';
 import {
   GATE_SCRIPT_DIR,
   changedPathsFromGit,
@@ -175,6 +176,44 @@ describe('the review job exports the coverage record', () => {
     // exactly the absence-not-green failure this work exists to remove.
     const jobIfs = review().lines.filter((line) => /^ {4}if:/.test(line));
     expect(jobIfs).toEqual([]);
+  });
+
+  // EHAC-2294 — bot AUTHORSHIP is decided here, and it has to be, because elek decides it
+  // from `github.actor` and therefore decides it wrongly. Measured 2026-08-22..24: 41 of 125
+  // model runs were bot-authored PRs, all 41 with a human actor.
+  it('declines a bot-authored PR inside the scope step, before elek is invoked', () => {
+    const block = review().block;
+    // The verdict is emitted as a skip_reason, so it flows through the existing SKIP_REASON
+    // wiring asserted above and lands in the coverage record rather than skipping the check.
+    expect(block).toContain('skip_reason=pr_author_is_bot_not_allowlisted');
+    // The decision needs the allowlist, or it would decline a bot a caller deliberately
+    // admitted — disagreeing with elek about who is allowed, in the stricter direction.
+    expect(block).toMatch(/^ {10}ALLOWED_BOTS: \$\{\{ inputs\.allowed_bots \}\}\s*$/m);
+  });
+
+  it('resolves the PR author BEFORE the elek step, not after it', () => {
+    // Ordering is the whole mechanism: decided after elek ran, this would be an explanation
+    // rather than a control, and the council would already have been paid for.
+    const block = review().block;
+    // Both anchors are LINE-EXACT on purpose. An earlier draft used indexOf on the bare step
+    // name and silently matched a renamed `AI Code Review via OpenRouterX` by prefix — the
+    // ordering claim held against a step that no longer existed. Caught by mutating the step
+    // name and finding the suite still green.
+    const decision = block.search(/^ *echo "skip_reason=pr_author_is_bot_not_allowlisted"/m);
+    const elek = block.search(/^ {6}- name: AI Code Review via OpenRouter$/m);
+    expect(decision).toBeGreaterThan(-1);
+    expect(elek).toBeGreaterThan(-1);
+    expect(decision).toBeLessThan(elek);
+  });
+
+  it('fails OPEN when the author lookup fails — a human PR is never silently skipped', () => {
+    // The asymmetry is deliberate and is the reason this is asserted rather than assumed: a
+    // needless council costs dollars, a silently skipped one costs a defect on the base
+    // branch. Same posture as the `could not list changed files` branch.
+    const block = review().block;
+    expect(block).toMatch(
+      /could not resolve the pull request author — treating it as human so the review still runs/,
+    );
   });
 });
 
@@ -811,5 +850,55 @@ describe('EHAC-2280 — the coverage record is uploaded as a first-class artifac
     expect(runBody).not.toContain('steps.coverage.outputs.coverage_json');
     expect(write).toMatch(/^ {10}COVERAGE_JSON: \$\{\{ steps\.coverage\.outputs\.coverage_json \}\}\s*$/m);
     expect(runBody).toContain('"$COVERAGE_JSON"');
+  });
+});
+
+/**
+ * EHAC-2294 — the gate's own README must list the SAME NOT_REVIEWED reasons the code accepts.
+ *
+ * Added because it had already drifted and nobody noticed. Until 2026-08-25 §4 of
+ * `scripts/ai-review-coverage/README.md` said the allowlist held "exactly two entries" while
+ * `NOT_REVIEWED_REASONS` held five — EHAC-2060 added two and EHAC-2231 a third, each without
+ * touching the prose.
+ *
+ * That is not a documentation nicety. This list is the ONE branch that exits 0 without a
+ * coverage claim, the README is where its members are justified, and the code itself says
+ * widening it is "a promotion-time decision, not an implementation detail". A promotion
+ * decision cannot be taken against a list that does not say what it contains.
+ */
+describe('the README documents the NOT_REVIEWED allowlist accurately (EHAC-2294)', () => {
+  const readmeText = () =>
+    readFileSync(join(import.meta.dirname, 'README.md'), 'utf8');
+
+  /** Reasons named as inline code in the README's §4 block. */
+  const documented = () => {
+    const text = readmeText();
+    const start = text.indexOf('### 4. `NOT_REVIEWED` is the single exit-0-without-coverage branch');
+    expect(start, 'README §4 heading not found — has it been renamed?').toBeGreaterThan(-1);
+    const end = text.indexOf('\n### ', start + 1);
+    const section = text.slice(start, end === -1 ? undefined : end);
+    return new Set(
+      [...section.matchAll(/`([a-z_]+)`/g)]
+        .map((m) => m[1])
+        .filter((name) => NOT_REVIEWED_REASONS.includes(name)),
+    );
+  };
+
+  it('names every reason the code accepts', () => {
+    const undocumented = NOT_REVIEWED_REASONS.filter((r) => !documented().has(r));
+    expect(
+      undocumented,
+      `NOT_REVIEWED reasons missing from README §4: ${undocumented.join(', ')}`,
+    ).toEqual([]);
+  });
+
+  it('does not state a count that contradicts the list', () => {
+    // The specific way it drifted: a hardcoded "exactly two entries" outliving three additions.
+    const section = readmeText();
+    const claimed = section.match(/allowlist,\s+\*{0,2}(\w+)\*{0,2}\s+entries/i);
+    expect(claimed, 'README §4 no longer states an entry count in the expected form').not.toBeNull();
+    const words = { two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8 };
+    const asNumber = words[claimed[1].toLowerCase()] ?? Number(claimed[1]);
+    expect(asNumber).toBe(NOT_REVIEWED_REASONS.length);
   });
 });

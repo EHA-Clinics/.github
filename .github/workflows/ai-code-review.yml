@@ -514,6 +514,11 @@ jobs:
       # So scope and draft state are evaluated HERE, as a verdict, instead of upstream as a
       # skip. The job always runs; only the elek step below is conditional. Cost is unchanged:
       # an out-of-scope PR still never invokes a model.
+      #
+      # EHAC-2294 adds a THIRD verdict on the same principle — a bot-authored pull request —
+      # for a reason the other two do not share. Scope and draft are decided here because elek
+      # cannot decide them; bot AUTHORSHIP is decided here because elek decides it WRONGLY, on
+      # `github.actor` rather than on who wrote the code. See the branch below.
       - name: Resolve review scope
         id: scope
         env:
@@ -521,6 +526,7 @@ jobs:
           SCOPE_PATHS: ${{ inputs.scope_paths }}
           IS_DRAFT: ${{ github.event.pull_request.draft }}
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          ALLOWED_BOTS: ${{ inputs.allowed_bots }}
         run: |
           set -euo pipefail
 
@@ -530,6 +536,64 @@ jobs:
             echo "skip_reason=pull_request_is_draft" >> "$GITHUB_OUTPUT"
             echo "Draft pull request — review deferred until ready_for_review."
             exit 0
+          fi
+
+          # EHAC-2294 — decline a BOT-AUTHORED pull request, whoever pushed the button.
+          #
+          # `allowed_bots` alone cannot do this. elek's isActorAllowed (src/github/trigger.ts:82)
+          # reads `context.actor` — GITHUB_ACTOR, i.e. whoever caused THIS event. A Renovate PR
+          # is opened by the bot and correctly declined, but the instant a human rebases it,
+          # pushes to it, or reopens it, the actor is that human, the bot allowlist stops
+          # applying, and a full council reads a regenerated lockfile.
+          #
+          # Measured 2026-08-22..24 across eha_care and eha-care-infra: 41 of 125 model runs —
+          # 33% of all AI-review spend — were bot-authored pull requests, and ALL 41 of the 41
+          # had a human as github.actor. Reference case: eha-care-infra run 32675708827, branch
+          # renovate/node-services-(non-major), actor adothompson, executedStrategy council,
+          # terminalReason completed.
+          #
+          # Resolved from the API, matching the changed-file lookup below and for the same
+          # reason: the event payload carries `pull_request.user` only on pull_request events,
+          # while PR_NUMBER above already spans the issue_comment path too. One lookup works for
+          # both.
+          #
+          # FAILS OPEN, DELIBERATELY. A lookup that errors, or a repo whose API shape surprises
+          # us, must not silence a review of human code — the cost of a needless council is
+          # dollars, the cost of a silently skipped one is a defect reaching the base branch.
+          # Same posture as the `could not list changed files` branch below.
+          if [ -n "${PR_NUMBER:-}" ]; then
+            if AUTHOR_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+                                --jq '[.user.login, .user.type] | @tsv' 2>/dev/null)"; then
+              AUTHOR_LOGIN="$(printf '%s' "$AUTHOR_JSON" | cut -f1)"
+              AUTHOR_TYPE="$(printf '%s' "$AUTHOR_JSON" | cut -f2)"
+
+              if [ "$AUTHOR_TYPE" = "Bot" ]; then
+                # Honour allowed_bots exactly as elek does: `*` admits everything, otherwise
+                # comma-separated EXACT match. Mirrors listIncludes (trigger.ts:48) — a
+                # substring match here would admit a bot the action itself would decline, and
+                # the two must not disagree about who is allowed.
+                bot_allowed=0
+                if [ "${ALLOWED_BOTS:-}" = "*" ]; then
+                  bot_allowed=1
+                else
+                  while IFS= read -r allowed; do
+                    allowed="${allowed// /}"
+                    [ -n "$allowed" ] || continue
+                    if [ "$allowed" = "$AUTHOR_LOGIN" ]; then bot_allowed=1; break; fi
+                  done <<< "$(printf '%s' "${ALLOWED_BOTS:-}" | tr ',' '\n')"
+                fi
+
+                if [ "$bot_allowed" -eq 0 ]; then
+                  echo "in_scope=false" >> "$GITHUB_OUTPUT"
+                  echo "skip_reason=pr_author_is_bot_not_allowlisted" >> "$GITHUB_OUTPUT"
+                  echo "Pull request authored by \"${AUTHOR_LOGIN}\" (a bot not in allowed_bots) — reporting NOT_REVIEWED, not skipping the check."
+                  exit 0
+                fi
+                echo "Pull request authored by allowlisted bot \"${AUTHOR_LOGIN}\" — continuing."
+              fi
+            else
+              echo "::warning::could not resolve the pull request author — treating it as human so the review still runs."
+            fi
           fi
 
           # An empty scope_paths means "review everything" — never "review nothing".

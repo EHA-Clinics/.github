@@ -373,6 +373,47 @@ describe('scope skip reasons make an inapplicable review REPORTABLE (EHAC-2060)'
       expect(NOT_REVIEWED_REASONS).toContain(reason);
     }
   });
+
+  // EHAC-2294. The author-vs-actor hole: `allowed_bots` gates on github.actor, so a human
+  // rebasing a Renovate branch made the review run as if a human had opened it. Measured
+  // 2026-08-22..24 across eha_care and eha-care-infra: 41 of 125 model runs were bot-authored
+  // PRs and ALL 41 had a human actor.
+  it('a bot-AUTHORED PR yields NOT_REVIEWED even when the actor is a human', () => {
+    const coverage = buildCoverage({
+      diffText: read('small-complete.diff'),
+      env: noReviewEnv({ SKIP_REASON: 'pr_author_is_bot_not_allowlisted' }),
+      // The whole point: a human actor. `actor_is_bot_not_allowlisted` cannot fire here,
+      // because computeNotReviewed's own bot test is `/\[bot\]$/i` against the ACTOR.
+      context: healthyContext({ actor: 'adothompson', changedFilesApi: 2 }),
+    });
+    expect(coverage.verdict).toBe('NOT_REVIEWED');
+    expect(coverage.not_reviewed.reason).toBe('pr_author_is_bot_not_allowlisted');
+    // The record must not lie about its own cause: it names the human who pushed, next to a
+    // reason that blames the AUTHOR. Reusing `actor_is_bot_not_allowlisted` would have put
+    // that same human next to a claim that the actor was a bot.
+    expect(coverage.not_reviewed.actor).toBe('adothompson');
+  });
+
+  // The fail-open this branch could have been, restated for the new reason specifically.
+  // It matters more here than for scope: this reason is reachable on EVERY pull request,
+  // since every PR has an author.
+  it('the bot-author reason NEVER suppresses a review that actually ran', () => {
+    const coverage = buildCoverage({
+      diffText: read('pr-3515.diff'),
+      env: healthyEnv({ SKIP_REASON: 'pr_author_is_bot_not_allowlisted' }),
+      context: healthyContext({ actor: 'adothompson' }),
+    });
+    expect(coverage.not_reviewed).toBeNull();
+    expect(coverage.verdict).toBe('PARTIAL_SOURCE');
+  });
+
+  // Guards the pairing itself. `computeNotReviewed` only honours a skip reason that is in
+  // SCOPE_SKIP_REASONS, and `evaluate` only accepts one that is in NOT_REVIEWED_REASONS —
+  // adding to one list and not the other yields a silent UNKNOWN on every bot PR.
+  it('the bot-author reason is in BOTH lists, not just one', () => {
+    expect(SCOPE_SKIP_REASONS).toContain('pr_author_is_bot_not_allowlisted');
+    expect(NOT_REVIEWED_REASONS).toContain('pr_author_is_bot_not_allowlisted');
+  });
 });
 
 describe('deriveModels — per-lens ground truth (EHAC-2162, EHAC-2103)', () => {
