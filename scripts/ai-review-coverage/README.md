@@ -254,10 +254,32 @@ body content at all. **Do not "fix" this by widening the allowlist.**
 
 ### 4. `NOT_REVIEWED` is the single exit-0-without-coverage branch
 
-Closed reason allowlist, exactly two entries:
+Closed reason allowlist, **six entries**. `NOT_REVIEWED_REASONS` in `measure-review-coverage.mjs`
+is the source of truth and a test now holds this list equal to it — until 2026-08-25 this section
+claimed "exactly two entries" while the code carried five, having drifted through EHAC-2060 and
+EHAC-2231 without anyone updating it.
+
+Decided from the **actor/event precheck**:
 
 * `actor_not_in_actor_filter`
-* `actor_is_bot_not_allowlisted`
+* `actor_is_bot_not_allowlisted` — the *actor* is an unlisted bot
+
+Decided by the **`Resolve review scope` step**, before elek is invoked (`SCOPE_SKIP_REASONS`):
+
+* `no_files_in_review_scope` (EHAC-2060)
+* `pull_request_is_draft` (EHAC-2060)
+* `pr_author_is_bot_not_allowlisted` (EHAC-2294) — the pull request's *author* is an unlisted
+  bot, **whoever pushed the button**. Distinct from `actor_is_bot_not_allowlisted` because elek's
+  `isActorAllowed` reads `github.actor`: a human rebasing a Renovate branch made the bot
+  allowlist stop applying, and a six-lens council would read a regenerated lockfile. Measured
+  2026-08-22..24 across `eha_care` and `eha-care-infra`: 41 of 125 model runs — 33% of all
+  AI-review spend — were bot-authored pull requests, and **all 41 had a human as `github.actor`**.
+  Reusing the actor reason would have produced records naming a human next to a claim that the
+  actor was a bot.
+
+Decided by the **rollup**:
+
+* `all_changed_files_excluded` (EHAC-2231) — every changed file matched `exclude_paths`
 
 Any other reason falls through to `UNKNOWN` (red). The branch is reached **only** from the
 gate's own deterministic actor/event computation, never inferred from an empty elek output, and

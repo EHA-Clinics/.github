@@ -61,10 +61,34 @@ export const NOT_REVIEWED_REASONS = Object.freeze([
   // requests cannot read as a window of healthy real reviews — the EHAC-2165 lesson that the
   // greens can be the lie.
   'all_changed_files_excluded',
+  // EHAC-2294. The pull request's AUTHOR is an unlisted bot, decided by `Resolve review scope`
+  // from the API before elek is invoked.
+  //
+  // THIS WIDENS A DELIBERATELY CLOSED LIST, AND THAT IS THE DECISION THIS COMMENT RECORDS.
+  // The note above reserves widening for promotion time. It is taken here on measurement, not
+  // on convenience: over 2026-08-22..24 across eha_care and eha-care-infra, 41 of 125 model
+  // runs (33% of all AI-review spend) were bot-authored pull requests, and ALL 41 had a HUMAN
+  // as `github.actor`. Not one had the bot.
+  //
+  // `actor_is_bot_not_allowlisted` above cannot cover them and must not be reused to. elek's
+  // `isActorAllowed` (src/github/trigger.ts:82) reads `context.actor`, which is whoever pushed
+  // the button — so the moment a human rebases, pushes to, or reopens a Renovate branch, the
+  // bot allowlist stops applying and a six-lens council reads a regenerated lockfile. Filing
+  // that under the existing reason would put `actor: adothompson` next to a reason asserting
+  // the actor was a bot: a record that lies about its own cause. A separate reason keeps the
+  // record honest and keeps the two failure modes distinguishable in the corpus.
+  //
+  // It is a decline, not a pass: like every member of this list it buckets as `declined` in
+  // evaluateRecordSet, so a window of bot pull requests can never read as healthy real reviews.
+  'pr_author_is_bot_not_allowlisted',
 ]);
 
 /** The subset of NOT_REVIEWED_REASONS that the workflow decides, not the actor precheck. */
-export const SCOPE_SKIP_REASONS = Object.freeze(['no_files_in_review_scope', 'pull_request_is_draft']);
+export const SCOPE_SKIP_REASONS = Object.freeze([
+  'no_files_in_review_scope',
+  'pull_request_is_draft',
+  'pr_author_is_bot_not_allowlisted',
+]);
 
 /** Git settings we pin explicitly and record, so the measurement is reproducible. */
 export const GIT_CONFIG = Object.freeze({ 'core.autocrlf': 'false', 'diff.noprefix': 'false' });
