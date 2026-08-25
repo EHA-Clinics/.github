@@ -525,7 +525,19 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           SCOPE_PATHS: ${{ inputs.scope_paths }}
           IS_DRAFT: ${{ github.event.pull_request.draft }}
-          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          # EHAC-2294: `github.event.issue.number` is the middle term and it is LOAD-BEARING.
+          #
+          # On an `issue_comment` event there is no `github.event.pull_request`, and neither
+          # on-demand caller in eha_care or eha-care-infra passes `pr_number` (verified on
+          # both default branches). So PR_NUMBER was EMPTY on every `@ai-review` comment, and
+          # every lookup in this step was skipped: the author check below never ran, and the
+          # changed-file lookup 404'd into its treat-as-in-scope warning.
+          #
+          # Caught live rather than reasoned about — the first `@ai-review` after the author
+          # gate shipped ran a full council on a Renovate PR anyway (eha-care-infra #506, run
+          # 32849221664, cancelled once observed). A comment on a pull request carries the PR
+          # number as `issue.number`; that is the only place it appears on this event.
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
           ALLOWED_BOTS: ${{ inputs.allowed_bots }}
         run: |
           set -euo pipefail
