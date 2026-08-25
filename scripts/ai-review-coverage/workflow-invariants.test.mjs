@@ -206,6 +206,27 @@ describe('the review job exports the coverage record', () => {
     expect(decision).toBeLessThan(elek);
   });
 
+  // EHAC-2294 — the gate above was INERT on the comment path until this landed.
+  //
+  // On an `issue_comment` event there is no `github.event.pull_request`, and no on-demand
+  // caller in either consumer passes `pr_number`. PR_NUMBER was therefore empty, every lookup
+  // in the step was skipped, and `@ai-review` on a Renovate PR still bought a full council —
+  // observed live on eha-care-infra #506 (run 32849221664) the first time it was tried.
+  //
+  // A shipped control that is silently inert on one of its two trigger paths is the exact
+  // failure class this file exists to catch, so it is asserted rather than remembered.
+  it('resolves the PR number on the issue_comment path too, or the gate is inert there', () => {
+    const block = review().block;
+    const line = block.match(/^ {10}PR_NUMBER: (.+)$/m);
+    expect(line, 'PR_NUMBER is no longer declared in the scope step').not.toBeNull();
+    expect(line[1]).toContain('github.event.issue.number');
+    // Ordering matters: pull_request.number must still win where it exists, because
+    // issue.number is absent on pull_request events and would otherwise blank the value.
+    expect(line[1].indexOf('github.event.pull_request.number')).toBeLessThan(
+      line[1].indexOf('github.event.issue.number'),
+    );
+  });
+
   it('fails OPEN when the author lookup fails — a human PR is never silently skipped', () => {
     // The asymmetry is deliberate and is the reason this is asserted rather than assumed: a
     // needless council costs dollars, a silently skipped one costs a defect on the base
