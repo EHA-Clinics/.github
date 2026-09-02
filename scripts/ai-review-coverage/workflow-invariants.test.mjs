@@ -35,6 +35,15 @@ const ERROR_SUPPRESSION_KEYS = ['continue-on-error'];
 
 const source = () => readFileSync(WORKFLOW, 'utf8');
 
+/** Read a quoted workflow_call input default without depending on a YAML parser. */
+function stringInputDefault(input) {
+  const match = source().match(
+    new RegExp(`^ {6}${input}:\\n(?:(?!^ {6}[A-Za-z0-9_-]+:)[\\s\\S])*?^ {8}default: '([^']*)'`, 'm'),
+  );
+  if (!match) throw new Error(`quoted default for ${input} not found in ${WORKFLOW}`);
+  return match[1];
+}
+
 /** True for a `jobs.<id>:` line (two-space indent, bare key, nothing after the colon). */
 const isJobKeyLine = (line) => /^ {2}[A-Za-z0-9_-]+:\s*$/.test(line);
 
@@ -240,6 +249,24 @@ describe('the review job exports the coverage record', () => {
 
 // EHAC-2166 — the council model config, guarded on the two ways it has actually gone wrong.
 describe('council model configuration', () => {
+  it('assigns one distinct model to each lens, with GLM 5.3 Flash on Operations', () => {
+    const models = stringInputDefault('review_models').split(',').map((model) => model.trim());
+
+    expect(models).toEqual([
+      'deepseek/deepseek-v4-pro',
+      'xiaomi/mimo-v2.5-pro',
+      'deepseek/deepseek-v4-flash',
+      'openrouter/z-ai/glm-5.3-flash',
+    ]);
+    expect(new Set(models).size).toBe(4);
+    expect(stringInputDefault('validator_model')).toBe('deepseek/deepseek-v4-pro');
+  });
+
+  it('budgets GLM 5.3 Flash at the conservative standard rate', () => {
+    const rates = stringInputDefault('cost_rates').split(',');
+    expect(rates).toContain('openrouter/z-ai/glm-5.3-flash=0.15:0.50');
+  });
+
   // Model-AGNOSTIC by design. An earlier draft asserted a specific model version and was
   // wrong twice over: glm-5.2 had to be reverted within the hour, and then GLM left the
   // council entirely. A version-pinned invariant would have blocked both changes. What must
@@ -292,8 +319,7 @@ describe('council model configuration', () => {
 
   it('provider-qualifies any z-ai id, so pi cannot self-route it to NVIDIA', () => {
     // A bare `z-ai/*` id routes to NVIDIA (no key -> hang); deepseek/* and xiaomi/* already
-    // resolve to OpenRouter. No z-ai model is configured today, so this currently holds
-    // vacuously — kept deliberately as a trap for whoever reintroduces one.
+    // resolve to OpenRouter. GLM 5.3 Flash therefore carries an explicit provider prefix.
     const yaml = withoutComments(source());
     for (const m of yaml.matchAll(/z-ai\/[a-z0-9.\-]+/g)) {
       const idx = m.index ?? 0;

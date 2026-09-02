@@ -7,30 +7,11 @@
 # Structural safety: elek's MCP server only exposes create_inline_comment and
 # update_tracking_comment — there are no approve/merge/close code paths.
 #
-# ─── elek pin: v1.1.4 = 3748508413fb355ae696b8fa98d1075930d12106 (EHAC-2057) ───────────
-# The previous pin was an UNTAGGED main commit (88813716, 2026-06-16), chosen when no
-# release tag exposed the council+cost-control inputs. That is no longer true: v1.1.4's
-# action.yml input surface is a strict SUPERSET of everything this workflow passes, so the
-# tag replaces the untagged commit. v1.1.4 beats the old pin on the two mechanisms that
-# produced EHAC-2057, and beats `main` (cbb7202b) because main is untagged, unreleased and
-# its `src/review/diff-context.ts` is byte-identical to v1.1.4 — zero extra gain here.
-#
-# EHAC-2057 root cause, one line: `AI Review (Council)` reported a green pass on eha_care
-# PR #3515 while the entire 298-line tenant-isolation primitive sat outside the model's
-# prompt window — a raw 60,000-char `String.slice` of the diff (old pin
-# `src/review/strategy.ts:282`) dropped it, acceptance gates converted the missing context
-# into silence, and the changed-line threshold had silently downgraded council to a 2-lens
-# crosscheck so the check name reported a strategy that never ran.
-#
-# This workflow therefore emits a SECOND, separately-named signal — `AI Review Coverage` —
-# that goes red when a production-source file was truncated out of the review prompt. The
-# `AI Review (Council)` job keeps its existing name and pass/fail meaning: "review
-# incomplete" and "review broken" stay separate signals.
-#
-# Fault 3 warning, so nobody re-derives the idea: `ignore_paths` in `.elek.yml` is PROMPT
-# TEXT ONLY at every elek ref (there is no glob matcher anywhere in elek's source). It does
-# NOT filter `data.diff` and reclaims NO prompt budget. Path-sharding a review via
-# `config_path` + generated `ignore_paths` is structurally impossible.
+# ─── elek pin: eha-v1.4.1 (full SHA below) ─────────────────────────────────────
+# The EHA fork supplies the fail-closed coverage record, bounded council execution, and
+# pinned MCP dependencies used by this workflow. The separately named `AI Review Coverage`
+# job fails when a production-source file was omitted from the prompt or the requested
+# council did not execute. Keep the action and coverage-gate pins immutable and aligned.
 #
 # NOTE: We previously routed through the Databricks AI Gateway (provider: openai,
 # OpenAI-compatible). elek's pi client hung indefinitely on tool-enabled
@@ -116,45 +97,16 @@ on:
         description: 'elek review strategy. council = multi-lens review + validator reconciliation.'
       review_models:
         type: string
-        # EHAC-2166 — the council no longer uses GLM. Benchmarked directly against the
-        # OpenRouter API on 2026-08-10, identical ~79,000-char payload and prompt, no elek in
-        # the loop:
-        #
-        #   deepseek/deepseek-v4-pro       6.7s   reasoning=0      1,649 chars
-        #   xiaomi/mimo-v2.5-pro          23.0s   reasoning=0      real content
-        #   deepseek/deepseek-v4-flash    39.0s   reasoning=3,170  1,395 chars
-        #   qwen/qwen3.7-plus            155.6s   reasoning=9,000  NOTHING
-        #   z-ai/glm-5.1                 620.0s   NEVER RETURNED   NOTHING
-        #
-        # glm-5.1 did not return inside 620s on a payload deepseek answered in 6.7 — ~90x —
-        # which is exactly the 600s SIGTERM seen in CI. It is a MODEL-CLASS problem, not diff
-        # size and not latency jitter: the failing models spend their whole budget on reasoning
-        # tokens and emit no content. Reasoning per se is fine — deepseek-v4-flash reasons and
-        # still converges. Failing to CONVERGE is the defect.
-        #
-        # Config could not repair it. glm-5.1 at reasoning effort "low" still produced zero
-        # content in 284s; at "medium" it converged but needed 223s PER TURN against a 600s
-        # budget with 14-25 turns observed in production. Both are hopeless.
-        #
-        # The replacement field was constrained by the account's model allowlist, which returns
-        # "404 No endpoints available matching your guardrail restrictions and data policy" for
-        # z-ai/glm-5.2, z-ai/glm-5, z-ai/glm-4.7, qwen/qwen3.8-max, qwen/qwen3.7-flash,
-        # qwen/qwen3.6-*, qwen/qwen3.5-plus and moonshotai/kimi-k2-thinking. Not the provider
-        # allowlist and not data_collection — both were tested and excluded. qwen3.7-max IS
-        # reachable and does converge, but at 127.8s and $1.475/$4.425 it is as slow and as
-        # expensive as what it would replace.
-        #
-        # deepseek-v4-flash is therefore the third lens: it converges, it is $0.14/$0.28 —
-        # 90%/94% cheaper than glm-5.1 — and it removes the last sub-1M-context member, so the
-        # whole council is now ~1M+ and the prompt-budget bottleneck is gone too. The tradeoff
-        # taken knowingly: two of the three share the DeepSeek family, so vendor diversity is
-        # lower. A third model that fails half the time was not providing diversity either.
-        default: 'deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,deepseek/deepseek-v4-flash'
+        # EHAC-2466 — GLM 5.3 Flash is an additive Operations lens trial. Keeping the three
+        # established models in their existing positions makes the comparison observable in
+        # production without changing the Risk, Design, or Tests lanes. The validator remains
+        # DeepSeek V4 Pro, so this adds one model run but does not change validation semantics.
+        default: 'deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,deepseek/deepseek-v4-flash,openrouter/z-ai/glm-5.3-flash'
         description: 'Comma-separated OpenRouter model ids for the council lenses (round-robin assigned).'
       validator_model:
         type: string
         default: 'deepseek/deepseek-v4-pro'
-        description: 'Model that reconciles/validates lens findings before posting (openrouter/ prefix forces OpenRouter routing for the GLM id).'
+        description: 'Model that reconciles and validates lens findings before posting.'
       severity_threshold:
         type: string
         default: 'important'
@@ -175,14 +127,11 @@ on:
         # exists for the worst case, not the typical one.
       cost_rates:
         type: string
-        # EHAC-2166: re-derived from the OpenRouter models API on 2026-08-10, not carried over.
-        # The old glm-5.1 entry read 0.98:3.08 while OpenRouter charged 1.40:4.40, so every GLM
-        # run was costed ~30% under actual and max_cost_usd enforced a budget against numbers
-        # that were not the price. GLM is gone; these are the two models whose pricing elek
-        # cannot resolve from the provider. deepseek-v4-pro resolves natively, as before.
-        # deepseek is also 0.435:0.87 and is omitted here for the same reason it always was —
-        # elek only needs rates for models whose pricing it cannot resolve from the provider.
-        default: 'xiaomi/mimo-v2.5-pro=0.435:0.87,deepseek/deepseek-v4-flash=0.14:0.28'
+        # EHAC-2466: GLM 5.3 Flash is budgeted conservatively at its standard $0.15/$0.50
+        # per-million-token rates rather than the lower introductory OpenRouter promotion.
+        # DeepSeek V4 Pro resolves natively; the remaining entries are explicit fallbacks for
+        # models whose pricing elek may not resolve from the provider.
+        default: 'xiaomi/mimo-v2.5-pro=0.435:0.87,deepseek/deepseek-v4-flash=0.14:0.28,openrouter/z-ai/glm-5.3-flash=0.15:0.50'
         description: 'Per-model cost rates as model=inputPerMillion:outputPerMillion, comma-separated.'
       mode:
         type: string
