@@ -97,10 +97,11 @@ on:
         description: 'elek review strategy. council = multi-lens review + validator reconciliation.'
       review_models:
         type: string
-        # EHAC-2466 — GLM 5.3 Flash is an additive Operations lens trial. Keeping the three
-        # established models in their existing positions makes the comparison observable in
-        # production without changing the Risk, Design, or Tests lanes. The validator remains
-        # DeepSeek V4 Pro, so this adds one model run but does not change validation semantics.
+        # EHAC-2466 — GLM 5.3 Flash is a distinct-model Operations lens trial. Keeping the
+        # three established models in their existing positions makes the comparison observable
+        # without changing the Risk, Design, or Tests lanes. It replaces the Operations lane's
+        # previous round-robin model, so the number of executions and validation semantics stay
+        # unchanged; DeepSeek V4 Pro remains the validator.
         default: 'deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,deepseek/deepseek-v4-flash,openrouter/z-ai/glm-5.3-flash'
         description: 'Comma-separated OpenRouter model ids for the council lenses (round-robin assigned).'
       validator_model:
@@ -766,7 +767,7 @@ jobs:
           # code change underneath a pinned caller — the exact pin-drift class EHAC-2057 is
           # about. EHA-Clinics/.github is PUBLIC, so the default GITHUB_TOKEN reads it from
           # either private caller and no new secret is introduced.
-          ref: 0c058b5e2f809ef780d3ec6ad3005333ddaa630a
+          ref: c2a4744e526507d0fcc37f51937da11b8c13bb73
           path: .ai-review-gate
           sparse-checkout: scripts/ai-review-coverage
           persist-credentials: false
@@ -913,7 +914,7 @@ jobs:
         with:
           repository: EHA-Clinics/.github
           # Same pinned SHA as the producer, for the same reason (T-2057-01).
-          ref: 0c058b5e2f809ef780d3ec6ad3005333ddaa630a
+          ref: c2a4744e526507d0fcc37f51937da11b8c13bb73
           path: .ai-review-gate
           sparse-checkout: scripts/ai-review-coverage
           persist-credentials: false

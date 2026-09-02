@@ -13,7 +13,7 @@ A council run has two phases:
 1. **4 read-only lens reviewers** — Risk, Design, Tests, and Operations — run in parallel with no MCP access. The models are assigned in list order: Risk → DeepSeek V4 Pro, Design → MiMo V2.5 Pro, Tests → DeepSeek V4 Flash, Operations → GLM 5.3 Flash.
 2. **A DeepSeek V4 Pro validator/synthesizer** treats every lens finding as a hypothesis, drops speculative/cosmetic/duplicate/stale items, requires severity + confidence + evidence + impact + fix, and posts **one** deduplicated tracking comment plus inline comments on changed lines.
 
-GLM 5.3 Flash is an additive Operations-lens trial under EHAC-2466. Keep the other lane assignments and validator stable while evaluating its latency, reliability, cost, and unique findings in real PRs.
+GLM 5.3 Flash is an additive model-diversity trial assigned to the existing Operations lens under EHAC-2466; it does not increase the number of model executions. Keep the other lane assignments and validator stable while evaluating its latency, reliability, cost, and unique findings in real PRs.
 
 The engine talks to models through **OpenRouter direct** (`provider: openrouter`), not the Databricks AI Gateway. OpenRouter is elek's tested path for tool-enabled reasoning models.
 
