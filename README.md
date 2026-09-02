@@ -10,8 +10,10 @@ AI code review workflow powered by [elek](https://github.com/selimozten/elek)'s 
 
 A council run has two phases:
 
-1. **4 read-only lens reviewers** — Risk, Design, Tests, and Operations — run in parallel with no MCP access. Each lens is round-robined onto a model (Risk → DeepSeek V4-Pro, Design → MiMo V2.5-Pro, Tests → GLM 5.1, Operations → DeepSeek V4-Pro), giving 3-lab model diversity.
-2. **A single GLM 5.1 validator/synthesizer** treats every lens finding as a hypothesis, drops speculative/cosmetic/duplicate/stale items, requires severity + confidence + evidence + impact + fix, and posts **one** deduplicated tracking comment plus inline comments on changed lines.
+1. **4 read-only lens reviewers** — Risk, Design, Tests, and Operations — run in parallel with no MCP access. The models are assigned in list order: Risk → DeepSeek V4 Pro, Design → MiMo V2.5 Pro, Tests → DeepSeek V4 Flash, Operations → GLM 5.3 Flash.
+2. **A DeepSeek V4 Pro validator/synthesizer** treats every lens finding as a hypothesis, drops speculative/cosmetic/duplicate/stale items, requires severity + confidence + evidence + impact + fix, and posts **one** deduplicated tracking comment plus inline comments on changed lines.
+
+GLM 5.3 Flash is an additive Operations-lens trial under EHAC-2466. Keep the other lane assignments and validator stable while evaluating its latency, reliability, cost, and unique findings in real PRs.
 
 The engine talks to models through **OpenRouter direct** (`provider: openrouter`), not the Databricks AI Gateway. OpenRouter is elek's tested path for tool-enabled reasoning models.
 
@@ -25,12 +27,12 @@ jobs:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
     with:
       review_strategy: 'council'
-      review_models: 'deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,deepseek/deepseek-v4-flash'
+      review_models: 'deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,deepseek/deepseek-v4-flash,openrouter/z-ai/glm-5.3-flash'
       validator_model: 'deepseek/deepseek-v4-pro'
       thinking: 'high'
       severity_threshold: 'important'
-      max_cost_usd: '0.25'
-      cost_rates: 'xiaomi/mimo-v2.5-pro=0.435:0.87,deepseek/deepseek-v4-flash=0.14:0.28'
+      max_cost_usd: '1.00'
+      cost_rates: 'xiaomi/mimo-v2.5-pro=0.435:0.87,deepseek/deepseek-v4-flash=0.14:0.28,openrouter/z-ai/glm-5.3-flash=0.15:0.50'
 ```
 
 **Inputs:**
@@ -38,13 +40,13 @@ jobs:
 | Input | Type | Default | Description |
 |-------|------|---------|-------------|
 | `review_strategy` | string | `council` | Review strategy: `council` (4 lenses + validator), `crosscheck`, or `solo`. |
-| `review_models` | string | `deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,deepseek/deepseek-v4-flash` | Comma-separated OpenRouter model IDs round-robined across the 4 lenses. |
+| `review_models` | string | `deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,deepseek/deepseek-v4-flash,openrouter/z-ai/glm-5.3-flash` | Comma-separated OpenRouter model IDs assigned in order to Risk, Design, Tests, and Operations. |
 | `validator_model` | string | `deepseek/deepseek-v4-pro` | Model that synthesizes lens findings and posts the single deduplicated review. |
 | `thinking` | string | `high` | Reasoning effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. |
 | `max_turns` | number | `30` | Max conversation turns per reviewer. Raised from `20` on 2026-08-16: the `tests` lane was flaking against the ceiling rather than the diff, failing twice at 20 and then passing at 18 on a near-identical diff. |
 | `severity_threshold` | string | `important` | Minimum severity to post (`info`, `important`, `critical`). |
 | `max_cost_usd` | string | `1.00` | Per-PR cost guardrail; elek auto-downgrades council → crosscheck → solo on large diffs to stay within budget. |
-| `cost_rates` | string | `xiaomi/mimo-v2.5-pro=0.435:0.87,deepseek/deepseek-v4-flash=0.14:0.28` | `model=input:output` USD-per-million-token overrides for models without built-in OpenRouter pricing. DeepSeek uses OpenRouter's built-in rates. |
+| `cost_rates` | string | `xiaomi/mimo-v2.5-pro=0.435:0.87,deepseek/deepseek-v4-flash=0.14:0.28,openrouter/z-ai/glm-5.3-flash=0.15:0.50` | `model=input:output` USD-per-million-token overrides. The GLM rate uses conservative standard pricing rather than a temporary promotion. |
 | `mode` | string | `review` | `review` (read-only) or `review+edit` (pushes fixes). |
 | `model` | string | `deepseek/deepseek-v4-pro` | Single-model override for `solo` strategy; ignored under `council`. |
 | `trigger_phrase` | string | `@ai-review` | Comment phrase that triggers an on-demand review. |
@@ -52,7 +54,7 @@ jobs:
 | `actor_filter` | string | (unset) | Allowlist of **human** actors. **Authoritative and exclusive when set**: `isActorAuthorized` returns the list result and never consults repo permissions, so anyone absent is denied. When unset, falls back to `OWNER`/`MEMBER`/`COLLABORATOR` and then a repo-permission lookup. |
 | `openrouter_provider_preferences` | string | (unset) | **EHAC-2280.** OpenRouter provider-routing preferences as a JSON object string, merged into the request's `provider` field. Parsed **fail-closed** in elek: unparseable JSON, a non-object, or any key outside the thirteen documented routing keys refuses the run rather than routing unmanaged. Unset means no `provider` object is sent and routing is exactly as before. Keep `allow_fallbacks: true` — excluding endpoints trades a latency problem for an availability one. Endpoint identity does not predict latency: the same endpoint (`deepinfra/fp8`) was measured at 386 ms and 10,277 ms seconds apart, a wider spread than between two different endpoints, which is why `preferred_min_throughput` (deprioritises, over a rolling window) is preferred to `order` (pins). |
 | `reasoning_max_tokens` | string | (unset) | **EHAC-2280.** Upper bound on reasoning tokens per model run, passed to elek. Unset fleet-wide by design — the spend only became measurable with `native_tokens_reasoning` (observed 0 vs 10 on the same prompt across two endpoints), and a guessed cap truncates a reasoning model mid-thought for a saving nobody has sized. Set it only once your own telemetry supports the number. |
-| `allowed_bots` | string | (unset) | Allowlist of bot actors (`*` permits all). Without it, a bot-authored PR cannot be reviewed at all. ⚠ Setting `allowed_bots` **without** `actor_filter` on a post-v1.1.4 pin flips the actor gate to strict-deny for humans — see the caution below. |
+| `allowed_bots` | string | (unset) | Allowlist of bot actors (`*` permits all). Bot authorship is evaluated independently from human actor trust; without this input, bot-authored PRs report `NOT_REVIEWED`. |
 | `job_timeout_minutes` | number | `30` | Wall-clock ceiling for the WHOLE review job — the council plus the validator, not one model run. The real bound is serial: `setup + reviewer_cap + validator_cap`, because lenses run in parallel but the validator runs after them. A job killed by this cap loses the coverage record entirely, so raise it **before** raising `run_timeout_seconds`, never after. |
 | `run_timeout_seconds` | string | `600` | Per-run budget for the elek step. Cannot exceed the job's own cap. |
 | `stall_timeout_seconds` | string | `0` | **Stream-idle watchdog**, passed to elek. Terminates a model run that emits no pi stream event for this long and reports failure class `stall` — which `run_timeout_seconds` alone cannot distinguish from genuinely slow work. `0` disables it. Do not set it from intuition: calibrate from `maxIdleSecondsObserved` on your own successful runs, then use ≥3× the p99 idle gap, well under `run_timeout_seconds`. |
@@ -82,11 +84,11 @@ jobs:
 1. **Set the secret.** Add `OPENROUTER_API_KEY` as an org-level GitHub Actions secret (Settings → Secrets and variables → Actions → New organization secret), scoped to all repos, or as a repo-level secret.
 2. **Add a caller workflow.** Create `.github/workflows/ai-code-review.yml` in your repo with a single `review` job that references the shared workflow at a full commit SHA pin (`@<SHA-PIN>`) and passes the council `with:` inputs above.
 3. **(Optional) Add `.elek.yml`.** Drop a repo-local `.elek.yml` to set `knowledge_paths`, `ignore_paths`, and `instructions` so the council reads your standards and skips generated/fixture files.
-4. **Open a test PR.** Open a small PR and confirm the council posts one tracking comment with the four lenses running in parallel before finalizing the SHA pin org-wide.
+4. **Open a test PR.** Open a small PR and confirm the council posts one tracking comment with the four lenses running in parallel before finalizing the SHA pin org-wide. The automatic caller should omit `actor_filter` so trusted repository permissions remain authoritative; reserve a static allowlist for repositories that intentionally need stricter access.
 
 ## Cost
 
-A council run costs roughly **~$0.15–0.20/PR** (up from ~$0.04 for the old dual-solo setup). The `max_cost_usd` guardrail auto-downgrades the strategy on large diffs to keep cost bounded.
+The `max_cost_usd` guardrail bounds each review. Actual spend varies with diff size and model output; use the emitted coverage record and OpenRouter usage when evaluating the GLM 5.3 Flash trial.
 
 ## Security
 
