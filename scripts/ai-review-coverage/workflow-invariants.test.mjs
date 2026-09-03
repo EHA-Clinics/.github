@@ -19,12 +19,8 @@ import { describe, expect, it } from 'vitest';
 import { ELEK_REF_VERIFIED } from './elek-prompt-budget.mjs';
 import { NOT_REVIEWED_REASONS } from './measure-review-coverage.mjs';
 import {
-  GATE_SCRIPT_DIR,
-  changedPathsFromGit,
   findSuppressionKeys,
-  inspectGateRefIdentity,
-  makeGitTreeResolver,
-  runGit,
+  inspectGateCheckoutIdentity,
 } from './gate-ref-identity.mjs';
 
 const WORKFLOW = join(import.meta.dirname, '..', '..', '.github', 'workflows', 'ai-code-review.yml');
@@ -79,9 +75,8 @@ describe('the AI Review Coverage job cannot be suppressed and cannot be skipped'
 
   it('exists as its own top-level job named exactly "AI Review Coverage"', () => {
     const { key, block } = gate();
-    // The job NAME is a branch-protection API contract string: the required-check context
-    // is `<caller job name> / AI Review Coverage`. Renaming it breaks 4 protection entries
-    // across 2 repos after promotion. Locked by CONTEXT D-01.
+    // The job name is an observability contract consumed by dashboards and automation.
+    // The check is permanently advisory and is not a branch-protection requirement.
     expect(key).toBe('coverage-gate');
     expect(block).toMatch(/^ {4}name: AI Review Coverage(?: |$)/m);
   });
@@ -159,10 +154,9 @@ describe('the review job exports the coverage record', () => {
 
   // EHAC-2060 — scope must be a VERDICT inside this job, never a skip upstream.
   //
-  // The whole promotion blocker was that a caller-side `on.pull_request.paths` filter or a
-  // draft `if:` prevents the workflow dispatching, so no check run is created and a required
-  // context stays pending forever. These invariants keep the decision here, where it can
-  // still produce a green NOT_REVIEWED.
+  // A caller-side `on.pull_request.paths` filter or draft `if:` prevents the workflow from
+  // dispatching, making an intentional decline indistinguishable from a missing run. These
+  // invariants keep the decision here, where it can produce a named NOT_REVIEWED result.
   it('resolves review scope in a step, so an out-of-scope PR still reports', () => {
     const block = review().block;
     expect(block).toContain('id: scope');
@@ -215,6 +209,16 @@ describe('the review job exports the coverage record', () => {
     expect(decision).toBeLessThan(elek);
   });
 
+  it('declines closed or merged pull requests before invoking elek', () => {
+    const block = review().block;
+    const decision = block.search(/^ *echo "skip_reason=pull_request_not_open"/m);
+    const elek = block.search(/^ {6}- name: AI Code Review via OpenRouter$/m);
+    expect(block).toContain('PR_STATE');
+    expect(decision).toBeGreaterThan(-1);
+    expect(elek).toBeGreaterThan(-1);
+    expect(decision).toBeLessThan(elek);
+  });
+
   // EHAC-2294 — the gate above was INERT on the comment path until this landed.
   //
   // On an `issue_comment` event there is no `github.event.pull_request`, and no on-demand
@@ -242,7 +246,7 @@ describe('the review job exports the coverage record', () => {
     // branch. Same posture as the `could not list changed files` branch.
     const block = review().block;
     expect(block).toMatch(
-      /could not resolve the pull request author — treating it as human so the review still runs/,
+      /could not resolve the pull request state and author — treating it as open and human so the review still runs/,
     );
   });
 });
@@ -369,63 +373,18 @@ describe('caller-shape guard is wired and cannot be silently suppressed (EHAC-20
   });
 });
 
-describe('every cross-repo gate checkout is pinned to a SHA, never a branch', () => {
-  it('pins ref: to a 40-hex SHA in both gate checkouts', () => {
-    const refs = [...source().matchAll(/^ {10}ref: (\S+)\s*$/gm)].map((m) => m[1]);
-    // T-2057-01: a floating `ref: main` would let the gate's code change underneath a
-    // pinned caller — the pin-drift class this ticket is about.
-    expect(refs.length).toBe(2);
-    for (const ref of refs) {
-      expect(ref).toMatch(/^[0-9a-f]{40}$/);
-      expect(ref).not.toBe('main');
-    }
-    // Both checkouts must reference the SAME commit of the gate code.
-    expect(new Set(refs).size).toBe(1);
-  });
-
-  // R13 — the SHA-shape assertion above proves the ref LOOKS like a commit. It does not
-  // prove the commit holds the gate code this suite is testing. Those are different claims,
-  // and the gap between them is a change to a runtime gate module that ships, passes all of
-  // these specs, and never executes.
-  //
-  // Disposition is SPEC Q6, implemented in gate-ref-identity.mjs: an error on the default
-  // branch and on a PR that does not touch the gate scripts, a loud WARNING on a PR that
-  // does — because the pin is self-referential and PR-1 of the ordered pair legitimately
-  // carries a stale pin at review time.
-  //
-  // ⚠ MEASURED 2026-08-11: the pins are one commit behind HEAD and the trees DIFFER. This
-  // case is expected to WARN here (this branch modifies the gate scripts) and to ERROR on
-  // main after merge. That red is the finding. It is cleared by BUMPING THE PINS in the
-  // follow-up commit — never by relaxing the comparison, excluding a path, or suppressing
-  // the step.
-  it('proves each pinned ref holds the gate-script tree under test (R13)', () => {
-    const repoRoot = join(import.meta.dirname, '..', '..');
-    const head = runGit(['rev-parse', `HEAD:${GATE_SCRIPT_DIR}`], repoRoot);
-
-    // A read that ERRORS while resolving a tree is a FAILURE, never a skip. Letting this
-    // spec pass when it could not look would recreate, inside the suite that exists to
-    // forbid unfailable checks, exactly the defect it forbids.
-    expect(head.status, `git rev-parse HEAD:${GATE_SCRIPT_DIR} failed: ${head.stderr}`).toBe(0);
-
-    const findings = inspectGateRefIdentity({
-      workflowSource: source(),
-      headTree: head.stdout.trim(),
-      changedPaths: changedPathsFromGit({ cwd: repoRoot }),
-      eventName: process.env.GITHUB_EVENT_NAME ?? 'pull_request',
-      resolveTree: makeGitTreeResolver({ cwd: repoRoot }),
-    });
-
-    for (const warning of findings.filter((f) => f.level === 'warning')) {
-      process.stdout.write(`::warning::${warning.code} ${warning.message}\n`);
-    }
-    const errors = findings.filter((f) => f.level === 'error');
-    expect(errors.map((e) => `${e.code} ${e.message}`)).toEqual([]);
+describe('every gate checkout executes the called workflow commit', () => {
+  it('uses job.workflow_repository and job.workflow_sha in both gate checkouts', () => {
+    expect(inspectGateCheckoutIdentity(source())).toEqual([]);
+    expect(
+      inspectGateCheckoutIdentity(source().replace('ref: ${{ job.workflow_sha }}', 'ref: main')),
+    ).toEqual([expect.objectContaining({ code: 'GATE-CHECKOUT-REF' })]);
   });
 
   it('sparse-checks-out only the gate directory, with credentials not persisted', () => {
     const text = source();
     expect([...text.matchAll(/^ {10}sparse-checkout: scripts\/ai-review-coverage\s*$/gm)]).toHaveLength(2);
-    expect([...text.matchAll(/^ {10}repository: EHA-Clinics\/\.github\s*$/gm)]).toHaveLength(2);
+    expect([...text.matchAll(/^ {10}repository: \$\{\{ job\.workflow_repository \}\}\s*$/gm)]).toHaveLength(2);
     expect([...text.matchAll(/^ {10}persist-credentials: false\s*$/gm)].length).toBeGreaterThanOrEqual(3);
   });
 });
@@ -569,23 +528,22 @@ describe('the tests workflow is itself unsuppressed', () => {
   // resolution failure is (correctly) a finding, the identity assertion would red for a
   // reason unrelated to pin identity. That is the state in which someone weakens the rule to
   // clear it, so the depth is part of the assertion rather than an incidental setting.
-  it('checks out full history, so the identity assertion can resolve the pinned refs', () => {
+  it('checks out only the revision under test; job context supplies runtime identity', () => {
     const text = readFileSync(TESTS_WORKFLOW, 'utf8');
-    expect(text).toMatch(/^ {10}fetch-depth: 0\s*$/m);
+    expect(text).toMatch(/^ {10}fetch-depth: 1\s*$/m);
   });
 });
 
 /**
- * The two job names in this workflow are a BRANCH-PROTECTION INTERFACE CONTRACT: a required
- * context is matched by name, so renaming one silently detaches protection in every
- * consuming repository — the check simply stops being reported and the PR stops being
- * gated, with no error anywhere.
+ * The two job names in this workflow are an OBSERVABILITY INTERFACE CONTRACT: dashboards
+ * and automation match the context by name, so renaming one silently fragments telemetry.
+ * These checks remain permanently advisory and are not branch-protection requirements.
  *
  * Asserted STRUCTURALLY, as four-space `name:` keys inside a job block. A `grep` for the
  * name would also be satisfied by the several PROSE COMMENTS in this file that discuss the
  * job names, so it could pass with the real job renamed out from under it.
  */
-describe('the review job names are unchanged (branch-protection interface contract)', () => {
+describe('the review job names are unchanged (observability interface contract)', () => {
   const jobNames = () => [...source().matchAll(/^ {4}name: (.+?)\s*$/gm)].map((m) => m[1]);
 
   it('still declares exactly the two named review jobs', () => {
@@ -753,9 +711,9 @@ describe('the stall watchdog and the degradation tolerance are wired end to end'
     expect(source()).toMatch(/^ {6}stall_timeout_seconds:[\s\S]{0,3000}?^ {8}default: '0'\s*$/m);
   });
 
-  it('keeps the two review job names unchanged (branch-protection contract)', () => {
-    // Re-asserted HERE as well as in its own describe, because this change touches both jobs'
-    // env blocks and the required context string is `<caller job name> / AI Review Coverage`.
+  it('keeps the two review job names unchanged (observability contract)', () => {
+    // Re-asserted HERE as well as in its own describe because this change touches both jobs'
+    // env blocks and dashboards consume the exact emitted context names.
     expect(source()).toMatch(/^ {4}name: AI Review Coverage\s*$/m);
     expect(source()).toMatch(/^ {4}name: AI Code Review \(\$\{\{ inputs\.review_strategy \}\}\)\s*$/m);
   });
@@ -910,8 +868,8 @@ describe('EHAC-2280 — the coverage record is uploaded as a first-class artifac
  *
  * That is not a documentation nicety. This list is the ONE branch that exits 0 without a
  * coverage claim, the README is where its members are justified, and the code itself says
- * widening it is "a promotion-time decision, not an implementation detail". A promotion
- * decision cannot be taken against a list that does not say what it contains.
+ * widening it is an operating-policy decision, not an implementation detail. That decision
+ * cannot be taken against a list that does not say what it contains.
  */
 describe('the README documents the NOT_REVIEWED allowlist accurately (EHAC-2294)', () => {
   const readmeText = () =>

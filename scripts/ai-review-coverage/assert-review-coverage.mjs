@@ -606,7 +606,7 @@ export function evaluate({ reviewResult, coverageRaw, env = process.env }) {
 
   if (verdict === 'NOT_REVIEWED') {
     lines.push(
-      `::warning::NOT_REVIEWED — ${notReviewed.reason} (actor "${notReviewed.actor ?? '?'}"). No review was requested, so there is no coverage claim to audit. This is the one deliberate exit-0-without-coverage branch; widening its reason allowlist is a promotion-time decision.`,
+      `::warning::NOT_REVIEWED — ${notReviewed.reason} (actor "${notReviewed.actor ?? '?'}"). No review was requested, so there is no coverage claim to audit. This is the one deliberate exit-0-without-coverage branch; widening its reason allowlist requires an explicit operating-policy decision.`,
     );
     summary.push(`> No review was requested (\`${notReviewed.reason}\`).`);
     return { exitCode: 0, verdict, lines, summary };

@@ -7,7 +7,7 @@
 # Structural safety: elek's MCP server only exposes create_inline_comment and
 # update_tracking_comment — there are no approve/merge/close code paths.
 #
-# ─── elek pin: eha-v1.4.1 (full SHA below) ─────────────────────────────────────
+# ─── elek pin: eha-v1.4.2 (full immutable SHA below) ──────────────────────────
 # The EHA fork supplies the fail-closed coverage record, bounded council execution, and
 # pinned MCP dependencies used by this workflow. The separately named `AI Review Coverage`
 # job fails when a production-source file was omitted from the prompt or the requested
@@ -120,7 +120,7 @@ on:
         # does not warn: selectReviewPlanWithinBudget DOWNGRADES council -> crosscheck -> solo,
         # which makes strategy.requested != strategy.executed, which the coverage gate reports
         # as U3 -> UNKNOWN -> exit 1. So a cap set near the true cost converts a normal review
-        # into a red required check. Anchored to a measured run: kemiqa PR #362 logged
+        # into a red advisory coverage result. Anchored to a measured run: kemiqa PR #362 logged
         # planned_minimum_input_cost $0.1392 against a 200,000-char budget with a 4-lens council
         # plus validator; the packer's default budget is now 320,000, which scales that to
         # ~$0.223 against the old $0.25 cap — inside the noise. Real cost falls well below 1.00
@@ -137,7 +137,7 @@ on:
       mode:
         type: string
         default: 'review'
-        description: 'review (read-only) or review+edit (pushes fixes to pi/* branch)'
+        description: 'review or review+edit; both currently use the same read-only surface'
       max_council_changed_lines:
         type: string
         default: '0'
@@ -165,11 +165,8 @@ on:
         # Restores inline PR comments, which this workaround has been costing fleet-wide.
         default: '0'
         description: >
-          EHAC-2165 workaround, defaulted ON because reviews are currently 100% broken without
-          it. '1' makes pi run --no-extensions so it never loads pi-mcp-adapter, whose
-          floating install has been failing every real review since 2026-08-09. Costs inline
-          comments; the sticky review comment is unaffected. Set to '0' once EHAC-2165 is
-          resolved (durable fix: an elek ref that installs with `npm ci` — see EHAC-2059).
+          Emergency compatibility switch. '1' disables MCP and inline review comments;
+          '0' uses the lockfile-pinned adapter and is the supported default.
       run_timeout_seconds:
         type: string
         default: '600'
@@ -271,8 +268,8 @@ on:
           happened. Passed to BOTH elek and the coverage gate, which evaluate it independently.
 
           A council is a redundancy mechanism. Scoring it by unanimity-of-availability throws that
-          redundancy away: with six model runs a single hung request reds a REQUIRED check, which
-          makes the council strictly less reliable than the least reliable model in it.
+          redundancy away: with six model runs a single hung request discards otherwise useful
+          review evidence and makes the council less reliable than its least reliable model.
 
           NEVER tolerated, at any value: a failed validator or validator-review run (nothing
           audited or reconciled the findings), a wiped reviewer panel (nothing read the diff), a
@@ -350,8 +347,8 @@ on:
           EHAC-2060. Comma-separated globs describing which changed files warrant a review,
           evaluated INSIDE this workflow so an out-of-scope PR yields a green NOT_REVIEWED
           check instead of no check at all. Callers must express scope here rather than via
-          `on.pull_request.paths`: a paths-filtered workflow never dispatches, so it can never
-          host a required status check. Empty means every file is in scope.
+          `on.pull_request.paths`: a paths-filtered workflow never dispatches, so "not applicable"
+          is indistinguishable from a broken integration. Empty means every file is in scope.
       pr_number:
         type: string
         default: ''
@@ -366,7 +363,7 @@ on:
           trimmed.
 
           AUTHORITATIVE AND EXCLUSIVE FOR HUMANS — verified in
-          EHA-Clinics/elek@ed50490e src/github/trigger.ts:82-140, which is the ref the elek
+          EHA-Clinics/elek@3429e4a src/github/trigger.ts, which is the ref the elek
           step below actually installs. Setting this input NARROWS the human trigger surface
           to exactly the listed names:
 
@@ -399,7 +396,7 @@ on:
     secrets:
       OPENROUTER_API_KEY:
         required: true
-        description: 'OpenRouter API key (same key that backs the Databricks AI Gateway external-model endpoints)'
+        description: 'Dedicated OpenRouter API key for the advisory AI-review workflow'
 
 permissions:
   contents: read
@@ -416,7 +413,7 @@ jobs:
       # what we measure (core.autocrlf, diff.noprefix, .gitattributes diff drivers,
       # diff.renames, the two-dot fallback, elek's own --depth=100 shallow boundary).
       coverage_json: ${{ steps.coverage.outputs.coverage_json }}
-    # 10 min was too tight: dual-model thinking:high reviews of large diffs were
+    # 10 min was too tight: multi-model thinking:high reviews of large diffs were
     # killed mid-run (job cancelled before posting), leaving stuck "analyzing…"
     # tracking comments. 20 gave headroom for the full-history checkout + review.
     #
@@ -436,8 +433,7 @@ jobs:
     # converted from a turn-ceiling FAILURE into a job CANCELLATION — strictly worse: a
     # turn-ceiling failure still emits a coverage record, whereas a cancelled job yields
     # `verdict: UNKNOWN` with `input_tokens: null` and no evidence at all. On kemiqa the
-    # coverage check is a REQUIRED context, so that trade would block merges rather than
-    # just lose a review.
+    # coverage result is advisory, but cancellation still loses the review and its evidence.
     #
     # Costs nothing on the common path: GitHub bills elapsed minutes, not the cap, and the
     # median run is under 4 minutes. It only changes the outcome for runs that would
@@ -447,19 +443,17 @@ jobs:
     timeout-minutes: ${{ inputs.job_timeout_minutes }}
     steps:
       - name: Checkout PR
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
       # EHAC-2060 — turn "the review did not apply" from an ABSENT check into a GREEN one.
       #
-      # A required status context that is never reported stays pending forever, so a caller
-      # that suppresses this workflow with `on.pull_request.paths` or a draft `if:` can never
-      # host a required check: measured on eha_care #3574/#3576/#3554 (0 in-scope files), no
-      # `AI Review Coverage` check run was created at all. Promotion in that state would leave
-      # every docs-only PR permanently unmergeable — a gate that cannot PASS, which breaks the
-      # same property as one that cannot fail.
+      # A caller that suppresses this workflow with `on.pull_request.paths` or a draft `if:`
+      # cannot report a stable status: measured on eha_care #3574/#3576/#3554 (0 in-scope
+      # files), no `AI Review Coverage` check run was created at all. That made "not
+      # applicable" and "workflow missing" indistinguishable.
       #
       # So scope and draft state are evaluated HERE, as a verdict, instead of upstream as a
       # skip. The job always runs; only the elek step below is conditional. Cost is unchanged:
@@ -500,7 +494,8 @@ jobs:
             exit 0
           fi
 
-          # EHAC-2294 — decline a BOT-AUTHORED pull request, whoever pushed the button.
+          # Resolve PR state and authorship in one API read. A comment can arrive after merge;
+          # that is a deterministic decline, not a reason to spend model tokens on an empty diff.
           #
           # `allowed_bots` alone cannot do this. elek's isActorAllowed (src/github/trigger.ts:82)
           # reads `context.actor` — GITHUB_ACTOR, i.e. whoever caused THIS event. A Renovate PR
@@ -524,10 +519,18 @@ jobs:
           # dollars, the cost of a silently skipped one is a defect reaching the base branch.
           # Same posture as the `could not list changed files` branch below.
           if [ -n "${PR_NUMBER:-}" ]; then
-            if AUTHOR_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
-                                --jq '[.user.login, .user.type] | @tsv' 2>/dev/null)"; then
-              AUTHOR_LOGIN="$(printf '%s' "$AUTHOR_JSON" | cut -f1)"
-              AUTHOR_TYPE="$(printf '%s' "$AUTHOR_JSON" | cut -f2)"
+            if PR_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+                            --jq '[.state, .user.login, .user.type] | @tsv' 2>/dev/null)"; then
+              PR_STATE="$(printf '%s' "$PR_JSON" | cut -f1)"
+              AUTHOR_LOGIN="$(printf '%s' "$PR_JSON" | cut -f2)"
+              AUTHOR_TYPE="$(printf '%s' "$PR_JSON" | cut -f3)"
+
+              if [ "$PR_STATE" != "open" ]; then
+                echo "in_scope=false" >> "$GITHUB_OUTPUT"
+                echo "skip_reason=pull_request_not_open" >> "$GITHUB_OUTPUT"
+                echo "Pull request is ${PR_STATE:-not open} — reporting NOT_REVIEWED without invoking a model."
+                exit 0
+              fi
 
               if [ "$AUTHOR_TYPE" = "Bot" ]; then
                 # Honour allowed_bots exactly as elek does: `*` admits everything, otherwise
@@ -554,7 +557,7 @@ jobs:
                 echo "Pull request authored by allowlisted bot \"${AUTHOR_LOGIN}\" — continuing."
               fi
             else
-              echo "::warning::could not resolve the pull request author — treating it as human so the review still runs."
+              echo "::warning::could not resolve the pull request state and author — treating it as open and human so the review still runs."
             fi
           fi
 
@@ -620,7 +623,7 @@ jobs:
         # cost_usd / conclusion as outputs at EVERY ref, and all of them were unreachable
         # purely for want of a step id. The coverage measurement below consumes them.
         id: review
-        uses: EHA-Clinics/elek@b9c6a0dfe719f09c95e2627a063f0575b5966bf1 # eha-v1.4.1 (public soft fork of selimozten/elek)
+        uses: EHA-Clinics/elek@22d3edb144d568d69260c238ef22e14f9d8b0b04 # eha-v1.4.2
         with:
           # pi's native openrouter adapter — elek's tested path. The OpenAI-compatible
           # Databricks AI Gateway (provider: openai) hung pi indefinitely on tool-enabled
@@ -711,36 +714,8 @@ jobs:
           # Path exclusion is no longer a workflow input — it lives in .elek.yml
           # ignore_paths (elek does not accept file-pattern inputs at this SHA).
         env:
-          # EHAC-2165 — WORKAROUND for a live upstream outage. Every non-bot, in-scope review
-          # in both calling repos has failed since 2026-08-09 (eha-care-infra 17:41Z, eha_care
-          # 19:29Z) with:
-          #
-          #   pi failed: Failed to load extension ".../pi-mcp-adapter/index.ts":
-          #   Cannot find module '.../@earendil-works/pi-ai/dist/index.js/compat'
-          #
-          # Cause, read at this pin: elek's action.yml installs with
-          # `npm install --omit=dev --no-package-lock` — the lockfile is IGNORED, so
-          # pi-coding-agent's transitive @earendil-works/pi-ai floats to whatever is newest —
-          # and then runs `pi install npm:pi-mcp-adapter`, which fetches the LATEST adapter
-          # into ~/.pi rather than the 2.10.0 this package pins. A newly published pi-ai broke
-          # that pairing. Nothing changed on our side; our elek pin has not moved.
-          #
-          # ELEK_DISABLE_MCP=1 sets mcpEnabled=false (run.ts:210), so pi runs
-          # `--no-extensions` (pi.ts:474) and never loads the adapter. The failure disappears.
-          #
-          # HONEST COST: inline review comments (create_inline_comment) are lost while this is
-          # set. The sticky review comment is posted by elek's own code, not by the model
-          # through MCP, so the review body itself is unaffected — `commentId` is populated
-          # even on the currently-failing runs. A review without inline comments is strictly
-          # better than the zero reviews we have had for ~16 hours.
-          #
-          # REMOVE THIS once EHAC-2165 is resolved. The durable fix is elek main, which
-          # replaces the floating install with `npm ci --omit=dev` against a committed
-          # package-lock and loads the local pinned adapter — tracked in EHAC-2059, and worth
-          # doing for EHAC-2058 anyway (main raises MAX_FILE_SLICE_CHARS 4_000 -> 64_000 and
-          # drops the 80k full-diff threshold, which is the truncation prevention itself).
-          # That re-pin also invalidates our ported prompt-budget model, so it is its own
-          # piece of work rather than a drive-by bump.
+          # Emergency compatibility switch only. The current action installs the committed
+          # lockfile and local adapter; callers should leave this at its supported default, 0.
           ELEK_DISABLE_MCP: ${{ inputs.disable_mcp }}
 
       - name: Checkout coverage gate scripts
@@ -760,14 +735,12 @@ jobs:
         # was never a fail-open. What was lost is the evidence: no per-file inventory and no
         # model attribution, precisely when the question "which lens died?" matters most.
         if: always()
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: EHA-Clinics/.github
-          # A 40-hex SHA, NEVER `main` (T-2057-01). A floating ref would let the gate's own
-          # code change underneath a pinned caller — the exact pin-drift class EHAC-2057 is
-          # about. EHA-Clinics/.github is PUBLIC, so the default GITHUB_TOKEN reads it from
-          # either private caller and no new secret is introduced.
-          ref: c2a4744e526507d0fcc37f51937da11b8c13bb73
+          # Resolve the repository and immutable commit of this called workflow. This keeps
+          # the executed gate byte-identical to the reviewed gate without a follow-up pin PR.
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
           path: .ai-review-gate
           sparse-checkout: scripts/ai-review-coverage
           persist-credentials: false
@@ -780,9 +753,8 @@ jobs:
         #
         # WARN-ONLY for now, deliberately. This is a new signal landing across twelve repos
         # simultaneously; making it fail closed on day one would red PRs that have nothing to
-        # do with the change that introduced it. Promote by setting CALLER_SHAPE_MODE to
-        # 'enforce' once every caller reports clean — the same staged path the coverage gate
-        # itself took.
+        # do with the change that introduced it. Set CALLER_SHAPE_MODE to 'enforce' only after
+        # every audited caller reports clean; enforcement still does not make AI branch-required.
         #
         # `if: always()` is load-bearing: the shape of the caller is exactly what needs
         # reporting when the review DIED, and a step defaulting to success() would skip then.
@@ -790,7 +762,7 @@ jobs:
         # makes a failing step report green — and it is one of the two mechanisms
         # workflow-invariants.test.mjs exists to reject, because it is how EHAC-2057 became a
         # gate that could not fail. Warn-vs-enforce is carried by CALLER_SHAPE_MODE, which
-        # controls the script's exit code honestly. When this is promoted to 'enforce' it
+        # controls the script's exit code honestly. When this is moved to 'enforce' it
         # must go red, and no suppressor may be sitting here to stop it.
         if: always()
         env:
@@ -810,7 +782,7 @@ jobs:
           REVIEW_COST_USD: ${{ steps.review.outputs.cost_usd }}
           # The LITERAL pinned SHA, not an expression: this is what makes branch U1 detect a
           # future elek bump that forgets to re-verify elek-prompt-budget.mjs.
-          ELEK_REF: b9c6a0dfe719f09c95e2627a063f0575b5966bf1
+          ELEK_REF: 22d3edb144d568d69260c238ef22e14f9d8b0b04
           REQUESTED_STRATEGY: ${{ inputs.review_strategy }}
           ACTOR_FILTER: ${{ inputs.actor_filter }}
           # EHAC-2103: the CONFIGURED council, so the coverage record can put what we asked for
@@ -879,9 +851,9 @@ jobs:
 
       - name: Upload coverage record
         if: always()
-        # v4.6.2, resolved from the tag to a 40-hex SHA (T-2280-06). A floating `@v4` would
+        # v7.0.1, resolved from the tag to a 40-hex SHA (T-2280-06). A floating major ref would
         # let a third party's code change underneath a pinned caller.
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ai-review-coverage
           path: ${{ runner.temp }}/coverage.json
@@ -894,9 +866,9 @@ jobs:
         # token, not the GITHUB_TOKEN scopes declared at the top of this file.
 
   coverage-gate:
-    # The job NAME below is a branch-protection API contract string: the required-check
-    # context is `<caller job name> / AI Review Coverage`. NEVER RENAME IT (CONTEXT D-01) —
-    # after promotion that would break 4 protection entries across 2 repositories.
+    # The job NAME below is an observability API contract string. NEVER RENAME IT casually:
+    # downstream automation and dashboards consume the exact context string. It is not a
+    # branch-protection requirement; the AI review remains permanently advisory.
     name: AI Review Coverage
     needs: review
     if: always()
@@ -910,11 +882,10 @@ jobs:
     # never needed and the caller-permission cascade does not apply.
     steps:
       - name: Checkout coverage gate scripts
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: EHA-Clinics/.github
-          # Same pinned SHA as the producer, for the same reason (T-2057-01).
-          ref: c2a4744e526507d0fcc37f51937da11b8c13bb73
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
           path: .ai-review-gate
           sparse-checkout: scripts/ai-review-coverage
           persist-credentials: false

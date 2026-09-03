@@ -319,9 +319,8 @@ describe('buildCoverage — strategy facts come from review_summary_json when pr
 });
 
 describe('scope skip reasons make an inapplicable review REPORTABLE (EHAC-2060)', () => {
-  // The promotion blocker in one sentence: on eha_care #3574/#3576/#3554 no AI Review
-  // Coverage check run existed at all, and a required context that is never reported blocks
-  // the PR forever. These cases prove the check can now be GREEN instead of ABSENT.
+  // On eha_care #3574/#3576/#3554 no AI Review Coverage check run existed at all.
+  // These cases prove an intentional decline is reportable instead of indistinguishably absent.
   const noReviewEnv = (over = {}) =>
     healthyEnv({ REVIEW_INPUT_TOKENS: '', REVIEW_CONCLUSION: 'skipped', ...over });
 
@@ -343,6 +342,17 @@ describe('scope skip reasons make an inapplicable review REPORTABLE (EHAC-2060)'
     });
     expect(coverage.verdict).toBe('NOT_REVIEWED');
     expect(coverage.not_reviewed.reason).toBe('pull_request_is_draft');
+  });
+
+  it('a closed or merged PR yields NOT_REVIEWED without model coverage', () => {
+    const coverage = buildCoverage({
+      diffText: read('small-complete.diff'),
+      env: noReviewEnv({ SKIP_REASON: 'pull_request_not_open' }),
+      context: healthyContext({ changedFilesApi: 2 }),
+    });
+    expect(coverage.verdict).toBe('NOT_REVIEWED');
+    expect(coverage.not_reviewed.reason).toBe('pull_request_not_open');
+    expect(coverage.models.runs).toBeNull();
   });
 
   // The fail-open this could so easily have been. A skip reason must never be able to
