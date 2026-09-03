@@ -137,7 +137,7 @@ Node-built-ins-only ESM.
 Measure a fixture, or any diff, by hand:
 
 ```bash
-ELEK_REF=22d3edb144d568d69260c238ef22e14f9d8b0b04 \
+ELEK_REF=9ee1391eabd4c937e523eee12bfe30d9d957c55e \
 REQUESTED_STRATEGY=council EXECUTED_STRATEGY=council REVIEW_INPUT_TOKENS=83000 \
   node scripts/ai-review-coverage/measure-review-coverage.mjs \
     --diff-file scripts/ai-review-coverage/fixtures/pr-3515.diff
