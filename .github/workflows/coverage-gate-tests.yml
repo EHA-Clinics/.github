@@ -1,7 +1,7 @@
 # Tests for the AI review coverage gate (EHAC-2057).
 #
 # This repository is the CANONICAL home of scripts/ai-review-coverage/ — the reusable
-# ai-code-review.yml workflow checks it out at a pinned SHA and executes it inside the
+# ai-code-review.yml workflow checks it out at `job.workflow_sha` and executes it inside the
 # caller's job. Both eha_care and eha-care-infra are private, so neither can be the
 # canonical source for the other's run; EHA-Clinics/.github is public, so the default
 # GITHUB_TOKEN reads it from either caller with no new secret.
@@ -33,26 +33,18 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # R13. The gate-script identity assertion resolves the SHAs that ai-code-review.yml
-          # pins for its own scripts, and the default depth of 1 does not contain them. A
-          # resolution failure is deliberately a FINDING, so a shallow checkout would red the
-          # suite for a reason unrelated to pin identity — the state in which someone weakens
-          # the rule to clear it. Depth 0 is necessary and NOT sufficient: it fetches the
-          # history of surviving refs, and a commit outside every surviving branch (a squashed
-          # or deleted PR tip) is not among them, so the rule ALSO fetches each ref explicitly
-          # and asserts reachability before resolving its tree. `persist-credentials: false`
-          # is retained: this repository is public, so that fetch works anonymously — on a
-          # private repository it would not.
-          fetch-depth: 0
+          # The reusable workflow now checks out its own `job.workflow_sha`, so the suite
+          # asserts that context contract directly and needs only the revision under test.
+          fetch-depth: 1
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           # R14. A LITERAL version, not a floor and not a range. The gate now imports the
           # vendored TypeScript packer (scripts/ai-review-coverage/vendor/diff-context.ts)
@@ -75,7 +67,7 @@ jobs:
       # and a non-zero assert exit. If this step ever passes trivially, the gate is vacuous.
       - name: Prove the fixture-driven red end-to-end
         env:
-          ELEK_REF: b9c6a0dfe719f09c95e2627a063f0575b5966bf1
+          ELEK_REF: 3429e4a09b63282515553b7c80f77d6718815e13
           REQUESTED_STRATEGY: council
           EXECUTED_STRATEGY: council
           REVIEW_INPUT_TOKENS: '83000'

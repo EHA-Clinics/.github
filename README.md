@@ -6,7 +6,11 @@ This repository contains organization-wide defaults and reusable workflows for t
 
 ### `ai-code-review.yml`
 
-AI code review workflow powered by [elek](https://github.com/selimozten/elek)'s **council strategy** over **OpenRouter direct**.
+AI code review workflow powered by the [EHA-maintained Elek fork](https://github.com/EHA-Clinics/elek)'s **council strategy** over **OpenRouter direct**.
+
+The review and its coverage result are permanently advisory. They provide evidence and feedback,
+but are not branch-protection requirements and must not block a merge solely because a provider is
+unavailable.
 
 A council run has two phases:
 
@@ -47,7 +51,7 @@ jobs:
 | `severity_threshold` | string | `important` | Minimum severity to post (`info`, `important`, `critical`). |
 | `max_cost_usd` | string | `1.00` | Per-PR cost guardrail; elek auto-downgrades council → crosscheck → solo on large diffs to stay within budget. |
 | `cost_rates` | string | `xiaomi/mimo-v2.5-pro=0.435:0.87,deepseek/deepseek-v4-flash=0.14:0.28,openrouter/z-ai/glm-5.3-flash=0.15:0.50` | `model=input:output` USD-per-million-token overrides. The GLM rate uses conservative standard pricing rather than a temporary promotion. |
-| `mode` | string | `review` | `review` (read-only) or `review+edit` (pushes fixes). |
+| `mode` | string | `review` | `review` and `review+edit` currently use the same read-only surface. |
 | `model` | string | `deepseek/deepseek-v4-pro` | Single-model override for `solo` strategy; ignored under `council`. |
 | `trigger_phrase` | string | `@ai-review` | Comment phrase that triggers an on-demand review. |
 | `scope_paths` | string | (unset) | Comma-separated globs limiting which changed files are in scope. Evaluated **inside** this workflow, so an out-of-scope PR reports a green `NOT_REVIEWED` rather than no check run at all. Prefer this over a `paths:` filter on the caller — see the note below the table. |
@@ -59,7 +63,7 @@ jobs:
 | `run_timeout_seconds` | string | `600` | Per-run budget for the elek step. Cannot exceed the job's own cap. |
 | `stall_timeout_seconds` | string | `0` | **Stream-idle watchdog**, passed to elek. Terminates a model run that emits no pi stream event for this long and reports failure class `stall` — which `run_timeout_seconds` alone cannot distinguish from genuinely slow work. `0` disables it. Do not set it from intuition: calibrate from `maxIdleSecondsObserved` on your own successful runs, then use ≥3× the p99 idle gap, well under `run_timeout_seconds`. |
 | `max_degraded_lenses` | string | `1` | How many **reviewer** lenses may fail while the review still counts. Passed to elek *and* to the coverage gate, which evaluate it independently and fail closed on drift. Never tolerated at any value: a failed validator/validator-review run, a wiped reviewer panel, an unclassifiable failed run, or a value not below the reviewer count. A degraded council passes with a warning naming every dropped lens. Invalid values resolve to `0` (strict). |
-| `disable_mcp` | string | `0` | `1` disables MCP, which also disables inline PR comments. |
+| `disable_mcp` | string | `0` | Emergency compatibility switch. `1` disables MCP and inline PR comments; keep the supported default `0`. |
 | `max_council_changed_lines` | string | `0` | **RETIRED 2026-08-15 — accepted but no longer forwarded.** The pinned elek no longer declares this input, so passing it produced a permanent yellow "unexpected input" annotation. Kept only so existing callers do not break; setting it has no effect. |
 | `prompt` | string | `Please review this PR for correctness, security, and potential issues.` | The review instruction, so a repo can shape its own review. Only honoured on `pull_request` events — a caller cannot inject a prompt on an on-demand run. |
 | `pr_number` | number | (unset) | Target PR for on-demand runs, where the event carries no PR context. |
@@ -68,20 +72,20 @@ jobs:
 > (`Unsupported event: workflow_dispatch`) before any model call, so a dispatch cannot be used to
 > green-prove a change. Use `@ai-review` on a live PR, or close/reopen to force a genuine run.
 
-> **Do not add a `paths:` filter to a caller whose check is a required status context.** A
-> paths-filtered workflow never dispatches on an out-of-scope PR, so no check run is created and the
-> required context stays pending forever. Use `scope_paths` instead: it turns "out of scope" from an
-> absent check into a green `NOT_REVIEWED` one, and still skips the model call.
+> **Do not add a `paths:` filter to a caller.** A paths-filtered workflow never dispatches on an
+> out-of-scope PR, so no check run is created and "not applicable" is indistinguishable from a broken
+> integration. Use `scope_paths` instead: it turns "out of scope" into an explicit green
+> `NOT_REVIEWED` result while still skipping the model call.
 
 **Secrets:**
 
 | Secret | Required | Description |
 |--------|----------|-------------|
-| `OPENROUTER_API_KEY` | Yes | OpenRouter API key. Set once as an org-level secret to cover all repos. |
+| `OPENROUTER_API_KEY` | Yes | Dedicated AI-review system key, supplied as an organization secret only to audited caller repositories. |
 
 ## Adopting in a New Repo
 
-1. **Set the secret.** Add `OPENROUTER_API_KEY` as an org-level GitHub Actions secret (Settings → Secrets and variables → Actions → New organization secret), scoped to all repos, or as a repo-level secret.
+1. **Grant the secret.** Add the repository to the selected-repository visibility of the dedicated organization `OPENROUTER_API_KEY`; do not create a shadow repository secret.
 2. **Add a caller workflow.** Create `.github/workflows/ai-code-review.yml` in your repo with a single `review` job that references the shared workflow at a full commit SHA pin (`@<SHA-PIN>`) and passes the council `with:` inputs above.
 3. **(Optional) Add `.elek.yml`.** Drop a repo-local `.elek.yml` to set `knowledge_paths`, `ignore_paths`, and `instructions` so the council reads your standards and skips generated/fixture files.
 4. **Open a test PR.** Open a small PR and confirm the council posts one tracking comment with the four lenses running in parallel before finalizing the SHA pin org-wide. The automatic caller should omit `actor_filter` so trusted repository permissions remain authoritative; reserve a static allowlist for repositories that intentionally need stricter access.

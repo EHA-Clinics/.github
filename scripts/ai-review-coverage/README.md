@@ -1,7 +1,7 @@
 # AI Review Coverage gate
 
 **Canonical location.** These scripts live here, in `EHA-Clinics/.github`, and nowhere else.
-`.github/workflows/ai-code-review.yml` checks this directory out at a **pinned SHA** and runs it
+`.github/workflows/ai-code-review.yml` checks this directory out at **`job.workflow_sha`** and runs it
 inside the caller's job, so the copy that is tested is the copy that executes. Both
 `eha_care` and `eha-care-infra` are private, so neither can be the canonical source for the
 other's run; this repository is public, so the default `GITHUB_TOKEN` reads it from either
@@ -137,7 +137,7 @@ Node-built-ins-only ESM.
 Measure a fixture, or any diff, by hand:
 
 ```bash
-ELEK_REF=3748508413fb355ae696b8fa98d1075930d12106 \
+ELEK_REF=3429e4a09b63282515553b7c80f77d6718815e13 \
 REQUESTED_STRATEGY=council EXECUTED_STRATEGY=council REVIEW_INPUT_TOKENS=83000 \
   node scripts/ai-review-coverage/measure-review-coverage.mjs \
     --diff-file scripts/ai-review-coverage/fixtures/pr-3515.diff
@@ -161,46 +161,40 @@ REVIEW_RESULT=success COVERAGE_JSON="$COV" \
 |---|---|
 | Reds on real truncation | `fixtures/pr-3515.diff` → verdict exactly `PARTIAL_SOURCE`; `tenantRoster.ts` shows **3,822 of 15,215** chars (25%); assert exits **1** |
 | Greens on full coverage | `fixtures/small-complete.diff` → `COMPLETE`, exit 0 |
-| There is no second implementation to be unfaithful | R14 deleted the port. `elek@3748508 src/review/diff-context.ts` is vendored byte-identically and **executed**; `elek-prompt-budget.mjs` measures its output and names none of its constants. The rewrite reproduces the previously measured prompt sizes to the character (52,715 / 14,751 / 26,366) and every per-file boundary — those values were produced by the earlier implementation and were **not** recomputed by this change, so agreement with them is external corroboration rather than a snapshot of itself |
+| There is no second implementation to be unfaithful | The Elek packer recorded in `vendor/diff-context.manifest.json` is vendored byte-identically and **executed**; `elek-prompt-budget.mjs` measures its output and names none of its constants. Golden fixtures corroborate the measured output rather than restating the algorithm |
 | The vendored copy cannot drift unreported | `git hash-object -t blob` over `vendor/diff-context.ts` equals upstream's own blob sha in the sibling manifest; the manifest commit equals the workflow's action pin; and every fixture's output equals a golden frozen at that pin. All three are demonstrated on a deliberate divergence in `elek-prompt-budget.test.mjs` |
-| The YAML cannot be vacuous | `workflow-invariants.test.mjs` parses the shipped workflow and asserts no error-suppression key, `if:` exactly `always()`, no step-level `if:`, `needs: review`, both gate `ref:`s 40-hex and equal |
+| The YAML cannot be vacuous | `workflow-invariants.test.mjs` parses the shipped workflow and asserts no error-suppression key, `if:` exactly `always()`, no step-level `if:`, `needs: review`, and both gate checkouts use the called workflow's repository and immutable SHA |
 
 ---
 
-## Known limitations and promotion blockers
+## Advisory operating policy and known limitations
 
-The gate landed **advisory** (CONTEXT D-04). Promotion is tracked as **EHAC-2060**. These six
-items are the reasons it is not required today.
+The gate is permanently **advisory**. It must remain useful and falsifiable, but provider
+availability is not a merge requirement and no AI review context belongs in branch protection.
 
-### 1. The caller's `paths:` filter blocks promotion
+### 1. Scope decisions must remain reportable
 
 `eha_care`'s push caller filters on `apps/**`, `libs/**`, `.github/**`; `eha-care-infra`'s on
 `infrastructure/**`, `kubernetes/**`, `services/**`, `.github/**`.
 
-A `paths:`-filtered workflow **can never host a required check**: on a non-matching PR the
-workflow never runs, no check run is created, and the required check stays *Pending* forever,
-blocking the merge. Promotion needs `dorny/paths-filter` + `if:` instead of a top-level
-`paths:` — **and even then only the *review step* may be conditional. The gate job must always
-report**, because a skipped check counts as passing. Today's workaround: the `@ai-review`
-on-demand caller has no `paths:` filter.
+A `paths:`-filtered workflow never runs on a non-matching PR, so an absent workflow cannot be
+distinguished from a deliberate out-of-scope result. Callers therefore dispatch broadly and pass
+`scope_paths`; only the paid review step is conditional, while coverage reports `NOT_REVIEWED`.
 
 Consequence to state plainly: on any PR that touches neither of those globs — for example one
 touching only `scripts/**` or `e2e/**` — this gate is **absent**, not green.
 
-### 2. Required-check strings: 4 entries, 2 unique strings
+### 2. Check names are stable telemetry interfaces
 
 The context string for a reusable-workflow job is `<caller job name> / <called job name>`. Both
 `eha-care-infra` callers use job names identical to `eha_care`'s, so there are only **two
-distinct strings**, each needing an entry in **both** repositories:
+distinct strings. They are consumed by dashboards and tooling but are not required contexts:
 
 * `AI Review (Council) / AI Review Coverage`
 * `AI Review On Demand (Council) / AI Review Coverage`
 
-Current `eha_care` `v2` required contexts are exactly `EHACare Lint Test`,
-`EHACare Unit/Integration Test`, `Fixture Health`.
-
-The job `name:` is a branch-protection API contract string. **Do not rename
-`AI Review Coverage`.**
+The job `name:` is an automation contract string. **Do not rename `AI Review Coverage`** without
+updating every consumer.
 
 ### 3. Cancellation — MEASURED, and it costs one red per superseded push
 
@@ -220,9 +214,8 @@ So an `if: always()` job **is** scheduled on a concurrency-cancelled run, and th
 
 The consequence is quantified rather than feared: with `cancel-in-progress: true`, **every
 superseded force-push deterministically produces one red `AI Review Coverage` check** on the
-stale head. That is tolerable while advisory — the newer run posts a newer check under the same
-name and supersedes it in the PR UI — but it is the dominant false-red source and must be
-budgeted before promotion (EHAC-2060). If the rate is unacceptable, fix the cancel branch
+stale head. The newer run posts a newer check under the same name and supersedes it in the PR
+UI. If the false-red rate is unacceptable, fix the cancel branch
 honestly by detecting run supersession. **Never make `cancelled` exit 0.**
 
 ### 3b. `trigger_phrase` is a body-content precondition — and it used to fail open
@@ -247,14 +240,12 @@ built"*).
 turn this back into a green, which would re-create the exact fail-open. The honest report is red:
 the check claimed a review and none happened.
 
-Promotion consequence (EHAC-2060): if this check becomes *required* while the trigger phrase
-remains a body-content precondition, a template-cleared PR blocks on a permanently red check.
-Either the trigger phrase must stop being optional, or the `pull_request` path must not depend on
-body content at all. **Do not "fix" this by widening the allowlist.**
+The automatic pull-request path supplies an explicit prompt and must not depend on template body
+content. **Do not "fix" a missing trigger by widening the allowlist.**
 
 ### 4. `NOT_REVIEWED` is the single exit-0-without-coverage branch
 
-Closed reason allowlist, **six entries**. `NOT_REVIEWED_REASONS` in `measure-review-coverage.mjs`
+Closed reason allowlist, **seven entries**. `NOT_REVIEWED_REASONS` in `measure-review-coverage.mjs`
 is the source of truth and a test now holds this list equal to it — until 2026-08-25 this section
 claimed "exactly two entries" while the code carried five, having drifted through EHAC-2060 and
 EHAC-2231 without anyone updating it.
@@ -268,6 +259,8 @@ Decided by the **`Resolve review scope` step**, before elek is invoked (`SCOPE_S
 
 * `no_files_in_review_scope` (EHAC-2060)
 * `pull_request_is_draft` (EHAC-2060)
+* `pull_request_not_open` — an on-demand comment targeted a closed or merged pull request; the
+  scope step declines before any model request
 * `pr_author_is_bot_not_allowlisted` (EHAC-2294) — the pull request's *author* is an unlisted
   bot, **whoever pushed the button**. Distinct from `actor_is_bot_not_allowlisted` because elek's
   `isActorAllowed` reads `github.actor`: a human rebasing a Renovate branch made the bot
@@ -287,20 +280,9 @@ it is suppressed entirely when a review demonstrably happened (`input_tokens > 0
 it would be a fail-open. It always emits a `::warning::` and a job-summary banner.
 
 It exists because without it every Renovate PR becomes a permanent red, which is the alert
-fatigue that got the Phase-65 GHAS probe deleted. **Widening this allowlist is a promotion-time
-decision** (EHAC-2060), not an implementation detail.
-
-Two honest caveats about the allowlist as it stands:
-
-* **`actor_not_in_actor_filter` is currently unreachable for humans.** Verified in
-  `elek@3748508 src/github/trigger.ts:52-77`: `isActorAllowed` checks the list and then falls
-  through to `return !actor.endsWith("[bot]")`, so a non-bot actor off the list is still allowed
-  and *is* reviewed. The entry is kept for forward-compatibility with the post-v1.1.4 narrowing
-  of the empty default, and it is harmless — the branch is suppressed whenever a review
-  demonstrably happened (`input_tokens > 0`). The entry that does real work today is
-  `actor_is_bot_not_allowlisted`.
-* **This also means `actor_filter` is not the security control it was planned to be.** See
-  limitation 6 and EHAC-2059.
+fatigue that got the Phase-65 GHAS probe deleted. **Widening this allowlist is an
+operational-policy decision**, not an implementation detail. The current Elek actor gate treats
+an explicit `actor_filter` as authoritative and otherwise uses repository trust.
 
 ### 5. `ignore_paths` reclaims no prompt budget — do not re-derive path-sharding
 
@@ -361,31 +343,10 @@ publish it was to restate the arithmetic. `slice_ceiling_observed` replaces it w
 actually be measured — the largest slice that survived into the prompt (3,846 on `pr-3515.diff`,
 against an internal budget of 4,000).
 
-The pin itself is revisited in **EHAC-2059**: `main` (`cbb7202b`, untagged) replaces `execSync`
-with `execFileSync` + `isSafeGitRefName` in `src/github/git.ts`, a genuine shell-injection fix,
-and narrows `actor_filter`'s empty default from *all humans* to *owners/members/collaborators*.
-
-**Correction to the planning assumption, recorded because it changes the risk picture.** The
-plan (CONTEXT D-05) and the research it rested on both treated an explicit `actor_filter` as
-*the* compensating control for that shell-injection surface at v1.1.4. **It is not.** From
-`elek@3748508 src/github/trigger.ts:52-77`:
-
-```ts
-if (inputs.actorFilter) {
-  const allowed = inputs.actorFilter.split(",").map((s) => s.trim());
-  if (allowed.includes(actor)) return true;
-}
-if (inputs.allowedBots) { /* … */ }
-return !actor.endsWith("[bot]");     // ← every non-bot actor is allowed anyway
-```
-
-The list is **additive, not exclusive**: it does not narrow the human trigger surface at all. It
-is still set by all four callers — it documents intent, is forward-compatible with the
-post-v1.1.4 narrowing, and makes the bot deny explicit — but the mitigations actually carrying
-the risk today are that both calling repositories are private, that fork PRs receive no
-secrets, and that `mode: review` is read-only. That raises the priority of **EHAC-2059**, and it
-is the reason the caller files say so in a comment rather than shipping a claim that overstates
-a control.
+The pinned EHA fork uses argument-safe git execution and treats an explicit `actor_filter` as
+authoritative. When the input is unset, OWNER/MEMBER/COLLABORATOR association and a repository
+permission lookup define the trusted human surface; bot authors remain separately controlled by
+`allowed_bots` and the pre-model scope check.
 
 ---
 
@@ -395,7 +356,6 @@ a control.
 |---|---|
 | [EHAC-2058](https://ehealthnigeria.atlassian.net/browse/EHAC-2058) | Fork elek `diff-context.ts` for real per-file map-reduce diff chunking |
 | [EHAC-2059](https://ehealthnigeria.atlassian.net/browse/EHAC-2059) | Revisit the elek pin once `execFileSync` + `isSafeGitRefName` ships in a tag |
-| [EHAC-2060](https://ehealthnigeria.atlassian.net/browse/EHAC-2060) | Promote `AI Review Coverage` to a required check after the advisory soak |
 
 Parent: [EHAC-2057](https://ehealthnigeria.atlassian.net/browse/EHAC-2057). Per a standing
 operator rule, nothing is filed on `selimozten/elek` or any other third-party repository.
@@ -404,7 +364,7 @@ operator rule, nothing is filed on `selimozten/elek` or any other third-party re
 
 | File | Role |
 |---|---|
-| `vendor/diff-context.ts` | **upstream bytes and nothing else** — `elek@3748508 src/review/diff-context.ts`, byte-identical, no local header |
+| `vendor/diff-context.ts` | **upstream bytes and nothing else** — the `src/review/diff-context.ts` blob recorded in the adjacent manifest, byte-identical and with no local header |
 | `vendor/diff-context.manifest.json` | provenance for the above: repo, path, commit, upstream blob sha, the fetch command, and the coupling note for the deferred version move |
 | `elek-prompt-budget.mjs` | **executes** the vendored packer and measures its output; carries no upstream constant. Re-exports `ELEK_REF_VERIFIED` from the manifest |
 | `generate-goldens.mjs` | one-off regenerator for `fixtures/golden/`; run it only when the vendored packer moves |

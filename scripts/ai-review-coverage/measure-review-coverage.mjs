@@ -37,7 +37,7 @@ export const DEFAULT_INVENTORY_CAP = 250;
 /**
  * Closed allowlist of deterministic reasons that mean "no review was requested", as opposed
  * to "a review claimed completeness". Anything not in this set falls through to UNKNOWN.
- * Widening this list is a promotion-time decision, not an implementation detail.
+ * Widening this list is an operating-policy decision, not an implementation detail.
  */
 export const NOT_REVIEWED_REASONS = Object.freeze([
   'actor_not_in_actor_filter',
@@ -45,9 +45,10 @@ export const NOT_REVIEWED_REASONS = Object.freeze([
   // EHAC-2060. Both are decided by the `Resolve review scope` step BEFORE elek is invoked,
   // from the changed-file list and the draft flag — never inferred from an empty elek output.
   // They exist so a PR the review does not apply to yields a GREEN check rather than NO
-  // check: a required context that is never reported blocks the PR forever.
+  // check: an absent context makes "not applicable" indistinguishable from a broken integration.
   'no_files_in_review_scope',
   'pull_request_is_draft',
+  'pull_request_not_open',
   // EHAC-2231. Every changed file matched `exclude_paths`, so the reviewer was handed a diff
   // with nothing reviewable in it. Before this existed the rollup read `files_total: 0` and
   // computeVerdict returned COMPLETE — a GREEN check announced as "all 0 changed file(s)
@@ -65,7 +66,7 @@ export const NOT_REVIEWED_REASONS = Object.freeze([
   // from the API before elek is invoked.
   //
   // THIS WIDENS A DELIBERATELY CLOSED LIST, AND THAT IS THE DECISION THIS COMMENT RECORDS.
-  // The note above reserves widening for promotion time. It is taken here on measurement, not
+  // The note above reserves widening for an explicit policy change. It is taken here on measurement, not
   // on convenience: over 2026-08-22..24 across eha_care and eha-care-infra, 41 of 125 model
   // runs (33% of all AI-review spend) were bot-authored pull requests, and ALL 41 had a HUMAN
   // as `github.actor`. Not one had the bot.
@@ -87,6 +88,7 @@ export const NOT_REVIEWED_REASONS = Object.freeze([
 export const SCOPE_SKIP_REASONS = Object.freeze([
   'no_files_in_review_scope',
   'pull_request_is_draft',
+  'pull_request_not_open',
   'pr_author_is_bot_not_allowlisted',
 ]);
 

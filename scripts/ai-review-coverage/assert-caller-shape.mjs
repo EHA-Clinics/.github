@@ -87,8 +87,8 @@ export function inspectCallers(files) {
           file: name,
           message:
             `has a workflow-level \`paths:\` filter. A paths-filtered workflow never ` +
-            `dispatches on an out-of-scope PR, so NO check run is created and the check can ` +
-            `never host a required context. Pass \`scope_paths\` instead — it is evaluated ` +
+            `dispatches on an out-of-scope PR, so NO check run is created and "not applicable" ` +
+            `cannot be distinguished from a broken integration. Pass \`scope_paths\` instead — it is evaluated ` +
             `inside this workflow and yields a green NOT_REVIEWED verdict.`,
         });
       }
