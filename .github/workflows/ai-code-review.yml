@@ -7,7 +7,7 @@
 # Structural safety: elek's MCP server only exposes create_inline_comment and
 # update_tracking_comment — there are no approve/merge/close code paths.
 #
-# ─── elek pin: eha-v1.4.4 (full immutable SHA below) ──────────────────────────
+# ─── elek pin: eha-v1.4.5 (full immutable SHA below) ──────────────────────────
 # The EHA fork supplies the fail-closed coverage record, bounded council execution, and
 # pinned MCP dependencies used by this workflow. The separately named `AI Review Coverage`
 # job fails when a production-source file was omitted from the prompt or the requested
@@ -107,7 +107,7 @@ on:
       openrouter_model_reasoning_modes:
         type: string
         default: '{"xiaomi/mimo-v2.5-pro":"enabled"}'
-        description: 'Canonical OpenRouter model capability map: effort (default) or enabled (provider-default reasoning).'
+        description: 'Canonical OpenRouter model capability map: effort (default) or enabled (provider-default reasoning, with the unchanged output limit sent as max_tokens).'
       validator_model:
         type: string
         default: 'deepseek/deepseek-v4-pro'
@@ -624,7 +624,7 @@ jobs:
         # cost_usd / conclusion as outputs at EVERY ref, and all of them were unreachable
         # purely for want of a step id. The coverage measurement below consumes them.
         id: review
-        uses: EHA-Clinics/elek@27bc281195582cd783e0b2ed62182007e139b3fb # eha-v1.4.4
+        uses: EHA-Clinics/elek@1d1b60f830c438994e9246799bcffe8605d3aa88 # eha-v1.4.5
         with:
           # pi's native openrouter adapter — elek's tested path. The OpenAI-compatible
           # Databricks AI Gateway (provider: openai) hung pi indefinitely on tool-enabled
@@ -784,7 +784,7 @@ jobs:
           REVIEW_COST_USD: ${{ steps.review.outputs.cost_usd }}
           # The LITERAL pinned SHA, not an expression: this is what makes branch U1 detect a
           # future elek bump that forgets to re-verify elek-prompt-budget.mjs.
-          ELEK_REF: 27bc281195582cd783e0b2ed62182007e139b3fb
+          ELEK_REF: 1d1b60f830c438994e9246799bcffe8605d3aa88
           REQUESTED_STRATEGY: ${{ inputs.review_strategy }}
           ACTOR_FILTER: ${{ inputs.actor_filter }}
           # EHAC-2103: the CONFIGURED council, so the coverage record can put what we asked for

@@ -1,21 +1,22 @@
 {
   "upstream_repo": "EHA-Clinics/elek",
   "upstream_path": "src/review/diff-context.ts",
-  "upstream_commit": "27bc281195582cd783e0b2ed62182007e139b3fb",
-  "upstream_tag": "eha-v1.4.4",
+  "upstream_commit": "1d1b60f830c438994e9246799bcffe8605d3aa88",
+  "upstream_tag": "eha-v1.4.5",
   "planned_upstream_tag": null,
   "upstream_blob_sha": "64441e769de897ed0b371e2321657fdbe80b2e87",
   "vendored_as": "scripts/ai-review-coverage/vendor/diff-context.ts",
   "provenance": {
     "fetched_at": "2026-09-05",
     "fetched_size_bytes": 14540,
-    "fetch_command": "gh api \"repos/EHA-Clinics/elek/contents/src/review/diff-context.ts?ref=27bc281195582cd783e0b2ed62182007e139b3fb\" --jq '.content' | base64 -d > scripts/ai-review-coverage/vendor/diff-context.ts",
-    "sha_command": "gh api \"repos/EHA-Clinics/elek/contents/src/review/diff-context.ts?ref=27bc281195582cd783e0b2ed62182007e139b3fb\" --jq '{sha: .sha, size: .size}'",
+    "fetch_command": "gh api \"repos/EHA-Clinics/elek/contents/src/review/diff-context.ts?ref=1d1b60f830c438994e9246799bcffe8605d3aa88\" --jq '.content' | base64 -d > scripts/ai-review-coverage/vendor/diff-context.ts",
+    "sha_command": "gh api \"repos/EHA-Clinics/elek/contents/src/review/diff-context.ts?ref=1d1b60f830c438994e9246799bcffe8605d3aa88\" --jq '{sha: .sha, size: .size}'",
     "sha_field": ".sha",
     "sha_source": "GitHub contents API \u2014 this is UPSTREAM'S OWN git blob identifier for those bytes. It is deliberately NOT a digest we computed over what we wrote: a self-computed hash proves only that we hashed our own bytes, so a mistaken or malicious edit that updated both the file and the digest would pass.",
     "recompute_offline": "git hash-object -t blob scripts/ai-review-coverage/vendor/diff-context.ts"
   },
   "notes": [
+    "EHA-V1.4.5 RE-VENDOR (2026-09-05). The first binary-reasoning caller canary exposed a second unsupported parameter: Pi sends max_completion_tokens for MiMo. A synthetic streaming comparison reproduced 404 with that alias and 200 with max_tokens. Enabled-mode shaping now preserves the output limit under max_tokens; named-effort models remain unchanged. Re-fetched the packer from the tagged merge through the GitHub contents API: byte-identical, 14540 bytes, blob 64441e769de897ed0b371e2321657fdbe80b2e87. Regenerated goldens and rechecked the independent truncation proof.",
     "EHA-V1.4.4 RE-VENDOR (2026-09-05). Explicit OpenRouter reasoning modes and control-only telemetry; Pi remains 0.84.2. Re-fetched the packer from the tagged merge commit through the GitHub contents API and compared byte for byte: unchanged, 14540 bytes, blob 64441e769de897ed0b371e2321657fdbe80b2e87. Regenerated goldens and retained the independent truncation proof.",
     "EHA-V1.4.3 RE-VENDOR (2026-09-04), eha-v1.4.2 -> eha-v1.4.3. The first live caller canary activated the restored provider-preferences path and exposed CommonJS require calls inside Elek's ESM action runtime. The corrected release replaces them with ESM imports, adds a Node-plus-tsx runtime regression test, and hardens CI against duplicate and transient npm audit requests. None touches src/review/diff-context.ts. The GitHub contents API reports the same 14540 bytes and git blob 64441e769de897ed0b371e2321657fdbe80b2e87, so goldens move only in recorded upstream_commit.",
     "EHA-V1.4.2 RE-VENDOR (2026-09-03), eha-v1.4.1 -> eha-v1.4.2. The pin moves for the composite INPUT_* contract repair, bounded parsing of pi's structured provider-error envelope, additive provider failure fields, reproducible CI, and dependency advisory fixes. None touches src/review/diff-context.ts. Compared byte-for-byte with the tagged merge commit: 14540 bytes and git blob 64441e769de897ed0b371e2321657fdbe80b2e87 are unchanged. Goldens therefore move only in recorded upstream_commit; the truncation proof remains a required manual control.",
