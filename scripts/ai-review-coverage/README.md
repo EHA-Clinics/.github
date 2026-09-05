@@ -373,3 +373,15 @@ operator rule, nothing is filed on `selimozten/elek` or any other third-party re
 | `assert-review-coverage.mjs` | consumer: re-derives U1–U6, recomputes the verdict, exits per the contract |
 | `workflow-invariants.test.mjs` | parses the shipped workflow YAML and asserts the gate cannot be suppressed or skipped |
 | `fixtures/` | three real `git diff`s + their provenance; see `fixtures/README.md` |
+
+## Reasoning control evidence (U9)
+
+A nonempty `OPENROUTER_MODEL_REASONING_MODES` map requires sanitized reasoning controls
+on every logical run and physical attempt, including replacements and failures. Both the
+producer and asserter compare the recorded map with the workflow input and recheck each
+actual model's mode. Missing, malformed, or inconsistent evidence yields UNKNOWN/U9.
+Legacy records without a configured map remain parseable. Logs and summaries carry requested
+thinking, configured mode, effective control, and optional effort/budget; no reasoning trace.
+
+`fixtures/council/mimo-reasoning-complete.json` is the positive CLI control. Removing Design's
+evidence in `mimo-reasoning-missing.json` must exit 1 with U9 even if its verdict says COMPLETE.

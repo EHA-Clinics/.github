@@ -42,6 +42,7 @@
  *     node assert-review-coverage.mjs
  */
 
+import { reasoningProblems } from './reasoning-policy.mjs';
 import { appendFileSync } from 'node:fs';
 import { basename } from 'node:path';
 
@@ -558,6 +559,9 @@ export function evaluate({ reviewResult, coverageRaw, env = process.env }) {
 
   // 4. Re-derive every UNKNOWN branch from the record's own fields.
   const derived = deriveUnknownBranches(coverage, maxDegraded);
+  for (const message of reasoningProblems(coverage?.models, env.OPENROUTER_MODEL_REASONING_MODES)) {
+    derived.push({ branch: 'U9', message: `U9 ${message}` });
+  }
 
   // A quorate-but-degraded council passes, but it is never silent: the lens that dropped is
   // named on the check. A green with no annotation here would be the same defect this whole

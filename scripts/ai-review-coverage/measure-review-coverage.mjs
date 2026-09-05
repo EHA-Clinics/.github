@@ -25,6 +25,7 @@
  *     node measure-review-coverage.mjs --diff-file fixtures/pr-3515.diff
  */
 
+import { readReasoningModes, sanitizeReasoning, reasoningProblems, formatReasoning } from './reasoning-policy.mjs';
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync } from 'node:fs';
 import { basename } from 'node:path';
@@ -193,12 +194,18 @@ export function deriveModels(summary, env = {}) {
     validator_model: String(env.VALIDATOR_MODEL ?? '').trim() || null,
   };
 
+  if (String(env.OPENROUTER_MODEL_REASONING_MODES ?? '').trim()) {
+    try { configured.reasoning_modes = readReasoningModes(env.OPENROUTER_MODEL_REASONING_MODES); }
+    catch { configured.reasoning_mode_error = true; }
+  }
+
   const rawRuns = Array.isArray(summary?.modelRuns) ? summary.modelRuns : null;
   if (!rawRuns) {
     return { runs: null, attempts: null, configured, policy: derivePolicy(summary, env), distinct_models: [], rollup: null };
   }
 
   const runs = rawRuns.map((r) => ({
+    ...(r?.reasoning !== undefined ? { reasoning: sanitizeReasoning(r.reasoning) } : {}),
     role: typeof r?.role === 'string' ? r.role : null,
     lens_id: typeof r?.lensId === 'string' ? r.lensId : null,
     model_label: typeof r?.modelLabel === 'string' ? r.modelLabel : null,
@@ -265,6 +272,7 @@ export function deriveModels(summary, env = {}) {
   const rawAttempts = Array.isArray(summary?.attempts) ? summary.attempts : null;
   const attempts = rawAttempts
     ? rawAttempts.map((a) => ({
+        ...(a?.reasoning !== undefined ? { reasoning: sanitizeReasoning(a.reasoning) } : {}),
         lens_id: typeof a?.lensId === 'string' ? a.lensId : null,
         role: typeof a?.role === 'string' ? a.role : null,
         attempt: Number.isFinite(Number(a?.attempt)) ? Number(a.attempt) : null,
@@ -558,6 +566,9 @@ export function buildCoverage({ diffText, env = {}, context = {}, inventoryCap =
     ? { reason: 'all_changed_files_excluded', actor: actor || null, excluded_files: excludedCount }
     : notReviewed;
 
+  if (!effectiveNotReviewed) {
+    for (const message of reasoningProblems(models, env.OPENROUTER_MODEL_REASONING_MODES ?? '')) addUnknown('U9', message);
+  }
   const effectiveUnknown = effectiveNotReviewed ? unknown.filter((u) => u.branch === 'U1') : unknown;
   const verdict = computeVerdict({
     rollup: attribution.rollup,
@@ -777,13 +788,13 @@ export function renderJobSummary(coverage) {
       '',
       '_The posted review comment misreports these — see EHAC-2103. This table is authoritative._',
       '',
-      '| Role | Lens | Model | Result |',
-      '|---|---|---|---|',
+      '| Role | Lens | Model | Result | Reasoning control |',
+      '|---|---|---|---|---|',
     );
     for (const r of models.runs) {
       const ok = r.conclusion === 'success';
       lines.push(
-        `| \`${r.role ?? '?'}\` | \`${r.lens_id ?? '—'}\` | \`${r.model_label ?? '?'}\` | ${ok ? 'success' : `**${r.conclusion ?? 'no conclusion'}**`} |`,
+        `| \`${r.role ?? '?'}\` | \`${r.lens_id ?? '—'}\` | \`${r.model_label ?? '?'}\` | ${ok ? 'success' : `**${r.conclusion ?? 'no conclusion'}**`} | ${formatReasoning(r.reasoning)} |`,
       );
     }
     lines.push(

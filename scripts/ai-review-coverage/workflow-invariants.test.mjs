@@ -907,3 +907,22 @@ describe('the README documents the NOT_REVIEWED allowlist accurately (EHAC-2294)
     expect(asNumber).toBe(NOT_REVIEWED_REASONS.length);
   });
 });
+
+
+describe('reasoning capability policy reaches every consumer', () => {
+  it('keeps the default MiMo override alongside its configured council model', () => {
+    const modes = JSON.parse(stringInputDefault('openrouter_model_reasoning_modes'));
+    const canonical = (id) => id.replace(/^openrouter\//, '');
+    const roster = stringInputDefault('review_models').split(',').map((id) => canonical(id.trim()));
+    expect(modes).toEqual({ 'xiaomi/mimo-v2.5-pro': 'enabled' });
+    expect(Object.keys(modes).filter((id) => !roster.includes(canonical(id)))).toEqual([]);
+  });
+
+  it('forwards the exact action input and the same map to producer and asserter', () => {
+    expect(withoutComments(source())).toContain('openrouter_model_reasoning_modes: ${{ inputs.openrouter_model_reasoning_modes }}');
+    const passes = [...source().matchAll(/^ {10}OPENROUTER_MODEL_REASONING_MODES: (.+)$/gm)].map((m) => m[1]);
+    expect(passes).toEqual(['${{ inputs.openrouter_model_reasoning_modes }}', '${{ inputs.openrouter_model_reasoning_modes }}']);
+    const gate = jobBlock(source(), /^ {4}name: AI Review Coverage\s*$/);
+    expect(gate.block).toContain('OPENROUTER_MODEL_REASONING_MODES: ${{ inputs.openrouter_model_reasoning_modes }}');
+  });
+});

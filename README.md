@@ -46,7 +46,7 @@ jobs:
 | `review_strategy` | string | `council` | Review strategy: `council` (4 lenses + validator), `crosscheck`, or `solo`. |
 | `review_models` | string | `deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,deepseek/deepseek-v4-flash,openrouter/z-ai/glm-5.3-flash` | Comma-separated OpenRouter model IDs assigned in order to Risk, Design, Tests, and Operations. |
 | `validator_model` | string | `deepseek/deepseek-v4-pro` | Model that synthesizes lens findings and posts the single deduplicated review. |
-| `thinking` | string | `high` | Reasoning effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. |
+| `thinking` | string | `high` | Requested Pi thinking: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Enabled-mode models request provider-default reasoning. |
 | `max_turns` | number | `30` | Max conversation turns per reviewer. Raised from `20` on 2026-08-16: the `tests` lane was flaking against the ceiling rather than the diff, failing twice at 20 and then passing at 18 on a near-identical diff. |
 | `severity_threshold` | string | `important` | Minimum severity to post (`info`, `important`, `critical`). |
 | `max_cost_usd` | string | `1.00` | Per-PR cost guardrail; elek auto-downgrades council → crosscheck → solo on large diffs to stay within budget. |
@@ -57,7 +57,8 @@ jobs:
 | `scope_paths` | string | (unset) | Comma-separated globs limiting which changed files are in scope. Evaluated **inside** this workflow, so an out-of-scope PR reports a green `NOT_REVIEWED` rather than no check run at all. Prefer this over a `paths:` filter on the caller — see the note below the table. |
 | `actor_filter` | string | (unset) | Allowlist of **human** actors. **Authoritative and exclusive when set**: `isActorAuthorized` returns the list result and never consults repo permissions, so anyone absent is denied. When unset, falls back to `OWNER`/`MEMBER`/`COLLABORATOR` and then a repo-permission lookup. |
 | `openrouter_provider_preferences` | string | (unset) | **EHAC-2280.** OpenRouter provider-routing preferences as a JSON object string, merged into the request's `provider` field. Parsed **fail-closed** in elek: unparseable JSON, a non-object, or any key outside the thirteen documented routing keys refuses the run rather than routing unmanaged. Unset means no `provider` object is sent and routing is exactly as before. Keep `allow_fallbacks: true` — excluding endpoints trades a latency problem for an availability one. Endpoint identity does not predict latency: the same endpoint (`deepinfra/fp8`) was measured at 386 ms and 10,277 ms seconds apart, a wider spread than between two different endpoints, which is why `preferred_min_throughput` (deprioritises, over a rolling window) is preferred to `order` (pins). |
-| `reasoning_max_tokens` | string | (unset) | **EHAC-2280.** Upper bound on reasoning tokens per model run, passed to elek. Unset fleet-wide by design — the spend only became measurable with `native_tokens_reasoning` (observed 0 vs 10 on the same prompt across two endpoints), and a guessed cap truncates a reasoning model mid-thought for a saving nobody has sized. Set it only once your own telemetry supports the number. |
+| `openrouter_model_reasoning_modes` | string | `{"xiaomi/mimo-v2.5-pro":"enabled"}` | Canonical OpenRouter model capability map beside the council roster. `effort` preserves Pi's named control; `enabled` requests provider-default reasoning. Callers may override; app and infra inherit this default. |
+| `reasoning_max_tokens` | string | (unset) | Optional OpenRouter budget replacing both effort and enabled. Controls are mutually exclusive; provider support determines enforcement. A successful request does not prove a hard token ceiling. Any scheduled off/budget conflict fails preflight. Production keeps this unset. |
 | `allowed_bots` | string | (unset) | Allowlist of bot actors (`*` permits all). Bot authorship is evaluated independently from human actor trust; without this input, bot-authored PRs report `NOT_REVIEWED`. |
 | `job_timeout_minutes` | number | `30` | Wall-clock ceiling for the WHOLE review job — the council plus the validator, not one model run. The real bound is serial: `setup + reviewer_cap + validator_cap`, because lenses run in parallel but the validator runs after them. A job killed by this cap loses the coverage record entirely, so raise it **before** raising `run_timeout_seconds`, never after. |
 | `run_timeout_seconds` | string | `600` | Per-run budget for the elek step. Cannot exceed the job's own cap. |
@@ -105,3 +106,18 @@ The `max_cost_usd` guardrail bounds each review. Actual spend varies with diff s
 
 - [EHA Care Monorepo](https://github.com/EHA-Clinics/eha_care)
 - [EHA Care Infra](https://github.com/EHA-Clinics/eha-care-infra)
+
+### Reasoning-mode evidence
+
+MiMo is configured with `enabled` because its catalog exposes reasoning without named-effort
+selection. `thinking: high` records the caller's request; MiMo's effective control is
+`provider-default`, not named high effort. A token budget, when deliberately configured, takes
+precedence over both modes. Off preserves Pi's existing payload in effort mode and omits reasoning
+in enabled mode; omission does not prove that a default-on or mandatory model stops reasoning.
+
+The shared workflow forwards the same mode map to Elek, the coverage producer, and the asserter.
+Configured runs carry sanitized reasoning controls on every logical run and physical attempt,
+including provider failures and failover. The job summary displays requested thinking, configured
+mode, and effective control. U9 fails closed on missing or inconsistent telemetry or a producer/gate
+mode-map mismatch. Historical summaries without a configured map remain parseable; a new configured
+run cannot silently fall back to that legacy interpretation. Raw reasoning is never retained.
