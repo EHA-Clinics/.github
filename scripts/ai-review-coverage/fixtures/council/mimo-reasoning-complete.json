@@ -53,7 +53,15 @@
         "assigned_model_label": "openrouter/deepseek/deepseek-v4-pro",
         "actual_model_label": "openrouter/deepseek/deepseek-v4-pro",
         "failover_used": false,
-        "attempt_count": 1
+        "attempt_count": 1,
+        "reasoning": {
+          "requestedThinking": "high",
+          "piThinking": "high",
+          "configuredMode": "effort",
+          "effectiveControl": "named-effort",
+          "adapted": false,
+          "effort": "high"
+        }
       },
       {
         "role": "reviewer",
@@ -67,35 +75,58 @@
         "assigned_model_label": "openrouter/xiaomi/mimo-v2.5-pro",
         "actual_model_label": "openrouter/xiaomi/mimo-v2.5-pro",
         "failover_used": false,
-        "attempt_count": 1
+        "attempt_count": 1,
+        "reasoning": {
+          "requestedThinking": "high",
+          "piThinking": "high",
+          "configuredMode": "enabled",
+          "effectiveControl": "provider-default",
+          "adapted": true
+        }
       },
       {
         "role": "reviewer",
         "lens_id": "tests",
-        "model_label": "openrouter/deepseek/deepseek-v4-pro",
+        "model_label": "openrouter/deepseek/deepseek-v4-flash",
         "conclusion": "success",
         "input_tokens": 1500,
         "output_tokens": 900,
         "cost_usd": 0.004,
         "failure_class": null,
         "assigned_model_label": "openrouter/deepseek/deepseek-v4-flash",
-        "actual_model_label": "openrouter/deepseek/deepseek-v4-pro",
-        "failover_used": true,
-        "attempt_count": 2
+        "actual_model_label": "openrouter/deepseek/deepseek-v4-flash",
+        "failover_used": false,
+        "attempt_count": 1,
+        "reasoning": {
+          "requestedThinking": "high",
+          "piThinking": "high",
+          "configuredMode": "effort",
+          "effectiveControl": "named-effort",
+          "adapted": false,
+          "effort": "high"
+        }
       },
       {
         "role": "reviewer",
         "lens_id": "operations",
-        "model_label": "openrouter/deepseek/deepseek-v4-pro",
+        "model_label": "openrouter/z-ai/glm-5.3-flash",
         "conclusion": "success",
         "input_tokens": 1500,
         "output_tokens": 900,
         "cost_usd": 0.004,
         "failure_class": null,
-        "assigned_model_label": "openrouter/deepseek/deepseek-v4-pro",
-        "actual_model_label": "openrouter/deepseek/deepseek-v4-pro",
+        "assigned_model_label": "openrouter/z-ai/glm-5.3-flash",
+        "actual_model_label": "openrouter/z-ai/glm-5.3-flash",
         "failover_used": false,
-        "attempt_count": 1
+        "attempt_count": 1,
+        "reasoning": {
+          "requestedThinking": "high",
+          "piThinking": "high",
+          "configuredMode": "effort",
+          "effectiveControl": "named-effort",
+          "adapted": false,
+          "effort": "high"
+        }
       },
       {
         "role": "validator-review",
@@ -109,7 +140,15 @@
         "assigned_model_label": "openrouter/deepseek/deepseek-v4-pro",
         "actual_model_label": "openrouter/deepseek/deepseek-v4-pro",
         "failover_used": false,
-        "attempt_count": 1
+        "attempt_count": 1,
+        "reasoning": {
+          "requestedThinking": "high",
+          "piThinking": "high",
+          "configuredMode": "effort",
+          "effectiveControl": "named-effort",
+          "adapted": false,
+          "effort": "high"
+        }
       },
       {
         "role": "validator",
@@ -123,7 +162,15 @@
         "assigned_model_label": "openrouter/deepseek/deepseek-v4-pro",
         "actual_model_label": "openrouter/deepseek/deepseek-v4-pro",
         "failover_used": false,
-        "attempt_count": 1
+        "attempt_count": 1,
+        "reasoning": {
+          "requestedThinking": "high",
+          "piThinking": "high",
+          "configuredMode": "effort",
+          "effectiveControl": "named-effort",
+          "adapted": false,
+          "effort": "high"
+        }
       }
     ],
     "attempts": [
@@ -135,15 +182,14 @@
         "actual_model": "openrouter/deepseek/deepseek-v4-pro",
         "failover": false,
         "conclusion": "success",
-        "failure_class": null,
-        "termination_reason": null,
-        "duration_seconds": 78.2,
-        "turns_used": 6,
-        "provider_retries": 0,
-        "input_tokens": 1500,
-        "cost_usd": 0.004,
-        "time_to_first_event_seconds": 2.1,
-        "max_idle_seconds_observed": 18.4
+        "reasoning": {
+          "requestedThinking": "high",
+          "piThinking": "high",
+          "configuredMode": "effort",
+          "effectiveControl": "named-effort",
+          "adapted": false,
+          "effort": "high"
+        }
       },
       {
         "lens_id": "design",
@@ -153,15 +199,13 @@
         "actual_model": "openrouter/xiaomi/mimo-v2.5-pro",
         "failover": false,
         "conclusion": "success",
-        "failure_class": null,
-        "termination_reason": null,
-        "duration_seconds": 78.2,
-        "turns_used": 6,
-        "provider_retries": 0,
-        "input_tokens": 1500,
-        "cost_usd": 0.004,
-        "time_to_first_event_seconds": 2.1,
-        "max_idle_seconds_observed": 18.4
+        "reasoning": {
+          "requestedThinking": "high",
+          "piThinking": "high",
+          "configuredMode": "enabled",
+          "effectiveControl": "provider-default",
+          "adapted": true
+        }
       },
       {
         "lens_id": "tests",
@@ -170,52 +214,32 @@
         "assigned_model": "openrouter/deepseek/deepseek-v4-flash",
         "actual_model": "openrouter/deepseek/deepseek-v4-flash",
         "failover": false,
-        "conclusion": "failure",
-        "failure_class": "stall",
-        "termination_reason": "stall",
-        "duration_seconds": 121.4,
-        "turns_used": 2,
-        "provider_retries": 0,
-        "input_tokens": 1500,
-        "cost_usd": 0.004,
-        "time_to_first_event_seconds": 1.9,
-        "max_idle_seconds_observed": 120
-      },
-      {
-        "lens_id": "tests",
-        "role": "reviewer",
-        "attempt": 2,
-        "assigned_model": "openrouter/deepseek/deepseek-v4-flash",
-        "actual_model": "openrouter/deepseek/deepseek-v4-pro",
-        "failover": true,
         "conclusion": "success",
-        "failure_class": null,
-        "termination_reason": null,
-        "duration_seconds": 78.2,
-        "turns_used": 6,
-        "provider_retries": 0,
-        "input_tokens": 1500,
-        "cost_usd": 0.004,
-        "time_to_first_event_seconds": 2.1,
-        "max_idle_seconds_observed": 18.4
+        "reasoning": {
+          "requestedThinking": "high",
+          "piThinking": "high",
+          "configuredMode": "effort",
+          "effectiveControl": "named-effort",
+          "adapted": false,
+          "effort": "high"
+        }
       },
       {
         "lens_id": "operations",
         "role": "reviewer",
         "attempt": 1,
-        "assigned_model": "openrouter/deepseek/deepseek-v4-pro",
-        "actual_model": "openrouter/deepseek/deepseek-v4-pro",
+        "assigned_model": "openrouter/z-ai/glm-5.3-flash",
+        "actual_model": "openrouter/z-ai/glm-5.3-flash",
         "failover": false,
         "conclusion": "success",
-        "failure_class": null,
-        "termination_reason": null,
-        "duration_seconds": 78.2,
-        "turns_used": 6,
-        "provider_retries": 0,
-        "input_tokens": 1500,
-        "cost_usd": 0.004,
-        "time_to_first_event_seconds": 2.1,
-        "max_idle_seconds_observed": 18.4
+        "reasoning": {
+          "requestedThinking": "high",
+          "piThinking": "high",
+          "configuredMode": "effort",
+          "effectiveControl": "named-effort",
+          "adapted": false,
+          "effort": "high"
+        }
       },
       {
         "lens_id": "validator-self-review",
@@ -225,15 +249,14 @@
         "actual_model": "openrouter/deepseek/deepseek-v4-pro",
         "failover": false,
         "conclusion": "success",
-        "failure_class": null,
-        "termination_reason": null,
-        "duration_seconds": 78.2,
-        "turns_used": 6,
-        "provider_retries": 0,
-        "input_tokens": 1500,
-        "cost_usd": 0.004,
-        "time_to_first_event_seconds": 2.1,
-        "max_idle_seconds_observed": 18.4
+        "reasoning": {
+          "requestedThinking": "high",
+          "piThinking": "high",
+          "configuredMode": "effort",
+          "effectiveControl": "named-effort",
+          "adapted": false,
+          "effort": "high"
+        }
       },
       {
         "lens_id": "validator",
@@ -243,24 +266,27 @@
         "actual_model": "openrouter/deepseek/deepseek-v4-pro",
         "failover": false,
         "conclusion": "success",
-        "failure_class": null,
-        "termination_reason": null,
-        "duration_seconds": 78.2,
-        "turns_used": 6,
-        "provider_retries": 0,
-        "input_tokens": 1500,
-        "cost_usd": 0.004,
-        "time_to_first_event_seconds": 2.1,
-        "max_idle_seconds_observed": 18.4
+        "reasoning": {
+          "requestedThinking": "high",
+          "piThinking": "high",
+          "configuredMode": "effort",
+          "effectiveControl": "named-effort",
+          "adapted": false,
+          "effort": "high"
+        }
       }
     ],
     "configured": {
       "review_models": [
         "openrouter/deepseek/deepseek-v4-pro",
         "openrouter/xiaomi/mimo-v2.5-pro",
-        "openrouter/deepseek/deepseek-v4-flash"
+        "openrouter/deepseek/deepseek-v4-flash",
+        "openrouter/z-ai/glm-5.3-flash"
       ],
-      "validator_model": "openrouter/deepseek/deepseek-v4-pro"
+      "validator_model": "openrouter/deepseek/deepseek-v4-pro",
+      "reasoning_modes": {
+        "xiaomi/mimo-v2.5-pro": "enabled"
+      }
     },
     "policy": {
       "producer_max_degraded": 1,
@@ -272,8 +298,10 @@
       "elek_warnings": []
     },
     "distinct_models": [
+      "openrouter/deepseek/deepseek-v4-flash",
       "openrouter/deepseek/deepseek-v4-pro",
-      "openrouter/xiaomi/mimo-v2.5-pro"
+      "openrouter/xiaomi/mimo-v2.5-pro",
+      "openrouter/z-ai/glm-5.3-flash"
     ],
     "rollup": {
       "runs_total": 6,
@@ -282,8 +310,8 @@
       "validator_runs_total": 2,
       "validator_runs_failed": 0,
       "failed_lens_ids": [],
-      "attempts_total": 7,
-      "failover_attempts": 1
+      "attempts_total": null,
+      "failover_attempts": null
     }
   },
   "rollup": {

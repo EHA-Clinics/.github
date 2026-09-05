@@ -7,7 +7,7 @@
 # Structural safety: elek's MCP server only exposes create_inline_comment and
 # update_tracking_comment — there are no approve/merge/close code paths.
 #
-# ─── elek pin: eha-v1.4.3 (full immutable SHA below) ──────────────────────────
+# ─── elek pin: eha-v1.4.4 (full immutable SHA below) ──────────────────────────
 # The EHA fork supplies the fail-closed coverage record, bounded council execution, and
 # pinned MCP dependencies used by this workflow. The separately named `AI Review Coverage`
 # job fails when a production-source file was omitted from the prompt or the requested
@@ -70,7 +70,7 @@ on:
       thinking:
         type: string
         default: 'high'
-        description: 'Reasoning effort: off, minimal, low, medium, high, xhigh'
+        description: 'Requested Pi thinking: off, minimal, low, medium, high, xhigh, max. Enabled-mode models use provider-default reasoning.'
       max_turns:
         type: number
         # Raised 20 -> 30 on 2026-08-16. At 20 the `tests` lane was flaking against the
@@ -104,6 +104,10 @@ on:
         # unchanged; DeepSeek V4 Pro remains the validator.
         default: 'deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,deepseek/deepseek-v4-flash,openrouter/z-ai/glm-5.3-flash'
         description: 'Comma-separated OpenRouter model ids for the council lenses (round-robin assigned).'
+      openrouter_model_reasoning_modes:
+        type: string
+        default: '{"xiaomi/mimo-v2.5-pro":"enabled"}'
+        description: 'Canonical OpenRouter model capability map: effort (default) or enabled (provider-default reasoning).'
       validator_model:
         type: string
         default: 'deepseek/deepseek-v4-pro'
@@ -305,14 +309,11 @@ on:
           routing unmanaged. Keep `allow_fallbacks` true — see the caller's own comment for why.
       reasoning_max_tokens:
         type: string
-        # NO DEFAULT, and no caller sets it today. Shipped unset on purpose (R-4): the cap is
-        # only now becoming measurable — `native_tokens_reasoning` came back 0 (DeepInfra) vs
-        # 10 (Novita) in the same run — and a guessed ceiling would truncate reasoning models
-        # mid-thought for a saving nobody has sized.
-        description: >
-          EHAC-2280. Upper bound on reasoning tokens per model run, passed through to elek.
-          Unset everywhere by design; set it only once a caller's own
-          `native_tokens_reasoning` telemetry supports the number.
+        # No default: provider acceptance alone does not establish budget enforcement.
+        description: >-
+          Optional OpenRouter reasoning budget replacing effort/enabled. Any scheduled off/budget
+          conflict fails preflight. HTTP acceptance does not prove cap enforcement; keep unset
+          until provider-reported usage supports a budget. Production leaves this unset.
       allowed_bots:
         type: string
         default: ''
@@ -623,7 +624,7 @@ jobs:
         # cost_usd / conclusion as outputs at EVERY ref, and all of them were unreachable
         # purely for want of a step id. The coverage measurement below consumes them.
         id: review
-        uses: EHA-Clinics/elek@9ee1391eabd4c937e523eee12bfe30d9d957c55e # eha-v1.4.3
+        uses: EHA-Clinics/elek@27bc281195582cd783e0b2ed62182007e139b3fb # eha-v1.4.4
         with:
           # pi's native openrouter adapter — elek's tested path. The OpenAI-compatible
           # Databricks AI Gateway (provider: openai) hung pi indefinitely on tool-enabled
@@ -707,6 +708,7 @@ jobs:
           # declarations for the measurement behind the routing knob and for why the
           # reasoning cap ships unset.
           openrouter_provider_preferences: ${{ inputs.openrouter_provider_preferences }}
+          openrouter_model_reasoning_modes: ${{ inputs.openrouter_model_reasoning_modes }}
           reasoning_max_tokens: ${{ inputs.reasoning_max_tokens }}
           sticky_comment: true
           # Structural safety: elek's MCP server only exposes create_inline_comment
@@ -782,7 +784,7 @@ jobs:
           REVIEW_COST_USD: ${{ steps.review.outputs.cost_usd }}
           # The LITERAL pinned SHA, not an expression: this is what makes branch U1 detect a
           # future elek bump that forgets to re-verify elek-prompt-budget.mjs.
-          ELEK_REF: 9ee1391eabd4c937e523eee12bfe30d9d957c55e
+          ELEK_REF: 27bc281195582cd783e0b2ed62182007e139b3fb
           REQUESTED_STRATEGY: ${{ inputs.review_strategy }}
           ACTOR_FILTER: ${{ inputs.actor_filter }}
           # EHAC-2103: the CONFIGURED council, so the coverage record can put what we asked for
@@ -799,6 +801,7 @@ jobs:
           # asserter can compare what the producer was told against what IT was told. Without
           # this the two halves would each apply their own tolerance and a mismatch would be
           # invisible — a gate and a producer disagreeing about policy while both report success.
+          OPENROUTER_MODEL_REASONING_MODES: ${{ inputs.openrouter_model_reasoning_modes }}
           COUNCIL_MAX_DEGRADED: ${{ inputs.max_degraded_lenses }}
           # For the `gh api repos/{repo}/pulls/{n}` lookup on the issue_comment path.
           GITHUB_TOKEN: ${{ github.token }}
@@ -899,5 +902,6 @@ jobs:
           # re-derives the quorum verdict from the recorded runs independently — it never trusts
           # elek's own status — and fails closed with a distinct policy-drift reason if the
           # producer was told something different.
+          OPENROUTER_MODEL_REASONING_MODES: ${{ inputs.openrouter_model_reasoning_modes }}
           COUNCIL_MAX_DEGRADED: ${{ inputs.max_degraded_lenses }}
         run: node .ai-review-gate/scripts/ai-review-coverage/assert-review-coverage.mjs

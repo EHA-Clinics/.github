@@ -24,3 +24,8 @@ green against it would only prove the gate tolerates their absence. Hand-editing
 Regenerate by hand when the schema moves. `elek.ref` must equal `ELEK_REF_VERIFIED`, which is
 read from `vendor/diff-context.manifest.json`; a fixture left at an older ref fails U1 first and
 masks everything the fixture was written to prove.
+
+- `mimo-reasoning-complete.json`: the four-model roster, MiMo binary/provider-default
+  controls, and named efforts for the other models; configured telemetry passes.
+- `mimo-reasoning-missing.json`: identical evidence except missing Design reasoning;
+  must fail U9 despite a COMPLETE verdict. Existing fixtures remain legacy no-map controls.
