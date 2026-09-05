@@ -3,7 +3,7 @@
   "regenerate_with": "node scripts/ai-review-coverage/generate-goldens.mjs",
   "regenerate_only_when": "the elek pin moves and vendor/diff-context.ts is re-vendored",
   "inputs": {
-    "upstream_commit": "27bc281195582cd783e0b2ed62182007e139b3fb",
+    "upstream_commit": "1d1b60f830c438994e9246799bcffe8605d3aa88",
     "upstream_blob_sha": "64441e769de897ed0b371e2321657fdbe80b2e87",
     "vendored_blob_sha": "64441e769de897ed0b371e2321657fdbe80b2e87",
     "generator_blob_sha": "5874a824943f4a05324592b8cb890ece46daf540"

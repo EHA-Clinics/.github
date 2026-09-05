@@ -121,3 +121,7 @@ including provider failures and failover. The job summary displays requested thi
 mode, and effective control. U9 fails closed on missing or inconsistent telemetry or a producer/gate
 mode-map mismatch. Historical summaries without a configured map remain parseable; a new configured
 run cannot silently fall back to that legacy interpretation. Raw reasoning is never retained.
+
+For enabled-mode models, Elek also sends the unchanged output limit as top-level `max_tokens`.
+MiMo rejects Pi's `max_completion_tokens` alias under the existing strict parameter policy.
+This output limit is separate from `reasoning_max_tokens`, which remains unset in production.
