@@ -259,7 +259,7 @@ describe('council model configuration', () => {
     expect(models).toEqual([
       'deepseek/deepseek-v4-pro',
       'xiaomi/mimo-v2.5-pro',
-      'deepseek/deepseek-v4-flash',
+      'deepseek/deepseek-v4.1-flash',
       'openrouter/z-ai/glm-5.3-flash',
     ]);
     expect(new Set(models).size).toBe(4);
