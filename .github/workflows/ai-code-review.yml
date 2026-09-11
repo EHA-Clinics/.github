@@ -103,10 +103,12 @@ on:
         # previous round-robin model, so the number of executions and validation semantics stay
         # unchanged; DeepSeek V4 Pro remains the validator.
         # AMENDED 2026-09-11 (EHAC-2634): the Tests lane moves deepseek-v4-flash -> deepseek-v4.1-flash.
-        # DeepSeek retires the legacy v4-flash alias onto V4.1-Flash, so this is explicit
-        # migration, not trial churn. Risk, Design, Operations and the validator are unchanged;
-        # V4.1-Flash supports named-effort reasoning, so no reasoning-modes entry is added.
-        default: 'deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,deepseek/deepseek-v4.1-flash,openrouter/z-ai/glm-5.3-flash'
+        # The Tests entry carries the explicit `openrouter/` provider prefix: elek resolves the
+        # provider from the spec's first segment, and the new model has no bundled native-provider
+        # entry, so a bare `deepseek/...` spec fails with "No API key found for deepseek" — observed
+        # on eha_care #4105 and eha-care-infra #727. Risk, Design, Operations and the validator are
+        # unchanged; V4.1-Flash supports named-effort reasoning, so no reasoning-modes entry is added.
+        default: 'deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,openrouter/deepseek/deepseek-v4.1-flash,openrouter/z-ai/glm-5.3-flash'
         description: 'Comma-separated OpenRouter model ids for the council lenses (round-robin assigned).'
       openrouter_model_reasoning_modes:
         type: string
@@ -142,8 +144,9 @@ on:
         # models whose pricing elek may not resolve from the provider.
         # AMENDED 2026-09-11 (EHAC-2634): V4.1 Flash replaces V4 Flash in the Tests lane, budgeted at
         # OpenRouter's standard 0.30/1.20 rates — conservative against DeepSeek first-party
-        # off-peak pricing (0.003 cache-hit / 0.15 / 0.60), same posture as the GLM entry.
-        default: 'xiaomi/mimo-v2.5-pro=0.435:0.87,deepseek/deepseek-v4.1-flash=0.30:1.20,openrouter/z-ai/glm-5.3-flash=0.15:0.50'
+        # off-peak pricing (0.003 cache-hit / 0.15 / 0.60), same posture as the GLM entry. The key
+        # mirrors the roster's explicit `openrouter/` prefix.
+        default: 'xiaomi/mimo-v2.5-pro=0.435:0.87,openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20,openrouter/z-ai/glm-5.3-flash=0.15:0.50'
         description: 'Per-model cost rates as model=inputPerMillion:outputPerMillion, comma-separated.'
       mode:
         type: string
