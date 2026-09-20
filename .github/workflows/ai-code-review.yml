@@ -42,8 +42,12 @@ on:
     inputs:
       model:
         type: string
-        default: 'deepseek/deepseek-v4-pro'
-        description: 'OpenRouter model id (e.g., deepseek/deepseek-v4-pro, xiaomi/mimo-v2.5-pro)'
+        # AMENDED 2026-09-20 (EHAC-2635): was 'deepseek/deepseek-v4-pro'. That floating alias is
+        # retired and the workspace guardrail now carries it in ignored_models, so it 404s with
+        # `model-ignored-by-guardrail` on every request. Leaving it as the single-strategy default
+        # would have left a dead model armed for any non-council run.
+        default: 'openrouter/deepseek/deepseek-v4.1-flash'
+        description: 'OpenRouter model id (e.g., openrouter/deepseek/deepseek-v4.1-flash, xiaomi/mimo-v2.5-pro)'
       trigger_phrase:
         type: string
         default: '@ai-review'
@@ -108,7 +112,15 @@ on:
         # entry, so a bare `deepseek/...` spec fails with "No API key found for deepseek" — observed
         # on eha_care #4105 and eha-care-infra #727. Risk, Design, Operations and the validator are
         # unchanged; V4.1-Flash supports named-effort reasoning, so no reasoning-modes entry is added.
-        default: 'deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,openrouter/deepseek/deepseek-v4.1-flash,openrouter/z-ai/glm-5.3-flash'
+        # AMENDED 2026-09-20 (EHAC-2635): the Risk lane moves deepseek-v4-pro -> glm-5.3-flash.
+        # The floating v4-pro alias is retired: it resolves to the April build, is subject to
+        # DeepSeek's silent V4.1 reroute, and the workspace guardrail now carries it in
+        # ignored_models, so it 404s on every request (measured on two repositories,
+        # 2026-09-19T22:12Z). Risk and Operations deliberately share glm-5.3-flash on cost
+        # grounds — see the distinct-model invariant in workflow-invariants.test.mjs, relaxed in
+        # the same change. glm-5.3-flash supports named-effort reasoning, so no reasoning-modes
+        # entry is added.
+        default: 'openrouter/z-ai/glm-5.3-flash,xiaomi/mimo-v2.5-pro,openrouter/deepseek/deepseek-v4.1-flash,openrouter/z-ai/glm-5.3-flash'
         description: 'Comma-separated OpenRouter model ids for the council lenses (round-robin assigned).'
       openrouter_model_reasoning_modes:
         type: string
@@ -116,7 +128,13 @@ on:
         description: 'Canonical OpenRouter model capability map: effort (default) or enabled (provider-default reasoning, with the unchanged output limit sent as max_tokens).'
       validator_model:
         type: string
-        default: 'deepseek/deepseek-v4-pro'
+        # AMENDED 2026-09-20 (EHAC-2635): deepseek-v4-pro -> the dated deepseek-v4-pro-0813
+        # snapshot. Same family, different canonical slug (20260813 vs the alias's 20260423), so
+        # it is immune to the V4.1 reroute and is separately admitted by the guardrail. Carries
+        # the explicit `openrouter/` prefix for the same reason the Tests lane does: a dated
+        # variant has no bundled native-provider entry, and a bare `deepseek/...` spec fails with
+        # "No API key found for deepseek".
+        default: 'openrouter/deepseek/deepseek-v4-pro-0813'
         description: 'Model that reconciles and validates lens findings before posting.'
       severity_threshold:
         type: string
@@ -146,7 +164,12 @@ on:
         # OpenRouter's standard 0.30/1.20 rates — conservative against DeepSeek first-party
         # off-peak pricing (0.003 cache-hit / 0.15 / 0.60), same posture as the GLM entry. The key
         # mirrors the roster's explicit `openrouter/` prefix.
-        default: 'xiaomi/mimo-v2.5-pro=0.435:0.87,openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20,openrouter/z-ai/glm-5.3-flash=0.15:0.50'
+        # AMENDED 2026-09-20 (EHAC-2635): V4 Pro 0813 needs an explicit entry. BUILTIN_RATES in
+        # elek keys `deepseek/deepseek-v4-pro` and its openrouter/ twin, but not the dated
+        # snapshot, and an unpriced model resolves to source "unknown" and $0 — which
+        # selectReviewPlanWithinBudget then FILTERS OUT of the figure compared against
+        # max_cost_usd, so the cap would silently stop counting the validator.
+        default: 'xiaomi/mimo-v2.5-pro=0.435:0.87,openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20,openrouter/z-ai/glm-5.3-flash=0.15:0.50,openrouter/deepseek/deepseek-v4-pro-0813=0.66:1.98'
         description: 'Per-model cost rates as model=inputPerMillion:outputPerMillion, comma-separated.'
       mode:
         type: string

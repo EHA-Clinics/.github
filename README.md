@@ -31,12 +31,12 @@ jobs:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
     with:
       review_strategy: 'council'
-      review_models: 'deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,openrouter/deepseek/deepseek-v4.1-flash,openrouter/z-ai/glm-5.3-flash'
-      validator_model: 'deepseek/deepseek-v4-pro'
+      review_models: 'openrouter/z-ai/glm-5.3-flash,xiaomi/mimo-v2.5-pro,openrouter/deepseek/deepseek-v4.1-flash,openrouter/z-ai/glm-5.3-flash'
+      validator_model: 'openrouter/deepseek/deepseek-v4-pro-0813'
       thinking: 'high'
       severity_threshold: 'important'
       max_cost_usd: '1.00'
-      cost_rates: 'xiaomi/mimo-v2.5-pro=0.435:0.87,openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20,openrouter/z-ai/glm-5.3-flash=0.15:0.50'
+      cost_rates: 'xiaomi/mimo-v2.5-pro=0.435:0.87,openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20,openrouter/z-ai/glm-5.3-flash=0.15:0.50,openrouter/deepseek/deepseek-v4-pro-0813=0.66:1.98'
 ```
 
 **Inputs:**
@@ -44,15 +44,15 @@ jobs:
 | Input | Type | Default | Description |
 |-------|------|---------|-------------|
 | `review_strategy` | string | `council` | Review strategy: `council` (4 lenses + validator), `crosscheck`, or `solo`. |
-| `review_models` | string | `deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,openrouter/deepseek/deepseek-v4.1-flash,openrouter/z-ai/glm-5.3-flash` | Comma-separated OpenRouter model IDs assigned in order to Risk, Design, Tests, and Operations. A leading `openrouter/` segment selects pi's OpenRouter adapter explicitly (required for models with no bundled native-provider entry). |
-| `validator_model` | string | `deepseek/deepseek-v4-pro` | Model that synthesizes lens findings and posts the single deduplicated review. |
+| `review_models` | string | `openrouter/z-ai/glm-5.3-flash,xiaomi/mimo-v2.5-pro,openrouter/deepseek/deepseek-v4.1-flash,openrouter/z-ai/glm-5.3-flash` | Comma-separated OpenRouter model IDs assigned in order to Risk, Design, Tests, and Operations. Risk and Operations deliberately share GLM 5.3 Flash (EHAC-2635, cost); the list must stay exactly four long because binding is positional. A leading `openrouter/` segment selects pi's OpenRouter adapter explicitly (required for models with no bundled native-provider entry). |
+| `validator_model` | string | `openrouter/deepseek/deepseek-v4-pro-0813` | Model that synthesizes lens findings and posts the single deduplicated review. |
 | `thinking` | string | `high` | Requested Pi thinking: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Enabled-mode models request provider-default reasoning. |
 | `max_turns` | number | `30` | Max conversation turns per reviewer. Raised from `20` on 2026-08-16: the `tests` lane was flaking against the ceiling rather than the diff, failing twice at 20 and then passing at 18 on a near-identical diff. |
 | `severity_threshold` | string | `important` | Minimum severity to post (`info`, `important`, `critical`). |
 | `max_cost_usd` | string | `1.00` | Per-PR cost guardrail; elek auto-downgrades council → crosscheck → solo on large diffs to stay within budget. |
-| `cost_rates` | string | `xiaomi/mimo-v2.5-pro=0.435:0.87,openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20,openrouter/z-ai/glm-5.3-flash=0.15:0.50` | `model=input:output` USD-per-million-token overrides. The GLM rate uses conservative standard pricing rather than a temporary promotion. |
+| `cost_rates` | string | `xiaomi/mimo-v2.5-pro=0.435:0.87,openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20,openrouter/z-ai/glm-5.3-flash=0.15:0.50,openrouter/deepseek/deepseek-v4-pro-0813=0.66:1.98` | `model=input:output` USD-per-million-token overrides. The GLM rate uses conservative standard pricing rather than a temporary promotion. |
 | `mode` | string | `review` | `review` and `review+edit` currently use the same read-only surface. |
-| `model` | string | `deepseek/deepseek-v4-pro` | Single-model override for `solo` strategy; ignored under `council`. |
+| `model` | string | `openrouter/deepseek/deepseek-v4.1-flash` | Single-model override for `solo` strategy; ignored under `council`. |
 | `trigger_phrase` | string | `@ai-review` | Comment phrase that triggers an on-demand review. |
 | `scope_paths` | string | (unset) | Comma-separated globs limiting which changed files are in scope. Evaluated **inside** this workflow, so an out-of-scope PR reports a green `NOT_REVIEWED` rather than no check run at all. Prefer this over a `paths:` filter on the caller — see the note below the table. |
 | `actor_filter` | string | (unset) | Allowlist of **human** actors. **Authoritative and exclusive when set**: `isActorAuthorized` returns the list result and never consults repo permissions, so anyone absent is denied. When unset, falls back to `OWNER`/`MEMBER`/`COLLABORATOR` and then a repo-permission lookup. |
