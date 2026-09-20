@@ -80,7 +80,8 @@
           "requestedThinking": "high",
           "piThinking": "high",
           "configuredMode": "enabled",
-          "effectiveControl": "provider-default",
+          "effectiveControl": "max-tokens",
+          "maxTokens": 12000,
           "adapted": true
         }
       },
@@ -203,7 +204,8 @@
           "requestedThinking": "high",
           "piThinking": "high",
           "configuredMode": "enabled",
-          "effectiveControl": "provider-default",
+          "effectiveControl": "max-tokens",
+          "maxTokens": 12000,
           "adapted": true
         }
       },
@@ -285,7 +287,10 @@
       ],
       "validator_model": "openrouter/deepseek/deepseek-v4-pro",
       "reasoning_modes": {
-        "xiaomi/mimo-v2.5-pro": "enabled"
+        "xiaomi/mimo-v2.5-pro": {
+          "mode": "enabled",
+          "max_tokens": 12000
+        }
       }
     },
     "policy": {

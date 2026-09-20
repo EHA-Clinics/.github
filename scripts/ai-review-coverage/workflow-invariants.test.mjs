@@ -954,7 +954,12 @@ describe('reasoning capability policy reaches every consumer', () => {
     const modes = JSON.parse(stringInputDefault('openrouter_model_reasoning_modes'));
     const canonical = (id) => id.replace(/^openrouter\//, '');
     const roster = stringInputDefault('review_models').split(',').map((id) => canonical(id.trim()));
-    expect(modes).toEqual({ 'xiaomi/mimo-v2.5-pro': 'enabled' });
+    // EHAC-2280: MiMo carries a PER-MODEL budget (object form, elek >= eha-v1.5.0). The number is
+    // sized from measured native_tokens_reasoning (see the input's comment); this pins the SHAPE —
+    // a budgeted `enabled` entry — so nobody quietly drops the cap or moves it onto the global
+    // reasoning_max_tokens, which would replace every lens's control at once.
+    expect(modes).toEqual({ 'xiaomi/mimo-v2.5-pro': { mode: 'enabled', max_tokens: 12000 } });
+    expect(Number.isSafeInteger(modes['xiaomi/mimo-v2.5-pro'].max_tokens)).toBe(true);
     expect(Object.keys(modes).filter((id) => !roster.includes(canonical(id)))).toEqual([]);
   });
 

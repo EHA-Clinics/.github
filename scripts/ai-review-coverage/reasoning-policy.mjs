@@ -1,20 +1,45 @@
 /** Control-only reasoning evidence shared by the coverage producer and asserter. */
 export const normalizeReasoningModel = (id) => String(id ?? '').trim().replace(/^openrouter\//, '');
 
+/**
+ * Canonical form of one map entry, mirroring elek's `canonicalReasoningConfig` exactly: a bare
+ * mode string when unbudgeted, `{ mode, max_tokens }` (those two keys, that order) when budgeted.
+ * Undefined means "not a valid entry". Extra or misspelt keys are invalid — `max_token` must not
+ * silently mean "no budget".
+ */
+export function canonicalReasoningConfig(raw) {
+  if (raw === 'effort' || raw === 'enabled') return raw;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  if (Object.keys(raw).sort().join(',') !== 'max_tokens,mode') return undefined;
+  const { mode, max_tokens } = raw;
+  if (mode !== 'effort' && mode !== 'enabled') return undefined;
+  if (!Number.isSafeInteger(max_tokens) || max_tokens <= 0) return undefined;
+  return { mode, max_tokens };
+}
+
 export function readReasoningModes(raw = '') {
   if (!String(raw).trim()) return {};
   const value = JSON.parse(raw);
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid reasoning mode map');
   const result = {};
-  for (const [key, mode] of Object.entries(value)) {
+  for (const [key, entry] of Object.entries(value)) {
     const id = normalizeReasoningModel(key);
-    if (!/^[a-z0-9~][a-z0-9._~-]*\/[a-z0-9][a-z0-9._:-]*$/.test(id) ||
-      !['effort', 'enabled'].includes(mode) || (Object.hasOwn(result, id) && result[id] !== mode)) {
+    const config = canonicalReasoningConfig(entry);
+    if (!/^[a-z0-9~][a-z0-9._~-]*\/[a-z0-9][a-z0-9._:-]*$/.test(id) || config === undefined ||
+      (Object.hasOwn(result, id) && JSON.stringify(result[id]) !== JSON.stringify(config))) {
       throw new Error('invalid reasoning mode map');
     }
-    result[id] = mode;
+    result[id] = config;
   }
   return result;
+}
+
+/** The control a model is configured with: `{ mode, maxTokens? }`. Unlisted models are `effort`. */
+export function configuredControl(map, modelId) {
+  const config = map[normalizeReasoningModel(modelId)];
+  if (config === undefined) return { mode: 'effort' };
+  if (typeof config === 'string') return { mode: config };
+  return { mode: config.mode, maxTokens: config.max_tokens };
 }
 
 export function sanitizeReasoning(raw) {
@@ -60,9 +85,19 @@ export function reasoningProblems(models, configuredRaw) {
       if (!required && record.reasoning === undefined) continue;
       const r = sanitizeReasoning(record.reasoning);
       const model = normalizeReasoningModel(record.actual_model_label ?? record.model_label ?? record.actual_model);
-      const expected = configured[model] ?? 'effort';
-      if (!r || r.configuredMode !== expected ||
-        (expected === 'enabled' && r.effectiveControl === 'provider-default' && !r.adapted)) {
+      const expected = configuredControl(configured, model);
+      if (!r || r.configuredMode !== expected.mode) {
+        problems.push(`missing or inconsistent reasoning telemetry in ${kind}`);
+        continue;
+      }
+      if (expected.maxTokens !== undefined) {
+        // A configured budget must be VISIBLE in what was sent: control `max-tokens` with that
+        // exact number. `provider-default` here means the cap was configured and not applied —
+        // the gap between "we set a budget" and "the model ran unbounded" is the whole point.
+        if (r.effectiveControl !== 'max-tokens' || r.maxTokens !== expected.maxTokens) {
+          problems.push(`configured reasoning budget not applied in ${kind}`);
+        }
+      } else if (expected.mode === 'enabled' && r.effectiveControl === 'provider-default' && !r.adapted) {
         problems.push(`missing or inconsistent reasoning telemetry in ${kind}`);
       }
     }
