@@ -109,6 +109,23 @@ as `jobs.review.outputs.coverage_json`, consumed as `needs.review.outputs.covera
                 "ranking_anomalies": [] },
   "review":   { "conclusion": "success", "input_tokens": 83000, "cost_usd": 0.0496,
                 "actor": "...", "event": "pull_request" },
+  "models":   { "runs": [ { "role": "reviewer", "lens_id": "risk", "model_label": "...",
+                            "conclusion": "success", "failure_class": null,
+                            "assigned_model_label": "...", "actual_model_label": "...",
+                            "failover_used": false, "attempt_count": 1,
+                            "serving_provider": "Novita", "quantization": null,
+                            "native_tokens_reasoning": 1187, "generation_time_ms": 41020,
+                            "latency_ms": 890, "reasoning": { "...": "see U9" } } ],
+                "attempts": [ { "lens_id": "risk", "attempt": 1, "assigned_model": "...",
+                                "actual_model": "...", "failover": false, "conclusion": "success",
+                                "failure_class": null, "termination_reason": null,
+                                "duration_seconds": 78.2, "turns_used": 6, "provider_retries": 0,
+                                "time_to_first_event_seconds": 2.1, "max_idle_seconds_observed": 18.4 } ],
+                "configured": { "review_models": [ "..." ], "validator_model": "...",
+                                "reasoning_modes": { "xiaomi/mimo-v2.5-pro": "enabled" } },
+                "policy": { "elek_status": "healthy | degraded | breached",
+                            "producer_max_degraded": 1, "elek_failed_reviewer_lens_ids": [] },
+                "distinct_models": [ "..." ], "rollup": { "...": "..." } },
   "rollup":   { "files_total": 15, "whole": 6, "source_partial": 4, "source_absent": 0,
                 "non_source_partial": 5, "non_source_absent": 0, "unknown_paths": 0 },
   "inventory": [ { "path": "...", "priority": 0, "status": "added",
@@ -121,6 +138,43 @@ as `jobs.review.outputs.coverage_json`, consumed as `needs.review.outputs.covera
 It carries **paths, sizes and counts only** — never diff content, never tokens, never secrets.
 
 ---
+
+## Reading the records back — the streak reader (EHAC-2280 AC #3, EHAC-2231)
+
+The workflow uploads every coverage record as the `ai-review-coverage` artifact (90 days,
+`if-no-files-found: error`) precisely so that a reader can work from records instead of job
+logs — a log echo has no format contract, and an absent echo parses identically to a clean one.
+`read-coverage-streak.mjs` is that reader.
+
+```bash
+GH_TOKEN=… node scripts/ai-review-coverage/read-coverage-streak.mjs \
+  --repo EHA-Clinics/eha_care --limit 40 \
+  --json summary.json --entries entries.json      # entries = the raw observations, re-analysable offline
+node scripts/ai-review-coverage/read-coverage-streak.mjs --from-entries entries.json
+```
+
+What it counts, and what it refuses to count:
+
+| Observation | Treated as |
+|---|---|
+| record with a council | a link in both streaks; contributes to every census |
+| record with `verdict: NOT_REVIEWED` | counted separately; never a link, never a break |
+| artifact expired / run cancelled / run never executed | out of window: counted, excluded from every figure |
+| completed run (success, failure, timed_out) with **no** artifact, or an unreadable one | **FAULT** — breaks both streaks, named in the output, exit 1 |
+| zero runs listed | **FAULT** — "inspected NOTHING" is not a clean streak, exit 1 |
+
+The `timeout`-free streak is the AC #3 figure. It counts `timeout` and not `elek_status`
+because `timeout` is the one class elek never retries, so the only way to a clean streak is for
+runs to actually finish; a council can read `degraded` for a reason a failover absorbed, and
+`healthy` for reasons nothing measured. Both streaks are reported, independently.
+
+Per-model `native_tokens_reasoning` percentiles are the distribution `reasoning_max_tokens`
+and any per-model budget must be sized from (elek `types.ts`, the workflow input's own
+description, and eha-care-infra's `check_budget_contract` all say so). A budget set from
+benchmark prose instead is guesswork; the reader exists so nobody has to.
+
+`.github/workflows/ai-review-streak.yml` runs the same script from inside a consumer on a
+schedule, with the consumer's own `GITHUB_TOKEN`, and writes the Markdown to the job summary.
 
 ## Running the tests locally
 
@@ -372,6 +426,8 @@ operator rule, nothing is filed on `selimozten/elek` or any other third-party re
 | `measure-review-coverage.mjs` | producer: pure `buildCoverage` core + thin CLI; runs in the `review` job; never exits non-zero |
 | `assert-review-coverage.mjs` | consumer: re-derives U1–U6, recomputes the verdict, exits per the contract |
 | `workflow-invariants.test.mjs` | parses the shipped workflow YAML and asserts the gate cannot be suppressed or skipped |
+| `read-coverage-streak.mjs` | **reader**: pure `summarizeCoverageRecords` core + `gh`-driven CLI; lists a consumer's council runs, downloads each `ai-review-coverage` artifact, and reports streaks, failure classes, per-model endpoint/reasoning distributions and roster drift. Exits non-zero only on a FAULT (record absent/unreadable, or nothing inspected). Run by `.github/workflows/ai-review-streak.yml` |
+| `reasoning-policy.mjs` | reasoning-control evidence shared by producer and asserter: mode-map parsing, telemetry sanitising, U9 problems |
 | `fixtures/` | three real `git diff`s + their provenance; see `fixtures/README.md` |
 
 ## Reasoning control evidence (U9)

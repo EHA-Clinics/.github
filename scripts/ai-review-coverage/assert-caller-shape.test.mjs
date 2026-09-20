@@ -12,6 +12,8 @@ import {
   inspectCallers,
   isOnDemand,
   jobLevelIfs,
+  ORG_DEFAULTED_INPUTS,
+  overriddenOrgDefaults,
   reusableRefs,
 } from './assert-caller-shape.mjs';
 
@@ -133,6 +135,38 @@ describe('C3 — pin discipline', () => {
         f('ai-review-on-demand.yml', onDemandCaller(CANON)),
       ]),
     ).toEqual([]);
+  });
+});
+
+describe('C4 — org-default override (drift)', () => {
+  const withOverride = (caller, key, value = "'x'") =>
+    caller.replace('    with:\n', `    with:\n      ${key}: ${value}\n`);
+
+  it('REPORTS an explicit review_models on the automatic caller', () => {
+    const findings = inspectCallers([f('ai-code-review.yml', withOverride(promotableCaller(), 'review_models'))]);
+    expect(findings.map((x) => x.code)).toEqual(['C4']);
+    expect(findings[0].message).toMatch(/`review_models`/);
+  });
+
+  it('REPORTS the on-demand caller too — C4 is about drift, which its if: gate does not excuse', () => {
+    const onDemandWith = onDemandCaller().replace('    secrets:\n', "    with:\n      cost_rates: 'a=1:2'\n    secrets:\n");
+    const findings = inspectCallers([f('ai-review-on-demand.yml', onDemandWith)]);
+    expect(findings.map((x) => x.code)).toEqual(['C4']);
+  });
+
+  it('names every overridden input in one finding', () => {
+    let caller = promotableCaller();
+    for (const key of ORG_DEFAULTED_INPUTS) caller = withOverride(caller, key);
+    const findings = inspectCallers([f('ai-code-review.yml', caller)]);
+    expect(findings).toHaveLength(1);
+    for (const key of ORG_DEFAULTED_INPUTS) expect(findings[0].message).toContain(`\`${key}\``);
+  });
+
+  it('does NOT count a commented-out override, or an input the org does not default', () => {
+    const commented = promotableCaller().replace('    with:\n', "    with:\n      # review_models: 'was here'\n");
+    expect(overriddenOrgDefaults(commented)).toEqual([]);
+    expect(overriddenOrgDefaults(withOverride(promotableCaller(), 'scope_paths'))).toEqual([]);
+    expect(inspectCallers([f('ai-code-review.yml', commented)])).toEqual([]);
   });
 });
 

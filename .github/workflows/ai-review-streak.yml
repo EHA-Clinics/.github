@@ -1,0 +1,97 @@
+# AI Review Streak — reads the council coverage records BACK (EHAC-2280 AC #3, EHAC-2231).
+#
+# ai-code-review.yml persists every council's coverage record as the `ai-review-coverage`
+# artifact so that a reader can answer, from records rather than from log scraping, the
+# questions the tickets ask: how many consecutive councils finished without a `timeout`-class
+# attempt, which OpenRouter endpoint served each lens, how many reasoning tokens each model
+# actually spent, and whether a repository's configured roster has drifted from the org
+# default. This workflow IS that reader, run on a schedule from inside each consumer.
+#
+# WHY A REUSABLE WORKFLOW AND NOT A JOB IN THIS REPOSITORY. The artifacts live on the
+# CALLING repository's runs, and `actions: read` on a private repository is only granted to
+# that repository's own GITHUB_TOKEN. Running here would need a cross-repo token — a new
+# secret to provision, rotate and audit — for a read the consumer can do for free. So the
+# consumer calls this workflow on a `schedule`, and the reader runs with the consumer's own
+# token against `${{ github.repository }}`, exactly as the coverage gate itself runs.
+#
+# OBSERVABILITY, NOT A GATE. A broken streak is a finding for a human, not a red check: the
+# review is permanently advisory and so is this. The ONLY non-zero exits are faults — a
+# completed review run with no record, an unreadable record, or an empty read — because
+# each of those means the coverage contract broke and a "perfect streak" over them would be
+# the measurement that cannot come out badly.
+#
+# There is deliberately NO error-suppression key anywhere in this file.
+
+name: AI Review Streak
+
+on:
+  workflow_call:
+    inputs:
+      limit:
+        type: string
+        default: '40'
+        description: 'Newest N caller runs to inspect, merged across the listed workflows.'
+      workflows:
+        type: string
+        default: 'ai-code-review.yml,ai-review-on-demand.yml'
+        description: 'Comma-separated caller workflow files whose runs carry the ai-review-coverage artifact.'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  streak:
+    name: AI Review Streak
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # The reader is checked out from the CALLED workflow's own commit, the same identity
+      # contract the coverage gate uses: the code tested in this repository is the code that
+      # runs, and a caller cannot pin the workflow to one revision and execute another.
+      - name: Checkout coverage gate scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .ai-review-gate
+          sparse-checkout: scripts/ai-review-coverage
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # Same major the reader's own test suite runs on (coverage-gate-tests.yml).
+          node-version: 24.10.0
+
+      - name: Read the coverage streak
+        env:
+          # The consumer's own token: `actions: read` on its own runs and artifacts, nothing
+          # else. `gh` reads GH_TOKEN; the value never appears in a `run:` body.
+          GH_TOKEN: ${{ github.token }}
+          LIMIT: ${{ inputs.limit }}
+          WORKFLOWS: ${{ inputs.workflows }}
+        # Inputs reach the script through the environment and are read as "$VAR". Nothing
+        # from `${{ }}` is interpolated into the shell text — the same rule the coverage
+        # record's persist step follows and workflow-invariants.test.mjs asserts there.
+        run: |
+          set -euo pipefail
+          node .ai-review-gate/scripts/ai-review-coverage/read-coverage-streak.mjs \
+            --repo "$GITHUB_REPOSITORY" \
+            --limit "$LIMIT" \
+            --workflows "$WORKFLOWS" \
+            --json "$RUNNER_TEMP/streak-summary.json" \
+            --entries "$RUNNER_TEMP/streak-entries.json"
+
+      # `if: always()` because the evidence matters MOST when the reader exited non-zero on
+      # a fault; `if-no-files-found: error` because an absent artifact must read as a fault
+      # to the next reader, never as an ordinary miss.
+      - name: Upload streak evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ai-review-streak
+          path: ${{ runner.temp }}/streak-*.json
+          if-no-files-found: error
+          retention-days: 90

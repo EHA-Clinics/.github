@@ -966,3 +966,68 @@ describe('reasoning capability policy reaches every consumer', () => {
     expect(gate.block).toContain('OPENROUTER_MODEL_REASONING_MODES: ${{ inputs.openrouter_model_reasoning_modes }}');
   });
 });
+
+/*
+ * The streak reader's workflow (EHAC-2280 AC #3). It is not a gate, so the suppression and
+ * skip rules above do not apply in the same way — but its IDENTITY and EVIDENCE rules do:
+ * it must execute the called commit's copy of the reader, it must not hide a fault, and it
+ * must upload what it read so an empty read can never be mistaken for a clean streak.
+ */
+describe('the AI Review Streak workflow reads records honestly (EHAC-2280 AC #3)', () => {
+  const STREAK_WORKFLOW = join(import.meta.dirname, '..', '..', '.github', 'workflows', 'ai-review-streak.yml');
+  const streak = () => readFileSync(STREAK_WORKFLOW, 'utf8');
+
+  it('checks out the reader from the called workflow commit — sparse, credentials not persisted', () => {
+    expect(inspectGateCheckoutIdentity(streak(), 1)).toEqual([]);
+    expect(streak()).toMatch(/^ {10}sparse-checkout: scripts\/ai-review-coverage\s*$/m);
+    expect(streak()).toMatch(/^ {10}persist-credentials: false\s*$/m);
+  });
+
+  it('carries no error-suppression key', () => {
+    expect(findSuppressionKeys(streak())).toEqual([]);
+  });
+
+  it('runs the reader from the pinned checkout against the CALLING repository', () => {
+    expect(streak()).toMatch(/node \.ai-review-gate\/scripts\/ai-review-coverage\/read-coverage-streak\.mjs/);
+    expect(streak()).toMatch(/--repo "\$GITHUB_REPOSITORY"/);
+  });
+
+  it('passes inputs through the environment, never interpolated into the run: body', () => {
+    const yaml = streak();
+    const idx = yaml.indexOf('- name: Read the coverage streak');
+    expect(idx).toBeGreaterThan(-1);
+    const next = yaml.indexOf('\n      - name:', idx + 1);
+    const step = yaml.slice(idx, next === -1 ? yaml.length : next);
+    const runIdx = step.indexOf('run: |');
+    expect(runIdx).toBeGreaterThan(-1);
+    expect(step.slice(runIdx)).not.toContain('${{');
+  });
+
+  it('asks for actions: read and contents: read and nothing else', () => {
+    const block = streak().match(/^permissions:\n((?: {2}[a-z-]+: [a-z]+\n)+)/m);
+    expect(block, 'top-level permissions block not found').not.toBeNull();
+    const perms = Object.fromEntries(block[1].trim().split('\n').map((l) => l.trim().split(': ')));
+    expect(perms).toEqual({ contents: 'read', actions: 'read' });
+  });
+
+  it('uploads the evidence with if: always() and if-no-files-found: error', () => {
+    const yaml = streak();
+    const idx = yaml.indexOf('- name: Upload streak evidence');
+    expect(idx).toBeGreaterThan(-1);
+    const step = yaml.slice(idx);
+    expect(step).toMatch(/^ {8}if: always\(\)$/m);
+    expect(step).toMatch(/^ {10}if-no-files-found: error\s*$/m);
+    expect(step).toMatch(/^ {10}name: ai-review-streak\s*$/m);
+  });
+
+  it('is a reusable workflow with no schedule of its own — this repository has no councils to read', () => {
+    expect(streak()).toMatch(/^ {2}workflow_call:/m);
+    expect(withoutComments(streak())).not.toMatch(/^ {2}schedule:/m);
+  });
+
+  it('pins every action to a 40-hex SHA', () => {
+    const refs = [...withoutComments(streak()).matchAll(/uses: [^@\s]+@(\S+)/g)].map((m) => m[1]);
+    expect(refs.length).toBeGreaterThan(0);
+    for (const ref of refs) expect(ref).toMatch(/^[0-9a-f]{40}$/);
+  });
+});
