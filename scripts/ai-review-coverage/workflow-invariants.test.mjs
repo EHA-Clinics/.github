@@ -253,17 +253,57 @@ describe('the review job exports the coverage record', () => {
 
 // EHAC-2166 — the council model config, guarded on the two ways it has actually gone wrong.
 describe('council model configuration', () => {
-  it('assigns one distinct model to each lens, with GLM 5.3 Flash on Operations', () => {
+  it('pins the council roster in lens order', () => {
     const models = stringInputDefault('review_models').split(',').map((model) => model.trim());
 
     expect(models).toEqual([
-      'deepseek/deepseek-v4-pro',
+      'openrouter/z-ai/glm-5.3-flash',
       'xiaomi/mimo-v2.5-pro',
       'openrouter/deepseek/deepseek-v4.1-flash',
       'openrouter/z-ai/glm-5.3-flash',
     ]);
-    expect(new Set(models).size).toBe(4);
-    expect(stringInputDefault('validator_model')).toBe('deepseek/deepseek-v4-pro');
+
+    // Exactly four. Lens binding is positional over a fixed four-lens catalog
+    // (models[i % models.length] in elek src/review/strategy.ts): a short list round-robins
+    // and a long one silently drops the extras. Length is what actually protects the
+    // lens -> model binding, and it is not relaxed.
+    expect(models.length).toBe(4);
+
+    // RELAXED 2026-09-20 (EHAC-2635). This asserted `new Set(models).size === 4` — one
+    // distinct model per lens. Risk and Operations now deliberately share glm-5.3-flash on
+    // cost grounds (owner decision, ~$15/month against the cheapest distinct alternative),
+    // so the council carries three distinct reviewer models rather than four.
+    //
+    // The weaker property is still worth asserting, because the failure this guard exists to
+    // catch is collapse, not duplication: a council whose lenses all run one model is not a
+    // council, it is one opinion rendered four times. Two independent families remain.
+    expect(new Set(models).size).toBeGreaterThanOrEqual(3);
+
+    expect(stringInputDefault('validator_model')).toBe('openrouter/deepseek/deepseek-v4-pro-0813');
+  });
+
+  // EHAC-2635. The floating alias resolves to the April build, is subject to DeepSeek's
+  // silent V4.1 reroute, and the workspace guardrail now carries it in ignored_models, so it
+  // 404s with `model-ignored-by-guardrail` on every request. Measured on two repositories,
+  // 2026-09-19T22:12Z: it took down the Risk lens and the validator simultaneously, and a
+  // failed validator breaches the council at any degradation level. The dated
+  // `-0813` snapshot is a DIFFERENT model with a different canonical slug, not a spelling of
+  // the same one, so a substring check would be wrong here.
+  it('never defaults to the retired deepseek-v4-pro alias', () => {
+    const defaults = withoutComments(source())
+      .split('\n')
+      .filter((line) => /^ {8}default: '[^']*'/.test(line))
+      .flatMap((line) => (line.match(/'([^']*)'/)?.[1] ?? '').split(','))
+      .map((entry) => entry.split('=')[0].trim())
+      .filter(Boolean);
+
+    expect(defaults.length, 'no quoted defaults found').toBeGreaterThan(0);
+    for (const entry of defaults) {
+      expect(
+        entry.replace(/^openrouter\//, ''),
+        `"${entry}" is the retired v4-pro alias; use deepseek/deepseek-v4-pro-0813`,
+      ).not.toBe('deepseek/deepseek-v4-pro');
+    }
   });
 
   it('budgets GLM 5.3 Flash at the conservative standard rate', () => {
