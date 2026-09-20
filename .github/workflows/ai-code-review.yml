@@ -124,8 +124,18 @@ on:
         description: 'Comma-separated OpenRouter model ids for the council lenses (round-robin assigned).'
       openrouter_model_reasoning_modes:
         type: string
-        default: '{"xiaomi/mimo-v2.5-pro":"enabled"}'
-        description: 'Canonical OpenRouter model capability map: effort (default) or enabled (provider-default reasoning, with the unchanged output limit sent as max_tokens).'
+        # EHAC-2280 (2026-09-20): MiMo carries a PER-MODEL reasoning budget. It is the only council
+        # model without named-effort control, so under `enabled` it ran provider-default and
+        # unbounded. Sized from the coverage records with read-coverage-streak.mjs over the newest
+        # 40 runs of eha_care and eha-care-infra (35 MiMo councils, 0 faults):
+        # native_tokens_reasoning p50 443–1206, p90 2428–5843, p99 4336–6106, max 6106. Budget =
+        # 2x the higher p99, rounded to 1k. It bounds reasoning spend; it is NOT claimed to fix
+        # MiMo's two 900s wall-clock timeouts, which are a streaming-speed matter. The GLOBAL
+        # reasoning_max_tokens stays unset — it would replace every lens's control at once.
+        # Requires elek >= eha-v1.5.0 (object-form map); older pins reject it at preflight, and the
+        # gate (reasoning-policy.mjs) fails U9 unless MiMo's telemetry shows max-tokens at this number.
+        default: '{"xiaomi/mimo-v2.5-pro":{"mode":"enabled","max_tokens":12000}}'
+        description: 'Canonical OpenRouter model capability map: effort (default), enabled (provider-default reasoning, with the unchanged output limit sent as max_tokens), or {"mode": ..., "max_tokens": N} to cap that model alone.'
       validator_model:
         type: string
         # AMENDED 2026-09-20 (EHAC-2635): deepseek-v4-pro -> the dated deepseek-v4-pro-0813
@@ -657,7 +667,7 @@ jobs:
         # cost_usd / conclusion as outputs at EVERY ref, and all of them were unreachable
         # purely for want of a step id. The coverage measurement below consumes them.
         id: review
-        uses: EHA-Clinics/elek@22134c0aae1a7ff50ece78758790966d7eefb1c9 # Elek #13 degraded coverage
+        uses: EHA-Clinics/elek@a520684f9998f2304df54e72e7fab1d6cc60afb9 # Elek #14 eha-v1.5.0: provider_unavailable failover, per-model reasoning budgets, label fix
         with:
           # pi's native openrouter adapter — elek's tested path. The OpenAI-compatible
           # Databricks AI Gateway (provider: openai) hung pi indefinitely on tool-enabled
@@ -817,7 +827,7 @@ jobs:
           REVIEW_COST_USD: ${{ steps.review.outputs.cost_usd }}
           # The LITERAL pinned SHA, not an expression: this is what makes branch U1 detect a
           # future elek bump that forgets to re-verify elek-prompt-budget.mjs.
-          ELEK_REF: 22134c0aae1a7ff50ece78758790966d7eefb1c9
+          ELEK_REF: a520684f9998f2304df54e72e7fab1d6cc60afb9
           REQUESTED_STRATEGY: ${{ inputs.review_strategy }}
           ACTOR_FILTER: ${{ inputs.actor_filter }}
           # EHAC-2103: the CONFIGURED council, so the coverage record can put what we asked for
