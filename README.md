@@ -84,6 +84,46 @@ jobs:
 |--------|----------|-------------|
 | `OPENROUTER_API_KEY` | Yes | Dedicated AI-review system key, supplied as an organization secret only to audited caller repositories. |
 
+### `ai-review-streak.yml`
+
+Reads the council's coverage records **back**. Every `ai-code-review.yml` run persists its
+coverage record as the `ai-review-coverage` artifact; this reusable workflow runs
+`scripts/ai-review-coverage/read-coverage-streak.mjs` against the calling repository's own runs
+and writes a job summary with: the count of consecutive councils with no `timeout`-class attempt
+(EHAC-2280 AC #3), the `elek_status: healthy` streak, a failure-class census over physical
+attempts, per-model serving-endpoint and reasoning-token distributions (the numbers any
+reasoning cap must be sized from), diff-size-vs-outcome buckets, and configured-roster drift.
+
+It is observability, not a gate. The only non-zero exits are **faults** — a completed review run
+with no record, an unreadable record, or an empty read — because each means the coverage contract
+broke, and a "perfect streak" computed over them is a measurement that cannot come out badly.
+
+It is reusable rather than scheduled here because the artifacts live on the *consumer's* runs and
+only the consumer's `GITHUB_TOKEN` can read them without a new cross-repo secret.
+
+**Usage** (weekly, in the consumer repository):
+
+```yaml
+name: AI Review Streak
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  streak:
+    uses: EHA-Clinics/.github/.github/workflows/ai-review-streak.yml@<SHA-PIN>
+```
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `limit` | `'40'` | Newest N caller runs to inspect, merged across the listed workflows. |
+| `workflows` | `'ai-code-review.yml,ai-review-on-demand.yml'` | Caller workflow files whose runs carry the artifact. |
+
+The same script runs locally for a one-off read: `GH_TOKEN=… node scripts/ai-review-coverage/read-coverage-streak.mjs --repo EHA-Clinics/eha_care --limit 40 --entries entries.json`; `--from-entries entries.json` re-analyses a saved read offline.
+
 ## Adopting in a New Repo
 
 1. **Grant the secret.** Add the repository to the selected-repository visibility of the dedicated organization `OPENROUTER_API_KEY`; do not create a shadow repository secret.

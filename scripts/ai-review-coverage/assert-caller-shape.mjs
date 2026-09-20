@@ -19,6 +19,18 @@
  *   C1  no workflow-level `paths:` under the `pull_request:` trigger
  *   C2  no job-level `if:` on the automatic caller's review job
  *   C3  every reusable-workflow ref is a 40-hex SHA, and all callers agree on ONE SHA
+ *   C4  the caller overrides a council input the shared workflow defaults for everyone
+ *
+ * C4 is a different kind of finding from the other three: DRIFT, not unreportability. An
+ * explicit `review_models` / `cost_rates` / `validator_model` / reasoning-mode map freezes
+ * that repository's council on the day it was written, and the org repo's roster invariants
+ * (distinct models, every priced model used, no retired alias) never see the overridden
+ * value. Measured: the org roster moved twice in September 2026 (EHAC-2634, EHAC-2635) while
+ * eha-care-infra's explicit `review_models` sat nine days behind on a lens DeepSeek had
+ * already retired, and its own policy test could not notice because it compared the repo's
+ * two callers to each other rather than to the default. C4 is REPORTED so the drift is
+ * visible in every council log; it is not meant to be enforced org-wide, because a consumer
+ * may override deliberately. The place to forbid an override is that repository's own test.
  *
  * C1 and C2 both make a check UNREPORTABLE rather than failing: a paths-filtered workflow
  * never dispatches, and a skipped job produces no check run. A required context that is
@@ -68,6 +80,24 @@ export const jobLevelIfs = (text) =>
 export const reusableRefs = (text) =>
   [...text.matchAll(CALLER_RE)].map((m) => m[1].replace(/\s+#.*$/, '').trim());
 
+/**
+ * Council inputs the shared workflow defaults for every consumer. Passing one explicitly is
+ * how a repository's council quietly stops following the org roster (C4).
+ */
+export const ORG_DEFAULTED_INPUTS = Object.freeze([
+  'review_models',
+  'cost_rates',
+  'validator_model',
+  'openrouter_model_reasoning_modes',
+]);
+
+/**
+ * Org-defaulted inputs this caller sets under `with:` — six-space indent, the level a
+ * reusable-workflow input sits at. A commented-out line does not count.
+ */
+export const overriddenOrgDefaults = (text) =>
+  ORG_DEFAULTED_INPUTS.filter((key) => new RegExp(`^ {6}${key}:`, 'm').test(text));
+
 export function inspectCallers(files) {
   const findings = [];
   const allRefs = [];
@@ -104,6 +134,19 @@ export function inspectCallers(files) {
             `them as a green NOT_REVIEWED verdict.`,
         });
       }
+    }
+
+    const overrides = overriddenOrgDefaults(text);
+    if (overrides.length > 0) {
+      findings.push({
+        code: 'C4',
+        file: name,
+        message:
+          `overrides org-defaulted council input(s) ${overrides.map((k) => `\`${k}\``).join(', ')}. ` +
+          `An override freezes this repo's council on the day it was written and hides it from ` +
+          `the org roster invariants; eha-care-infra sat nine days on a retired lens this way ` +
+          `(EHAC-2635). Inherit, unless the difference is deliberate and written down beside it.`,
+      });
     }
 
     for (const ref of refs) {
@@ -175,7 +218,7 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop()
   }
 
   if (findings.length === 0) {
-    console.log(`All ${callerCount} caller file(s) are promotable: no paths: filter, no job-level if:, one 40-hex pin.`);
+    console.log(`All ${callerCount} caller file(s) are promotable: no paths: filter, no job-level if:, one 40-hex pin, no org-default override.`);
     process.exit(0);
   }
 
