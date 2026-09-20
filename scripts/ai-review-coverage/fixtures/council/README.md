@@ -29,3 +29,8 @@ masks everything the fixture was written to prove.
   controls, and named efforts for the other models; configured telemetry passes.
 - `mimo-reasoning-missing.json`: identical evidence except missing Design reasoning;
   must fail U9 despite a COMPLETE verdict. Existing fixtures remain legacy no-map controls.
+- `mimo-reasoning-capped.json`: the same council under a PER-MODEL budget
+  (`{"xiaomi/mimo-v2.5-pro":{"mode":"enabled","max_tokens":12000}}`); Design's telemetry reads
+  `effectiveControl: max-tokens, maxTokens: 12000`. Passes under the capped map; `reasoning-policy.test.mjs`
+  mutates it to prove U9 fires when the budget is configured but not applied, or applied at a
+  different number, or when producer and gate disagree on whether a budget exists.

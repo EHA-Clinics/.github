@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { deriveModels, renderJobSummary } from './measure-review-coverage.mjs';
 import { evaluate } from './assert-review-coverage.mjs';
+import { canonicalReasoningConfig, configuredControl, readReasoningModes } from './reasoning-policy.mjs';
 
 const MIMO = 'xiaomi/mimo-v2.5-pro';
 const env = { OPENROUTER_MODEL_REASONING_MODES: JSON.stringify({ [MIMO]: 'enabled' }) };
@@ -70,5 +71,63 @@ describe('reasoning gate positive and negative controls', () => {
     expect(evaluate({ reviewResult: 'success', coverageRaw: JSON.stringify(coverage), env }).exitCode).toBe(0);
     second.reasoning = reasoning;
     expect(evaluate({ reviewResult: 'success', coverageRaw: JSON.stringify(coverage), env }).exitCode).toBe(1);
+  });
+});
+
+const CAPPED_MAP = { [MIMO]: { mode: 'enabled', max_tokens: 12000 } };
+const cappedEnv = { OPENROUTER_MODEL_REASONING_MODES: JSON.stringify(CAPPED_MAP) };
+const capped = () => JSON.parse(readFileSync(new URL('./fixtures/council/mimo-reasoning-capped.json', import.meta.url), 'utf8'));
+
+describe('per-model reasoning budget — the gate mirrors elek\'s map schema exactly', () => {
+  it('parses the object form to the same canonical shape elek produces, and rejects what elek rejects', () => {
+    expect(readReasoningModes(JSON.stringify(CAPPED_MAP))).toEqual(CAPPED_MAP);
+    expect(readReasoningModes(JSON.stringify({ ['openrouter/' + MIMO]: CAPPED_MAP[MIMO] }))).toEqual(CAPPED_MAP);
+    expect(configuredControl(CAPPED_MAP, 'openrouter/' + MIMO)).toEqual({ mode: 'enabled', maxTokens: 12000 });
+    expect(configuredControl(CAPPED_MAP, 'z-ai/glm-5.3-flash')).toEqual({ mode: 'effort' });
+    expect(canonicalReasoningConfig('effort')).toBe('effort');
+    for (const bad of [
+      { mode: 'enabled' }, { max_tokens: 10 }, { mode: 'enabled', max_tokens: 0 }, { mode: 'enabled', max_tokens: -5 },
+      { mode: 'enabled', max_tokens: 1.5 }, { mode: 'enabled', max_tokens: '10' }, { mode: 'enabled', max_token: 10 },
+      { mode: 'enabled', max_tokens: 10, extra: 1 }, { mode: 'high', max_tokens: 10 }, [], null, 'high',
+    ]) {
+      expect(canonicalReasoningConfig(bad), JSON.stringify(bad)).toBeUndefined();
+      expect(() => readReasoningModes(JSON.stringify({ [MIMO]: bad }))).toThrow(/invalid reasoning mode map/);
+    }
+    // Same model spelled two ways with DIFFERENT budgets is a conflict; with the same budget it is not.
+    expect(() => readReasoningModes(JSON.stringify({ [MIMO]: CAPPED_MAP[MIMO], ['openrouter/' + MIMO]: { mode: 'enabled', max_tokens: 1 } }))).toThrow();
+    expect(readReasoningModes(JSON.stringify({ [MIMO]: CAPPED_MAP[MIMO], ['openrouter/' + MIMO]: CAPPED_MAP[MIMO] }))).toEqual(CAPPED_MAP);
+  });
+
+  it('passes a capped MiMo whose telemetry shows the cap, and renders it', () => {
+    const coverage = capped();
+    expect(evaluate({ reviewResult: 'success', coverageRaw: JSON.stringify(coverage), env: cappedEnv }).exitCode).toBe(0);
+    expect(renderJobSummary(coverage)).toContain('configuredMode=enabled; effectiveControl=max-tokens; maxTokens=12000');
+  });
+
+  it('fails U9 when a budget is configured but the run reports provider-default — the cap was not applied', () => {
+    const coverage = capped();
+    coverage.models.runs[1].reasoning = { ...reasoning }; // provider-default, adapted
+    const result = evaluate({ reviewResult: 'success', coverageRaw: JSON.stringify(coverage), env: cappedEnv });
+    expect(result.exitCode).toBe(1);
+    expect(result.lines.join('\n')).toMatch(/U9 .*configured reasoning budget not applied/);
+  });
+
+  it('fails U9 when the applied budget differs from the configured one', () => {
+    const coverage = capped();
+    coverage.models.attempts[1].reasoning = { ...coverage.models.attempts[1].reasoning, maxTokens: 4096 };
+    const result = evaluate({ reviewResult: 'success', coverageRaw: JSON.stringify(coverage), env: cappedEnv });
+    expect(result.exitCode).toBe(1);
+    expect(result.lines.join('\n')).toContain('configured reasoning budget not applied');
+  });
+
+  it('fails U9 on a producer/gate mismatch between a budgeted and an unbudgeted map', () => {
+    // The record was produced under the capped map; the gate is handed the plain one.
+    const result = evaluate({ reviewResult: 'success', coverageRaw: JSON.stringify(capped()), env });
+    expect(result.exitCode).toBe(1);
+    expect(result.lines.join('\n')).toContain('producer/gate reasoning mode configuration mismatch');
+  });
+
+  it('still accepts the unbudgeted map and its provider-default evidence unchanged', () => {
+    expect(evaluate({ reviewResult: 'success', coverageRaw: JSON.stringify(current()), env }).exitCode).toBe(0);
   });
 });
