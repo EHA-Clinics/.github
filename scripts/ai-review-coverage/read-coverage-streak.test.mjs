@@ -224,6 +224,42 @@ describe('summarizeCoverageRecords', () => {
     expect(s.roster.current).toBe(`${healthy.models.configured.review_models.join(',')} → ${healthy.models.configured.validator_model}`);
   });
 
+  it('census the validator roles separately, with the independence collapse visible (EHAC-2833)', () => {
+    const s = summarizeCoverageRecords(entriesOf(healthy));
+    const validate = s.validator_roles;
+    // healthy-council carries no attempt history, so attemptsOf PROJECTS each logical run
+    // into one marked attempt: two validator-role logical runs -> two validator attempts,
+    // both successful, no durations (projections carry none).
+    expect(validate.logical_runs).toBe(2);
+    expect(validate.failed_runs).toBe(0);
+    expect(validate.attempts).toBe(2);
+    expect(validate.failed_attempts).toBe(0);
+    expect(validate.independence_collapses).toBe(0);
+    expect(validate.stale_head).toBe(0);
+    expect(validate.duration_seconds.n).toBe(0);
+  });
+
+  it('counts stale-head councils (U4) and 404 failover collapses into the validator census', () => {
+    const raced = structuredClone(healthy);
+    raced.refs = { ...healthy.refs, head_sha_git: 'a'.repeat(40), head_sha_event: 'b'.repeat(40), sha_match: false };
+    const collapsed = structuredClone(healthy);
+    // A measured attempt history (older fixtures carry none) with a 404 failover: the audit
+    // was ASSIGNED to the validator and ran on a reviewer model.
+    collapsed.models.attempts = [{
+      lens_id: 'validator-self-review', role: 'validator-review', attempt: 1,
+      assigned_model: 'openrouter/deepseek/deepseek-v4-pro-0813', actual_model: 'z-ai/glm-5.3-flash',
+      failover: true, conclusion: 'success', failure_class: null, duration_seconds: 312.4,
+      projected_from_runs: false,
+    }];
+    const s = summarizeCoverageRecords(entriesOf(raced, collapsed));
+    expect(s.validator_roles.stale_head).toBe(1);
+    // raced contributes its 2 projected validator attempts, collapsed its 1 measured one.
+    expect(s.validator_roles.attempts).toBe(3);
+    expect(s.validator_roles.independence_collapses).toBe(1);
+    expect(s.validator_roles.failover_in).toBe(1);
+    expect(s.validator_roles.duration_seconds.n).toBe(1);
+  });
+
   it('records the window and the pin census', () => {
     const s = summarizeCoverageRecords(entriesOf(healthy, healthy));
     expect(s.window).toEqual({ newest: '2026-09-20T12:00:00Z', oldest: '2026-09-19T12:00:00Z' });

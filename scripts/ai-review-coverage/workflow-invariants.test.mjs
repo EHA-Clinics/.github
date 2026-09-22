@@ -765,13 +765,15 @@ describe('the stall watchdog and the degradation tolerance are wired end to end'
 });
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════════
- * EHAC-2231 — the job ceiling is adjustable, and defaults to what the literal used to be.
+ * EHAC-2231 — the job ceiling is adjustable. Default RAISED 30 -> 35 by EHAC-2833 for the
+ * retry-aware guard formula; consumers that never opt in are unchanged by GitHub's elapsed-
+ * minutes billing, so the default is headroom, not a policy.
  * ═══════════════════════════════════════════════════════════════════════════════════════════ */
-describe('the review job ceiling is an input, defaulting to the previous literal', () => {
-  it('declares job_timeout_minutes with default 30', () => {
+describe('the review job ceiling is an input, defaulting to the EHAC-2833 literal', () => {
+  it('declares job_timeout_minutes with default 35', () => {
     expect(source()).toMatch(/^ {6}job_timeout_minutes:\n {8}type: number/m);
-    expect(source(), 'a default other than 30 would change every consumer silently').toMatch(
-      /^ {6}job_timeout_minutes:[\s\S]{0,3000}?^ {8}default: 30\s*$/m,
+    expect(source(), 'a default other than 35 would change every consumer silently').toMatch(
+      /^ {6}job_timeout_minutes:[\s\S]{0,3000}?^ {8}default: 35\s*$/m,
     );
   });
 
@@ -833,6 +835,45 @@ describe('EHAC-2280 — the serial-budget guard and routing knobs reach elek', (
       expect(decl, `${key} declaration not found`).not.toBeNull();
       expect(decl[1], `${key} must not carry a default`).not.toMatch(/^ {8}default:/m);
     }
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════════
+ * EHAC-2833 — the validator roles get their own wall clock and thinking plumbing.
+ *
+ * The DEFAULTS are the load-bearing part: `validator_run_timeout_seconds` defaults to EMPTY
+ * (inherit `run_timeout_seconds` inside elek) and `validator_thinking` to EMPTY (inherit
+ * `thinking`). A numeric default for the timeout would move the serial worst case of every
+ * default consumer past the job cap — 37 + 2x1200 + 1200 = 3037s against the pre-EHAC-2833
+ * 30-minute default — and either refuse every fleet review at preflight or guillotine
+ * mid-validator, losing the coverage record. Written RED against the passthroughs first.
+ * ═══════════════════════════════════════════════════════════════════════════════════════════ */
+describe('EHAC-2833 — validator timeout and thinking reach elek', () => {
+  const review = () => jobBlock(source(), /^ {4}name: AI Code Review \(/);
+
+  it('declares and forwards validator_run_timeout_seconds and validator_thinking', () => {
+    const text = source();
+    const block = withoutComments(review().block);
+    for (const key of ['validator_run_timeout_seconds', 'validator_thinking']) {
+      expect(text, `${key} is not a workflow_call input`).toMatch(
+        new RegExp(`^ {6}${key}:\\n {8}type: string`, 'm'),
+      );
+      expect(block, `${key} is declared but never reaches elek`).toMatch(
+        new RegExp(`^ {10}${key}: \\$\\{\\{ inputs\\.${key} \\}\\}\\s*$`, 'm'),
+      );
+    }
+  });
+
+  it('defaults validator_run_timeout_seconds to EMPTY (inherit), never to a number', () => {
+    const decl = source().match(/^ {6}validator_run_timeout_seconds:\n([\s\S]*?)(?=^ {6}[a-z_]+:$)/m);
+    expect(decl, 'validator_run_timeout_seconds declaration not found').not.toBeNull();
+    expect(decl[1], 'the default must be the empty string — a numeric default would break every un-adopted consumer').toMatch(/^ {8}default: ''\s*$/m);
+  });
+
+  it('defaults validator_thinking to EMPTY (inherit), never to a level', () => {
+    const decl = source().match(/^ {6}validator_thinking:\n([\s\S]*?)(?=^ {6}[a-z_]+:$)/m);
+    expect(decl, 'validator_thinking declaration not found').not.toBeNull();
+    expect(decl[1], 'the default must stay empty so thinking inheritance is byte-identical').toMatch(/^ {8}default: ''\s*$/m);
   });
 });
 

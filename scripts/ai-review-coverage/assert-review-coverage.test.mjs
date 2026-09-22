@@ -376,6 +376,17 @@ describe('UNKNOWN branches — every one exits non-zero', () => {
     expectUnknown({ COVERAGE_JSON: JSON.stringify(base) }, 'U4');
   });
 
+  it('U4: the remedy names the re-run recovery while the verdict stays red (EHAC-2833)', () => {
+    const base = JSON.parse(payload());
+    base.refs = { ...base.refs, head_sha_git: 'a'.repeat(40), head_sha_event: 'b'.repeat(40), sha_match: false };
+    const result = run({ COVERAGE_JSON: JSON.stringify(base) });
+    // Actionable, NOT non-blocking: exit 1 is asserted by expectUnknown above; here we
+    // assert the reader gets the direction and the exact recovery in the same line.
+    expect(result.stdout).toContain('@ai-review');
+    expect(result.stdout).toContain('re-run');
+    expect(result.status).toBe(1);
+  });
+
   it('U5: COVERAGE_JSON missing entirely', () => {
     expectUnknown({}, 'U5');
   });
