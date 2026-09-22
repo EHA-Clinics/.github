@@ -243,14 +243,63 @@ export function summarizeCoverageRecords(entries, { generatedAt = new Date().toI
   // retries — so folding it into the per-model table hid exactly the population the
   // 2026-09-21/22 PR #4235 outages belonged to. `independence_collapses` counts
   // validator-review attempts whose ACTUAL model differs from their ASSIGNED one (the
-  // 404 failover runs the audit on a reviewer model); `stale_head` counts councils whose
-  // record names a different head SHA than the check run (U4), so the race window can
-  // be sized from records rather than anecdotes.
+  // 404 failover runs the audit on a reviewer model). EHAC-2841: the census is now
+  // PER-ROLE as well — `by_role['validator-review']` (the audit lens, where the 900s
+  // wall-clock failures lived) vs `by_role['validator']` (the synthesis, whose runs are
+  // much faster and were diluting every aggregate figure) — and `stale_head` MOVED OUT
+  // to a council-level metric: U4 is a property of the council's refs, not of a model
+  // role, so counting it inside the validator census misfiled it. Schema bumps to 2.
   const validatorRoles = new Set(['validator', 'validator-review']);
+  const validatorRoleCensus = () => ({
+    logical_runs: 0, failed_runs: 0, attempts: 0, failed_attempts: 0, failover_in: 0,
+    independence_collapses: 0, failure_classes: {}, models: {}, duration_seconds: [],
+  });
   const validatorCensus = {
     logical_runs: 0, failed_runs: 0, attempts: 0, failed_attempts: 0, failover_in: 0,
-    failure_classes: {}, models: {}, independence_collapses: 0, stale_head: 0,
+    failure_classes: {}, models: {}, independence_collapses: 0,
     duration_seconds: [],
+    by_role: { 'validator-review': validatorRoleCensus(), validator: validatorRoleCensus() },
+  };
+  const staleHead = { councils: 0, runs: [] };
+
+  // A collapse is an independence defect ONLY on the validator-review audit lens: the
+  // failover roster is reviewer-only, so a 404 failover runs the audit on a reviewer
+  // model — two nominally independent opinions delivered by one model. (L5/EHAC-2841:
+  // this used to count ANY validator-role failover, which overcounts if the roster ever
+  // gains a second validator-class model.)
+  const isIndependenceCollapse = (a, role) =>
+    a.failover === true && role === 'validator-review' &&
+    String(a.assigned_model ?? '') !== '' && String(a.assigned_model) !== String(a.actual_model ?? '');
+
+  const censusAttempt = (a, role, validatorCensus) => {
+    const vr = validatorCensus.by_role[role] ?? validatorRoleCensus();
+    validatorCensus.by_role[role] = vr;
+    const modelK = modelKey(a.actual_model ?? a.assigned_model);
+    const failed = a.conclusion !== 'success';
+    const dur = num(a.duration_seconds);
+    validatorCensus.attempts++;
+    count(validatorCensus.models, modelK);
+    if (failed) validatorCensus.failed_attempts++;
+    if (a.failover === true) validatorCensus.failover_in++;
+    if (isIndependenceCollapse(a, role)) validatorCensus.independence_collapses++;
+    if (failed) count(validatorCensus.failure_classes, a.failure_class ?? 'unclassified');
+    if (dur !== null) validatorCensus.duration_seconds.push(dur);
+    vr.attempts++;
+    count(vr.models, modelK);
+    if (failed) vr.failed_attempts++;
+    if (a.failover === true) vr.failover_in++;
+    if (isIndependenceCollapse(a, role)) vr.independence_collapses++;
+    if (failed) count(vr.failure_classes, a.failure_class ?? 'unclassified');
+    if (dur !== null) vr.duration_seconds.push(dur);
+  };
+
+  const censusRun = (run, validatorCensus) => {
+    const vr = validatorCensus.by_role[String(run.role ?? '')] ?? validatorRoleCensus();
+    validatorCensus.by_role[String(run.role ?? '')] = vr;
+    validatorCensus.logical_runs++;
+    if (run.conclusion !== 'success') validatorCensus.failed_runs++;
+    vr.logical_runs++;
+    if (run.conclusion !== 'success') vr.failed_runs++;
   };
 
   for (const e of councils) {
@@ -266,18 +315,8 @@ export function summarizeCoverageRecords(entries, { generatedAt = new Date().toI
     for (const a of attempts) {
       const m = model(modelKey(a.actual_model ?? a.assigned_model));
       m.attempts++;
-      if (validatorRoles.has(String(a.role ?? ''))) {
-        validatorCensus.attempts++;
-        count(validatorCensus.models, modelKey(a.actual_model ?? a.assigned_model));
-        if (a.conclusion !== 'success') validatorCensus.failed_attempts++;
-        if (a.failover === true) validatorCensus.failover_in++;
-        if (a.failover === true && String(a.assigned_model ?? '') && String(a.assigned_model ?? '') !== String(a.actual_model ?? '')) {
-          validatorCensus.independence_collapses++;
-        }
-        if (a.conclusion !== 'success') count(validatorCensus.failure_classes, a.failure_class ?? 'unclassified');
-        const vd = num(a.duration_seconds);
-        if (vd !== null) validatorCensus.duration_seconds.push(vd);
-      }
+      const aRole = String(a.role ?? '');
+      if (validatorRoles.has(aRole)) censusAttempt(a, aRole, validatorCensus);
       if (a.conclusion !== 'success') {
         m.failed_attempts++;
         const fc = a.failure_class ?? 'unclassified';
@@ -293,10 +332,7 @@ export function summarizeCoverageRecords(entries, { generatedAt = new Date().toI
       const m = model(modelKey(run.actual_model_label ?? run.model_label));
       m.logical_runs++;
       if (run.conclusion !== 'success') m.failed_runs++;
-      if (validatorRoles.has(String(run.role ?? ''))) {
-        validatorCensus.logical_runs++;
-        if (run.conclusion !== 'success') validatorCensus.failed_runs++;
-      }
+      if (validatorRoles.has(String(run.role ?? ''))) censusRun(run, validatorCensus);
       if (typeof run.serving_provider === 'string' && run.serving_provider) count(m.serving_providers, run.serving_provider);
       const ntr = num(run.native_tokens_reasoning);
       if (ntr !== null) m.native_tokens_reasoning.push(ntr);
@@ -304,8 +340,12 @@ export function summarizeCoverageRecords(entries, { generatedAt = new Date().toI
       if (g !== null) m.generation_time_ms.push(g);
     }
 
-    // U4 (stale head) — the race the streak reader can now size from records.
-    if (r.refs && r.refs.sha_match === false) validatorCensus.stale_head++;
+    // U4 (stale head) — a COUNCIL-level metric (EHAC-2841): U4 is about the council's
+    // refs, not a model role, so it is no longer counted inside the validator census.
+    if (r.refs && r.refs.sha_match === false) {
+      staleHead.councils++;
+      staleHead.runs.push({ run_id: e.run_id, created_at: e.created_at ?? null });
+    }
 
     const chars = num(r.diff?.chars);
     const idx = chars === null ? -1 : SIZE_BUCKETS.findIndex((b) => chars < b.max);
@@ -337,13 +377,18 @@ export function summarizeCoverageRecords(entries, { generatedAt = new Date().toI
       }]),
   );
 
+  const finalizeRole = (v) => ({ ...v, duration_seconds: stats(v.duration_seconds) });
   const validator = {
-    ...validatorCensus,
-    duration_seconds: stats(validatorCensus.duration_seconds),
+    ...finalizeRole(validatorCensus),
+    by_role: Object.fromEntries(
+      Object.entries(validatorCensus.by_role)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([k, v]) => [k, finalizeRole(v)]),
+    ),
   };
 
   return {
-    schema: 1,
+    schema: 2,
     generated_at: generatedAt,
     source,
     window,
@@ -354,6 +399,7 @@ export function summarizeCoverageRecords(entries, { generatedAt = new Date().toI
     failure_classes: failureClasses,
     models,
     validator_roles: validator,
+    stale_head: staleHead,
     size_vs_outcome: { buckets: sizeBuckets, unsized },
     roster: { current: currentRoster, seen: rosters, drift: rosterDrift },
     elek_pins: pins,
@@ -393,6 +439,8 @@ export function renderMarkdown(s) {
   lines.push(`- elek_status: ${kv(s.elek_status)}`);
   lines.push(`- failed-attempt classes: ${kv(s.failure_classes)}`);
   lines.push(`- elek pins: ${kv(s.elek_pins)}`);
+  lines.push(`- stale-head councils (U4, push raced the review): ${s.stale_head?.councils ?? 0}` +
+    (s.stale_head?.runs?.length ? ` — ${s.stale_head.runs.map((r) => `run ${r.run_id}`).join(', ')}` : ''));
   lines.push('');
 
   lines.push('### Per model', '');
@@ -407,15 +455,23 @@ export function renderMarkdown(s) {
   }
   lines.push('');
 
-  lines.push('### Validator roles (EHAC-2833)', '');
+  lines.push('### Validator roles (EHAC-2833, per-role census EHAC-2841)', '');
   const v = s.validator_roles;
   const vd = v.duration_seconds;
   lines.push(`- logical runs: ${v.logical_runs} (${v.failed_runs} failed) | attempts: ${v.attempts} (${v.failed_attempts} failed)` +
     `${Object.keys(v.failure_classes).length ? ` — classes: ${kv(v.failure_classes)}` : ''}`);
-  lines.push(`- failovers in: ${v.failover_in} | independence collapses (audit ran on a reviewer model): ${v.independence_collapses}`);
+  lines.push(`- failovers in: ${v.failover_in} | independence collapses (audit lens ran on a reviewer model): ${v.independence_collapses}`);
   lines.push(`- attempt seconds n / p50 / p90 / p99 / max: ${vd.n} / ${fmt(vd.p50)} / ${fmt(vd.p90)} / ${fmt(vd.p99)} / ${fmt(vd.max)}`);
-  lines.push(`- stale-head councils (U4, push raced the review): ${v.stale_head}`);
   lines.push(`- models that ran a validator role: ${kv(v.models)}`);
+  lines.push('');
+  lines.push('By role (validator-review = audit lens; validator = final synthesis):', '');
+  lines.push('| role | logical runs (failed) | attempts (failed) | failover in | independence collapses | attempt seconds n / p50 / p90 / max | classes |');
+  lines.push('|---|---|---|---|---|---|---|');
+  for (const [role, vr] of Object.entries(v.by_role ?? {})) {
+    const d = vr.duration_seconds;
+    lines.push(`| ${role} | ${vr.logical_runs} (${vr.failed_runs}) | ${vr.attempts} (${vr.failed_attempts}) | ${vr.failover_in} | ${vr.independence_collapses} ` +
+      `| ${d.n} / ${fmt(d.p50)} / ${fmt(d.p90)} / ${fmt(d.max)} | ${Object.keys(vr.failure_classes).length ? kv(vr.failure_classes) : '—'} |`);
+  }
   lines.push('');
 
   lines.push('### Diff size vs outcome', '');
