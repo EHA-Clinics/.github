@@ -1118,4 +1118,23 @@ describe('pin-inventory.yml — fleet observability that cannot lie (EHAC-2845)'
     expect(src).toMatch(/::warning::/);
     expect(src).toMatch(/PIN_INVENTORY_TOKEN/);
   });
+
+  it('classifies a real 404 as ABSENT, distinct from an unreadable repo', () => {
+    // Absence of evidence is not evidence of absence: "the contents API refused" (token)
+    // and "the caller file is genuinely gone" (404) must not collapse into one bucket, or a
+    // consumer that lost its workflow reads as a permissions problem.
+    const src = inventory();
+    expect(src).toMatch(/ABSENT \(no such file\)/);
+    expect(src).toMatch(/HTTP 404/);
+  });
+
+  it('counts unverified rows only when a readable file carries no pin', () => {
+    const src = inventory();
+    expect(src).toMatch(/UNVERIFIED \(no pin found\)/);
+  });
+
+  it('summarizes all four classes at the end of the report', () => {
+    const src = inventory();
+    expect(src).toMatch(/Summary: \$\{verified\} verified, \$\{drifted\} drifted, \$\{absent\} absent, \$\{unverified\} unverified\./);
+  });
 });

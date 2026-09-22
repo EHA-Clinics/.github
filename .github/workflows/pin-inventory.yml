@@ -60,25 +60,49 @@ jobs:
             echo "|---|---|---|---|"
           } >> "$md"
 
-          unverified=0
+          # THREE-WAY CLASSIFICATION — absence of evidence is not evidence of absence:
+          #   ABSENT    — the contents API answered 404: the caller file genuinely does not
+          #               exist in that repo (the workflow was never added or was removed).
+          #   UNVERIFIED— the API refused (403 / missing PIN_INVENTORY_TOKEN) or the file
+          #               carries no `uses: ...@<sha>` pin: the repo is real but unreadable
+          #               or not a caller. Never silently skipped (workflow-invariants test).
+          #   verified  — a 40-hex pin was read; drift counts org re-pins since that pin via
+          #               the org commit history, so a caller two re-pins behind reads "2".
+          err="$(mktemp)"; verified=0; drifted=0; absent=0; unverified=0
           IFS=',' read -ra repos <<< "${CONSUMERS}"
           for repo in "${repos[@]}"; do
             repo="$(echo "$repo" | tr -d '[:space:]')"
             [ -z "$repo" ] && continue
             for wf in ai-code-review.yml ai-review-on-demand.yml ai-review-streak.yml; do
-              sha="$(gh api "repos/${repo}/contents/.github/workflows/${wf}" --jq '.content' 2>/dev/null | base64 -d | grep -oE '@[0-9a-f]{40}' | head -1 | tr -d '@' || true)"
+              content="$(gh api "repos/${repo}/contents/.github/workflows/${wf}" --jq '.content' 2>"$err" || true)"
+              if [ -z "${content:-}" ]; then
+                if grep -q 'HTTP 404' "$err" 2>/dev/null; then
+                  echo "| $repo | $wf | ABSENT (no such file) | ? |" >> "$md"
+                  absent=$((absent + 1))
+                else
+                  echo "| $repo | $wf | UNVERIFIED (unreadable) | ? |" >> "$md"
+                  unverified=$((unverified + 1))
+                fi
+                continue
+              fi
+              sha="$(printf '%s' "$content" | base64 -d 2>/dev/null | grep -oE '@[0-9a-f]{40}' | head -1 | tr -d '@' || true)"
               if [ -z "${sha:-}" ]; then
-                echo "| $repo | $wf | UNVERIFIED (unreadable) | ? |" >> "$md"
+                echo "| $repo | $wf | UNVERIFIED (no pin found) | ? |" >> "$md"
                 unverified=$((unverified + 1))
                 continue
               fi
-              # Drift = how many org re-pins since the caller's pin. Counted via the org
-              # commit history, so a caller two re-pins behind reads "2".
               drift="$(gh api "repos/EHA-Clinics/.github/commits?path=.github/workflows/ai-code-review.yml&sha=main&per_page=100" --jq --arg sha "$sha" '[.[] | .sha][::-1] as $chain | ($chain | index($sha)) // -1 | if . < 0 then "unknown" else ($chain | length - 1 - .) end' 2>/dev/null || echo unknown)"
               echo "| $repo | $wf | \`${sha:0:8}\` | ${drift} |" >> "$md"
+              verified=$((verified + 1))
+              [ "${drift:-unknown}" != "0" ] && [ "${drift:-unknown}" != "unknown" ] && drifted=$((drifted + 1))
             done
           done
+          rm -f "$err"
+          {
+            echo ""
+            echo "Summary: ${verified} verified, ${drifted} drifted, ${absent} absent, ${unverified} unverified."
+          } >> "$md"
           cat "$md"
-          if [ "$unverified" -gt 0 ]; then
-            echo "::warning::${unverified} caller workflow(s) could NOT be read (missing PIN_INVENTORY_TOKEN or absent file). They are reported UNVERIFIED above, not silently skipped."
+          if [ "$absent" -gt 0 ] || [ "$unverified" -gt 0 ]; then
+            echo "::warning::${absent} caller workflow file(s) ABSENT and ${unverified} could NOT be verified (missing PIN_INVENTORY_TOKEN, no pin, or absent file). They are reported above, not silently skipped."
           fi
