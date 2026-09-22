@@ -235,11 +235,16 @@ describe('summarizeCoverageRecords', () => {
     expect(validate.attempts).toBe(2);
     expect(validate.failed_attempts).toBe(0);
     expect(validate.independence_collapses).toBe(0);
-    expect(validate.stale_head).toBe(0);
     expect(validate.duration_seconds.n).toBe(0);
+    // EHAC-2841: per-role split — the audit lens and the final synthesis are one each.
+    expect(validate.by_role['validator-review']).toMatchObject({ attempts: 1, logical_runs: 1, failed_attempts: 0 });
+    expect(validate.by_role.validator).toMatchObject({ attempts: 1, logical_runs: 1, failed_attempts: 0 });
+    // U4 moved OUT of the validator census to council level (EHAC-2841).
+    expect(s.stale_head).toEqual({ councils: 0, runs: [] });
+    expect(validate.stale_head).toBeUndefined();
   });
 
-  it('counts stale-head councils (U4) and 404 failover collapses into the validator census', () => {
+  it('counts stale-head councils at COUNCIL level and 404 failover collapses in the validator-review census (EHAC-2841)', () => {
     const raced = structuredClone(healthy);
     raced.refs = { ...healthy.refs, head_sha_git: 'a'.repeat(40), head_sha_event: 'b'.repeat(40), sha_match: false };
     const collapsed = structuredClone(healthy);
@@ -252,12 +257,61 @@ describe('summarizeCoverageRecords', () => {
       projected_from_runs: false,
     }];
     const s = summarizeCoverageRecords(entriesOf(raced, collapsed));
-    expect(s.validator_roles.stale_head).toBe(1);
+    expect(s.stale_head.councils).toBe(1);
+    expect(s.stale_head.runs).toEqual([{ run_id: 1000, created_at: '2026-09-20T12:00:00Z' }]);
     // raced contributes its 2 projected validator attempts, collapsed its 1 measured one.
     expect(s.validator_roles.attempts).toBe(3);
     expect(s.validator_roles.independence_collapses).toBe(1);
     expect(s.validator_roles.failover_in).toBe(1);
     expect(s.validator_roles.duration_seconds.n).toBe(1);
+    // Per-role: raced's two projected attempts split 1/1; collapsed's measured attempt is
+    // the validator-review one, so the collapse belongs to the AUDIT lens.
+    expect(s.validator_roles.by_role['validator-review']).toMatchObject({
+      attempts: 2, failover_in: 1, independence_collapses: 1, failed_attempts: 0,
+    });
+    expect(s.validator_roles.by_role['validator-review'].duration_seconds).toEqual({
+      n: 1, p50: 312.4, p90: 312.4, p99: 312.4, max: 312.4,
+    });
+    expect(s.validator_roles.by_role.validator.attempts).toBe(1);
+  });
+
+  it('census a MEASURED final-validator attempt under by_role.validator, not just via projection (EHAC-2841)', () => {
+    // Regression blind spot (EHAC-2833 review L6): the 'validator' role string was only
+    // exercised via run-projection, never via a measured attempt — elek writes synthesis
+    // attempts with role 'validator', so a Set/mapping regression would pass CI silently.
+    const finalFailed = structuredClone(healthy);
+    finalFailed.models.attempts = [{
+      lens_id: null, role: 'validator', attempt: 1,
+      assigned_model: 'openrouter/deepseek/deepseek-v4-pro-0813', actual_model: 'openrouter/deepseek/deepseek-v4-pro-0813',
+      failover: false, conclusion: 'failure', failure_class: 'timeout', duration_seconds: 901.2,
+      projected_from_runs: false,
+    }];
+    const s = summarizeCoverageRecords(entriesOf(finalFailed));
+    expect(s.validator_roles.by_role.validator.attempts).toBe(1);
+    expect(s.validator_roles.by_role.validator.failed_attempts).toBe(1);
+    expect(s.validator_roles.by_role.validator.failure_classes).toEqual({ timeout: 1 });
+    expect(s.validator_roles.by_role.validator.duration_seconds.max).toBe(901.2);
+    expect(s.validator_roles.by_role.validator.independence_collapses).toBe(0);
+    // The aggregate sees it too, and the streak reader treats it as the streak-breaking class.
+    expect(s.validator_roles.attempts).toBe(1);
+    expect(s.validator_roles.failure_classes).toEqual({ timeout: 1 });
+    expect(s.streaks.timeout_free.broken_by.reason).toMatch(/timeout/);
+  });
+
+  it('does NOT count a failover on the final validator as an independence collapse (EHAC-2841 tightening)', () => {
+    // Only the validator-review AUDIT lens can collapse independence (the failover roster
+    // is reviewer-only). A failover flag on any other validator role must not be counted,
+    // so a future roster with a second validator-class model cannot inflate the metric.
+    const odd = structuredClone(healthy);
+    odd.models.attempts = [{
+      lens_id: null, role: 'validator', attempt: 1,
+      assigned_model: 'openrouter/deepseek/deepseek-v4-pro-0813', actual_model: 'z-ai/glm-5.3-flash',
+      failover: true, conclusion: 'success', failure_class: null, duration_seconds: 100,
+      projected_from_runs: false,
+    }];
+    const s = summarizeCoverageRecords(entriesOf(odd));
+    expect(s.validator_roles.failover_in).toBe(1);
+    expect(s.validator_roles.independence_collapses).toBe(0);
   });
 
   it('records the window and the pin census', () => {

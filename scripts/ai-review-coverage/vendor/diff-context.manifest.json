@@ -1,21 +1,22 @@
 {
   "upstream_repo": "EHA-Clinics/elek",
   "upstream_path": "src/review/diff-context.ts",
-  "upstream_commit": "dddd699e6498df8409ec44162c9b927040dbafea",
-  "upstream_tag": "eha-v1.6.0",
+  "upstream_commit": "c410bfe8cae9d6829e6825df749ce76641e2dfbb",
+  "upstream_tag": "eha-v1.6.1",
   "planned_upstream_tag": null,
   "upstream_blob_sha": "64441e769de897ed0b371e2321657fdbe80b2e87",
   "vendored_as": "scripts/ai-review-coverage/vendor/diff-context.ts",
   "provenance": {
     "fetched_at": "2026-09-22",
     "fetched_size_bytes": 14540,
-    "fetch_command": "gh api \"repos/EHA-Clinics/elek/contents/src/review/diff-context.ts?ref=dddd699e6498df8409ec44162c9b927040dbafea\" --jq '.content' | base64 -d > scripts/ai-review-coverage/vendor/diff-context.ts",
-    "sha_command": "gh api \"repos/EHA-Clinics/elek/contents/src/review/diff-context.ts?ref=dddd699e6498df8409ec44162c9b927040dbafea\" --jq '{sha: .sha, size: .size}'",
+    "fetch_command": "gh api \"repos/EHA-Clinics/elek/contents/src/review/diff-context.ts?ref=c410bfe8cae9d6829e6825df749ce76641e2dfbb\" --jq '.content' | base64 -d > scripts/ai-review-coverage/vendor/diff-context.ts",
+    "sha_command": "gh api \"repos/EHA-Clinics/elek/contents/src/review/diff-context.ts?ref=c410bfe8cae9d6829e6825df749ce76641e2dfbb\" --jq '{sha: .sha, size: .size}'",
     "sha_field": ".sha",
     "sha_source": "GitHub contents API \u2014 this is UPSTREAM'S OWN git blob identifier for those bytes. It is deliberately NOT a digest we computed over what we wrote: a self-computed hash proves only that we hashed our own bytes, so a mistaken or malicious edit that updated both the file and the digest would pass.",
     "recompute_offline": "git hash-object -t blob scripts/ai-review-coverage/vendor/diff-context.ts"
   },
   "notes": [
+    "EHA-V1.6.1 RE-VENDOR (2026-09-22), dddd699e -> c410bfe (EHAC-2841, elek #16). The pin moved for correctness fixes, none touching the packer: (1) HIGH — synthesis reports now attribute to activeJob.model.label (the model that actually produced the output) instead of the originally-assigned job, and a failover report carries assigned_model + failover=\"true\" in the <reviewer_report> tag; (2) a testable per-role timeout resolver (resolveRoleTimeouts) with the R / V / failover-V / synthesis-V truth table under test; (3) explicit V==R documented+tested as a STRICTER opt-in (not normalized to the legacy 2R formula); (4) strict-parser throws classify as configuration_error, not unexpected_error; (5) integers above Number.MAX_SAFE_INTEGER rejected in both timeout parsers; (6) validator_thinking docs corrected to BOTH validator roles. Verified via the GitHub contents API at the new ref: sha 64441e769de897ed0b371e2321657fdbe80b2e87, size 14540 — byte-identical, so goldens move only in recorded upstream_commit. Council fixtures were refreshed to embed elek.ref at the new pin in the same change.",
     "EHA-V1.6.0 RE-VENDOR (2026-09-22), a520684f -> dddd699e (EHAC-2833, elek #15). The pin moved for three changes, none touching the packer: (1) validator_run_timeout_seconds — a separate wall clock for the validator roles (validator-review lens + final synthesis), empty inherits run_timeout_seconds; (2) the validator-review lane may now fail over ONCE on provider_unavailable ONLY (404 availability; every other class stays a blocking no-retry); (3) the serial-budget guard asserts the retry-aware setup + max(2 x reviewer, 2 x validator-review) + validator bound whenever the new input is set. Verified via the GitHub contents API at the new ref: sha 64441e769de897ed0b371e2321657fdbe80b2e87, size 14540 — byte-identical, so goldens move only in recorded upstream_commit. Council fixtures were refreshed to embed elek.ref at the new pin in the same change.",
     "EHA-V1.5.0 RE-VENDOR (2026-09-20), 22134c0 -> a520684f (EHAC-2280, elek #14). The pin moved for three changes, none touching the packer: failure class provider_unavailable (HTTP 404 -> next distinct model), per-model reasoning budgets in openrouter_model_reasoning_modes, and the public-label redaction fix. Verified via the GitHub contents API at the new ref: sha 64441e769de897ed0b371e2321657fdbe80b2e87, size 14540 — byte-identical, so goldens move only in recorded upstream_commit. The org default map now budgets MiMo at 12000 (object form), which the PREVIOUS pin would have rejected at preflight: the pin, the default map and the gate mirror (reasoning-policy.mjs) move together. Stage-1 control before the council fixtures were refreshed: 5 tests red including U1 — the coupling guard fired as designed.",
     "EHAC-2231 (2026-09-13): adopt merged Elek #13 explicit public degraded coverage. Re-fetched the packer at merge 22134c0aae1a7ff50ece78758790966d7eefb1c9 through the GitHub contents API; byte-identical, 14540 bytes, blob 64441e769de897ed0b371e2321657fdbe80b2e87. No release tag is claimed. Execution pin, provenance, coverage proof and council fixtures move together; golden outputs remain behaviorally unchanged.",
