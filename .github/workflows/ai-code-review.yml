@@ -146,6 +146,34 @@ on:
         # "No API key found for deepseek".
         default: 'openrouter/deepseek/deepseek-v4-pro-0813'
         description: 'Model that reconciles and validates lens findings before posting.'
+      validator_run_timeout_seconds:
+        type: string
+        # EHAC-2833 (2026-09-22): the VALIDATOR roles (validator-review audit lens + final
+        # synthesis) get their own wall clock. DEFAULT EMPTY — empty INHERITS
+        # run_timeout_seconds in elek, so every existing consumer is byte-identical. This is
+        # deliberately NOT defaulted to a number for the fleet: the shared default consumers
+        # (job cap 30m, run 600) would have their serial worst case move to
+        # 37 + 2x1200 + 1200 = 3037s > 1800s, and either the guard refuses every review at
+        # preflight or a run is guillotined mid-validator losing the coverage record. Opt in
+        # per caller, with the job cap raised FIRST (the guard enforces
+        # setup + max(2 x reviewer, 2 x validator-review) + validator).
+        #
+        # WHY A SEPARATE NUMBER AT ALL. A validator-role failure breaches the council at ANY
+        # max_degraded_lenses and the validator-review lens retries only on provider_unavailable
+        # (elek eha-v1.6.0); the 2026-09-21/22 eha_care PR #4235 runs (35663630056, 35701047274)
+        # both lost 4/4 healthy lens reports to a 900s validator timeout that streamed
+        # CONTINUOUSLY (max_idle 5.4s). More wall clock is the evidenced remedy for that shape;
+        # a timeout retry was falsified by measurement (run 32105023640) and remains forbidden.
+        default: ''
+        description: 'Wall-clock budget (seconds) for the validator-review lens and the final synthesis. Empty inherits run_timeout_seconds. Callers MUST raise job_timeout_minutes first — the guard refuses arithmetic that does not fit.'
+      validator_thinking:
+        type: string
+        # Exposed but NOT default-changed: empty inherits `thinking` (high here), which is
+        # byte-identical to today. Lowering the validator's reasoning is an AUDIT-QUALITY
+        # decision and is deliberately left to an evidence-based caller change, not smuggled
+        # in through this plumbing.
+        default: ''
+        description: 'Thinking level for the final orchestrator only. Empty inherits thinking.'
       severity_threshold:
         type: string
         default: 'important'
@@ -220,7 +248,7 @@ on:
         description: >
           EHAC-2167. Wall-clock timeout for EACH model run, passed through to elek. '600' is
           elek's own default, so callers that do not set it are byte-identical to before.
-          Keep it below the review job's timeout-minutes (30) or the job dies first and the
+          Keep it below the review job's timeout-minutes (35) or the job dies first and the
           coverage record is lost.
 
           Note this is PER MODEL RUN, and a council is 4 lenses plus a validator — so the
@@ -238,16 +266,27 @@ on:
           260721-j5t proved it: glm-5.2 as validator hung identically at 900s and at 600s
           ("turns=1, tools=0"). Benchmarking on 2026-08-10 agreed — glm-5.1 emitted nothing in
           620s and nothing at reasoning effort "low" in 284s. The fix for a non-converging
-          model is a different model (EHAC-2166), not more time.
+          model is a different model (EHAC-2166), not more time. For a validator that is
+          STREAMING the whole budget and simply has not finished (the 2026-09-21/22 PR #4235
+          shape, max_idle 5.4s), the validator-specific remedy is
+          `validator_run_timeout_seconds` (EHAC-2833) — see its input above.
       job_timeout_minutes:
         type: number
-        # DEFAULT 30 — byte-identical to the literal this replaced, so no consumer's
-        # behaviour changes by upgrading. Only a caller that opts in gets more.
+        # RAISED 30 -> 35 (EHAC-2833, 2026-09-22). Still no behaviour change for a consumer
+        # that has not opted in: GitHub bills elapsed minutes, not the cap, so the default
+        # only matters to runs that would otherwise be guillotined. The raise buys headroom
+        # for the in-job coverage steps that run AFTER elek inside the same job (gate
+        # checkout, measure, persist, upload) under elek's revised guard formula
+        # `setup + max(2 x reviewer, 2 x validator-review) + validator` (EHAC-2833). At the
+        # fleet-default 600s with the validator input UNSET the old formula still applies
+        # (37 + 2x600 = 1237s <= 2100s), but a caller that opts in at 600s/600s hits the
+        # retry-aware bound 37 + 2x600 + 600 = 1837s — which the OLD 30-minute default
+        # (1800s) would have refused. 35 minutes clears it: 1837 <= 2100.
         #
         # Why it needs to be adjustable at all: the review job's real bound is
-        # SERIAL, `setup + reviewer_cap + validator_cap`, because the four reviewer
-        # lenses run in parallel but the validator runs after them. Measured setup on
-        # eha_care is 37s, so at `run_timeout_seconds: '600'`:
+        # SERIAL, `setup + wave_cap + validator_cap`, because the reviewer lenses AND the
+        # validator-review lens run in parallel but the final synthesis runs after them.
+        # Measured setup on eha_care is 37s, so at `run_timeout_seconds: '600'`:
         #
         #     37 + 600 + 600           = 1237s   fits in 1800s
         #     37 + 600 + 600 + 600     = 1837s   OVER 1800s  <- the retry made it over
@@ -259,9 +298,10 @@ on:
         #
         # Raising it is close to free: GitHub bills elapsed minutes, not the cap, so a
         # higher ceiling changes the outcome only for runs that would otherwise be
-        # guillotined mid-review. Raise it BEFORE raising run_timeout_seconds, never
-        # after, and check the serial arithmetic above rather than one run's budget.
-        default: 30
+        # guillotined mid-review. Raise it BEFORE raising run_timeout_seconds or
+        # validator_run_timeout_seconds, never after, and check the serial arithmetic
+        # above rather than one run's budget.
+        default: 35
         description: >
           EHAC-2231. Wall-clock ceiling for the whole review job, in minutes. This is the
           ceiling for the ENTIRE council plus the validator, not for one model run — see
@@ -667,7 +707,7 @@ jobs:
         # cost_usd / conclusion as outputs at EVERY ref, and all of them were unreachable
         # purely for want of a step id. The coverage measurement below consumes them.
         id: review
-        uses: EHA-Clinics/elek@a520684f9998f2304df54e72e7fab1d6cc60afb9 # Elek #14 eha-v1.5.0: provider_unavailable failover, per-model reasoning budgets, label fix
+        uses: EHA-Clinics/elek@dddd699e6498df8409ec44162c9b927040dbafea # Elek #15 eha-v1.6.0 (EHAC-2833): validator_run_timeout_seconds, validator-review 404-only failover, retry-aware serial-budget guard
         with:
           # pi's native openrouter adapter — elek's tested path. The OpenAI-compatible
           # Databricks AI Gateway (provider: openai) hung pi indefinitely on tool-enabled
@@ -729,6 +769,15 @@ jobs:
           # caller cannot raise the per-run budget below the job's 20-minute cap.
           allowed_bots: ${{ inputs.allowed_bots }}
           run_timeout_seconds: ${{ inputs.run_timeout_seconds }}
+          # EHAC-2833. The validator roles' wall clock. Empty (the default) inherits
+          # run_timeout_seconds inside elek, so a caller that never passes it is byte-identical
+          # to before; a caller that DOES pass it opts into the stricter guard formula and
+          # must have raised job_timeout_minutes first.
+          validator_run_timeout_seconds: ${{ inputs.validator_run_timeout_seconds }}
+          # Exposed without changing the default: empty inherits `thinking` (high here).
+          # Lowering the validator's reasoning is an audit-quality decision for a caller PR,
+          # not for this plumbing.
+          validator_thinking: ${{ inputs.validator_thinking }}
           # EHAC-2231. The stream-idle watchdog and the reviewer-degradation tolerance. Both
           # default to a value that preserves existing behaviour, and both are declared as
           # workflow inputs so a caller opts in explicitly rather than inheriting a guess.
@@ -827,7 +876,7 @@ jobs:
           REVIEW_COST_USD: ${{ steps.review.outputs.cost_usd }}
           # The LITERAL pinned SHA, not an expression: this is what makes branch U1 detect a
           # future elek bump that forgets to re-verify elek-prompt-budget.mjs.
-          ELEK_REF: a520684f9998f2304df54e72e7fab1d6cc60afb9
+          ELEK_REF: dddd699e6498df8409ec44162c9b927040dbafea
           REQUESTED_STRATEGY: ${{ inputs.review_strategy }}
           ACTOR_FILTER: ${{ inputs.actor_filter }}
           # EHAC-2103: the CONFIGURED council, so the coverage record can put what we asked for

@@ -396,12 +396,25 @@ export function deriveUnknownBranches(coverage, maxDegraded = DEFAULT_COUNCIL_MA
   }
 
   // U4 — branch tip vs check-run head SHA.
+  //
+  // EHAC-2833: the MESSAGE is now actionable, the VERDICT is unchanged. A push that
+  // lands while a review runs (which reviews of up to ~65 minutes make likelier)
+  // leaves the review describing an older tree — that is a genuine coverage defect
+  // and MUST stay red. What was missing is the remedy: the message now says which
+  // SHA is newer so a reader can tell "stale review of a newer tree" (re-run) from
+  // "the branch was force-pushed backwards" (investigate), and names the exact
+  // recovery. U4 counts are also read back per-run by the streak reader from
+  // unknown_reasons / refs.sha_match, so the census can size the race window from
+  // records rather than anecdotes.
   const shaGit = coverage?.refs?.head_sha_git ?? null;
   const shaEvent = coverage?.refs?.head_sha_event ?? null;
   if (shaGit && shaEvent && shaGit !== shaEvent) {
+    const shaNewer = /^[0-9a-f]{40}$/.test(shaGit) && /^[0-9a-f]{40}$/.test(shaEvent)
+      ? `the reviewed tip describes commit ${shaGit}; the check run names ${shaEvent}. A push raced the review — re-run \`@ai-review\` on the current head. If the head was force-pushed BACKWARDS, investigate the branch instead.`
+      : 'A push raced the review — re-run `@ai-review` on the current head.';
     add(
       'U4',
-      `U4 the reviewed branch tip (${shaGit}) is not the pull-request head SHA (${shaEvent}) — the review and the check run describe different trees.`,
+      `U4 the reviewed branch tip (${shaGit}) is not the pull-request head SHA (${shaEvent}) — the review and the check run describe different trees. ${shaNewer}`,
     );
   }
 
