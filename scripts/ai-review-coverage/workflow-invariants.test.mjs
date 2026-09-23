@@ -1119,6 +1119,18 @@ describe('pin-inventory.yml — fleet observability that cannot lie (EHAC-2845)'
     expect(src).toMatch(/PIN_INVENTORY_TOKEN/);
   });
 
+  it('prefers a minted App installation token, falls back to the PAT, never hard-fails', () => {
+    // A correct fine-grained PAT was still org-denied (EHAC-2845) — the App route is the
+    // credential that must work. The mint step is skipped when unconfigured and
+    // continue-on-error so the report always runs and says what it could not see.
+    const src = inventory();
+    expect(src).toMatch(/create-github-app-token/);
+    expect(src).toMatch(/PIN_INVENTORY_APP_ID/);
+    expect(src).toMatch(/PIN_INVENTORY_PRIVATE_KEY/);
+    expect(src).toMatch(/steps\.app-token\.outputs\.token \|\| secrets\.PIN_INVENTORY_TOKEN \|\| github\.token/);
+    expect(src).toMatch(/continue-on-error: true/);
+  });
+
   it('classifies a real 404 as ABSENT, distinct from an unreadable repo', () => {
     // Absence of evidence is not evidence of absence: "the contents API refused" (token)
     // and "the caller file is genuinely gone" (404) must not collapse into one bucket, or a

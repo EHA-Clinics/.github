@@ -41,9 +41,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # Credential preference: a minted App installation token (PIN_INVENTORY_APP_ID +
+      # PIN_INVENTORY_PRIVATE_KEY) beats the PAT (PIN_INVENTORY_TOKEN) beats github.token.
+      # The App route exists because a correct fine-grained PAT (org member, org policy
+      # Allow, 8 selected repos, Contents: read) was still denied with
+      # "Resource not accessible by personal access token (HTTP 403)" — while Apps installed
+      # on exactly the declared consumers are unaffected by PAT policy. The mint step is
+      # skipped when the App is not configured and never hard-fails the job: an inventory
+      # that cannot run must report UNVERIFIED, not go red.
+      - name: Mint an App installation token (when the App is configured)
+        id: app-token
+        if: ${{ secrets.PIN_INVENTORY_APP_ID != '' && secrets.PIN_INVENTORY_PRIVATE_KEY != '' }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.PIN_INVENTORY_APP_ID }}
+          private-key: ${{ secrets.PIN_INVENTORY_PRIVATE_KEY }}
+          owner: EHA-Clinics
+
       - name: Inventory caller pins across the declared consumers
         env:
-          GH_TOKEN: ${{ secrets.PIN_INVENTORY_TOKEN || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.PIN_INVENTORY_TOKEN || github.token }}
           CONSUMERS: ${{ github.event.inputs.consumers != '' && github.event.inputs.consumers || env.CONSUMERS }}
         run: |
           set -uo pipefail
