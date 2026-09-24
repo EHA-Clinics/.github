@@ -18,6 +18,8 @@ import {
   computeDrift,
   evaluateExpect,
   extractOrgPin,
+  fetchHistory,
+  pinCommitDate,
   renderMarkdown,
   summarize,
 } from './pin-audit.mjs';
@@ -118,14 +120,87 @@ describe('classifyRead — absence of evidence is not evidence of absence', () =
 describe('computeDrift — org commits that touched the called file after the pin', () => {
   const chain = ['c0', 'c1', 'c2', 'c3']; // oldest → newest
 
-  it('is 0 at the head and counts entries after the pin', () => {
+  it('is 0 at the head and counts entries after the pin (exact match)', () => {
     expect(computeDrift(chain, 'c3')).toBe(0);
     expect(computeDrift(chain, 'c1')).toBe(2);
   });
 
-  it("is 'unknown' when the pin is not in the chain", () => {
+  it('matches by .sha when the chain carries commit entries rather than bare strings', () => {
+    const dated = [
+      { sha: 'c0', committedAt: '2026-01-01T00:00:00Z' },
+      { sha: 'c1', committedAt: '2026-02-01T00:00:00Z' },
+      { sha: 'c2', committedAt: '2026-03-01T00:00:00Z' },
+    ];
+    expect(computeDrift(dated, 'c1')).toBe(1);
+    expect(computeDrift(dated, 'c2')).toBe(0);
+  });
+
+  it('falls back to the pin date for a pin whose commit never touched the called file', () => {
+    // A reusable-workflow ref can be any commit where the file exists, including one that did
+    // not modify it — indexOf can never match those, so the pin date places them.
+    const dated = [
+      { sha: 'c0', committedAt: '2026-01-01T00:00:00Z' },
+      { sha: 'c1', committedAt: '2026-02-01T00:00:00Z' },
+      { sha: 'c2', committedAt: '2026-03-01T00:00:00Z' },
+    ];
+    expect(computeDrift(dated, 'off-chain', '2026-01-15T00:00:00Z')).toBe(2); // c1, c2 are newer
+    expect(computeDrift(dated, 'off-chain', '2026-04-01T00:00:00Z')).toBe(0); // none are newer
+  });
+
+  it("is 'unknown' when the pin is not in the chain and no usable date is given", () => {
     expect(computeDrift(chain, 'ffffffff')).toBe('unknown');
     expect(computeDrift(undefined, 'c3')).toBe('unknown');
+
+    const dated = [{ sha: 'c0', committedAt: '2026-01-01T00:00:00Z' }];
+    expect(computeDrift(dated, 'off-chain')).toBe('unknown'); // no pin date
+    expect(computeDrift(dated, 'off-chain', 'not-a-date')).toBe('unknown'); // unparseable date
+    expect(computeDrift(chain, 'off-chain', '2026-01-01T00:00:00Z')).toBe('unknown'); // string chain, no dates
+    expect(computeDrift([], 'off-chain', '2026-01-01T00:00:00Z')).toBe('unknown'); // empty chain
+  });
+});
+
+describe('fetchHistory — the org history read that must actually resolve', () => {
+  it('requests path=.github/workflows/<target> and reverses the newest-first API order', () => {
+    const calls = [];
+    const mockGh = (path, jq) => {
+      calls.push({ path, jq });
+      return JSON.stringify([
+        { sha: 'n2', committedAt: '2026-03-01T00:00:00Z' },
+        { sha: 'n1', committedAt: '2026-02-01T00:00:00Z' },
+        { sha: SHA, committedAt: '2026-01-01T00:00:00Z' },
+      ]);
+    };
+
+    const chain = fetchHistory('ai-code-review.yml', mockGh);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].path).toContain('path=.github/workflows/ai-code-review.yml');
+    // Regression: the old expression ended in `.reverse()`, which is not valid jq — the read
+    // errored and the blanket catch silently emptied the chain, so every pin read 'unknown'.
+    // Pin the exact valid filter (field-shaping only; the newest-first order is reversed in JS).
+    expect(calls[0].jq).toBe('[.[] | {sha: .sha, committedAt: .commit.committer.date}]');
+
+    expect(chain.map((e) => e.sha)).toEqual([SHA, 'n1', 'n2']); // oldest → newest
+    expect(computeDrift(chain, SHA)).toBe(2); // exact match resolves
+  });
+
+  it('returns [] rather than throwing when the read fails', () => {
+    const boom = () => { throw new Error('gh exploded'); };
+    expect(fetchHistory('ai-code-review.yml', boom)).toEqual([]);
+  });
+});
+
+describe('pinCommitDate — the off-chain fallback input', () => {
+  it('reads the pinned commit committer date once', () => {
+    const calls = [];
+    const mockGh = (path) => { calls.push(path); return '2026-01-01T00:00:00Z\n'; };
+    expect(pinCommitDate(SHA, mockGh)).toBe('2026-01-01T00:00:00Z');
+    expect(calls[0]).toBe(`repos/EHA-Clinics/.github/commits/${SHA}`);
+  });
+
+  it('is null when the commit cannot be read', () => {
+    const boom = () => { throw new Error('404'); };
+    expect(pinCommitDate(SHA, boom)).toBeNull();
   });
 });
 
@@ -158,9 +233,18 @@ describe('applyDrift + summarize — mutually exclusive classes', () => {
     expect(r.state).toBe('drifted');
     expect(r.drift).toBe('unknown');
   });
+
+  it('places an off-chain pin by date when the pin date is threaded through', () => {
+    // Models ai-review-streak.yml: one file commit, and the fleet pins a commit that never
+    // touched it. The pin is newer than the file's only commit, so it is at the newest → 0.
+    const rows = [row({ target: 'ai-review-streak.yml', pin: 'off-chain' })];
+    const history = { 'ai-review-streak.yml': [{ sha: 'only', committedAt: '2026-01-01T00:00:00Z' }] };
+    const [finalized] = applyDrift(rows, history, { 'off-chain': '2026-02-01T00:00:00Z' });
+    expect(finalized).toMatchObject({ state: 'verified', drift: 0 });
+  });
 });
 
-describe('evaluateExpect — rollout acceptance', () => {
+describe('evaluateExpect — rollout acceptance is AT the expected sha', () => {
   const absentStreak = row({
     workflow: 'ai-review-streak.yml',
     kind: 'absent',
@@ -171,8 +255,19 @@ describe('evaluateExpect — rollout acceptance', () => {
     state: 'absent',
   });
 
-  it('is ok when every required row is verified at the expected sha', () => {
+  it('is ok when every required row is at the expected sha', () => {
     const rows = [row(), row({ workflow: 'ai-review-on-demand.yml' }), absentStreak];
+    expect(evaluateExpect(rows, SHA)).toEqual({ ok: true, failures: [] });
+  });
+
+  it('passes an at-expected row even when it has drifted — aging is not a rollout failure', () => {
+    // Acceptance is "every required caller is AT <sha>". Org main moving on afterwards is
+    // normal and must not fail a rollout that landed correctly.
+    const rows = [
+      row({ state: 'drifted', drift: 2 }),
+      row({ workflow: 'ai-review-on-demand.yml', state: 'drifted', drift: 1 }),
+      absentStreak,
+    ];
     expect(evaluateExpect(rows, SHA)).toEqual({ ok: true, failures: [] });
   });
 
@@ -186,16 +281,12 @@ describe('evaluateExpect — rollout acceptance', () => {
     expect(requiredAbsent.failures[0]).toMatch(/ABSENT — required caller file missing/);
   });
 
-  it('fails on a present-but-wrong pin', () => {
-    const { ok, failures } = evaluateExpect([row({ pin: OTHER_SHA, state: 'verified', drift: 0 })], SHA);
+  it('fails on a present row pinned elsewhere, showing its pin and its drift', () => {
+    const { ok, failures } = evaluateExpect([row({ pin: OTHER_SHA, state: 'drifted', drift: 4 })], SHA);
     expect(ok).toBe(false);
     expect(failures[0]).toMatch(/≠ expected/);
-  });
-
-  it('fails on a drifted row', () => {
-    const { ok, failures } = evaluateExpect([row({ state: 'drifted', drift: 2 })], SHA);
-    expect(ok).toBe(false);
-    expect(failures[0]).toMatch(/DRIFTED/);
+    expect(failures[0]).toContain(OTHER_SHA.slice(0, 8));
+    expect(failures[0]).toMatch(/4 re-pin/);
   });
 
   it('fails on an unverified row', () => {
