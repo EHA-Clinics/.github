@@ -176,6 +176,34 @@ benchmark prose instead is guesswork; the reader exists so nobody has to.
 `.github/workflows/ai-review-streak.yml` runs the same script from inside a consumer on a
 schedule, with the consumer's own `GITHUB_TOKEN`, and writes the Markdown to the job summary.
 
+## Fleet pin audit (EHAC-2845)
+
+The scheduled cross-repo `pin-inventory.yml` is **retired**. It needed a stored credential
+with repo read on every consumer, and that credential is org-blocked: a correct fine-grained
+PAT is still denied with `Resource not accessible by personal access token (HTTP 403)`, and a
+GitHub App installation on the consumer repos is blocked by a GitHub-side bug (EHAC-2845 /
+GitHub Support). The report is observability, not a gate, so it is not worth a stored
+cross-repo credential.
+
+`pin-audit.mjs` replaces it and runs with the **operator's own `gh` login** (which already has
+repo read on the consumers) — it deliberately stores no cross-repo credential. Run it at every
+org-workflow rollout, *before* claiming "fleet rollout complete": EHAC-2841 showed that claim
+was once made while five of seven consumers were still two org re-pins behind.
+
+```bash
+node scripts/ai-review-coverage/pin-audit.mjs                       # observability — always exits 0
+node scripts/ai-review-coverage/pin-audit.mjs --expect <new-org-sha> # rollout acceptance — exits 1 unless every required caller is verified at that sha
+```
+
+It reads each consumer's three caller files (`ai-code-review.yml`, `ai-review-on-demand.yml`,
+`ai-review-streak.yml`), extracts the `EHA-Clinics/.github/.github/workflows/…@<40-hex>` pin,
+and counts org re-pins behind it from the org commit history. Absence of evidence is not
+evidence of absence: a genuine 404 is `ABSENT (no such file)`, distinct from a repo it cannot
+read (`UNVERIFIED (unreadable)`), which is never silently skipped. A missing
+`ai-review-streak.yml` is legitimate in most consumers, so only `ai-code-review.yml` and
+`ai-review-on-demand.yml` are required under `--expect`. `--json <path>` writes `{ rows,
+summary }` for attachment to a rollout ticket.
+
 ## Running the tests locally
 
 ```bash
@@ -427,6 +455,7 @@ operator rule, nothing is filed on `selimozten/elek` or any other third-party re
 | `assert-review-coverage.mjs` | consumer: re-derives U1–U6, recomputes the verdict, exits per the contract |
 | `workflow-invariants.test.mjs` | parses the shipped workflow YAML and asserts the gate cannot be suppressed or skipped |
 | `read-coverage-streak.mjs` | **reader**: pure `summarizeCoverageRecords` core + `gh`-driven CLI; lists a consumer's council runs, downloads each `ai-review-coverage` artifact, and reports streaks, failure classes, per-model endpoint/reasoning distributions and roster drift. Exits non-zero only on a FAULT (record absent/unreadable, or nothing inspected). Run by `.github/workflows/ai-review-streak.yml` |
+| `pin-audit.mjs` | **operator-run fleet pin audit** (EHAC-2845): pure `extractOrgPin`/`classifyRead`/`computeDrift`/`evaluateExpect` core + `gh`-driven CLI, run with the operator's own `gh` login at each org-workflow rollout. Replaces the retired scheduled `pin-inventory.yml`; stores no cross-repo credential. Always exits 0 without `--expect` (observability) |
 | `reasoning-policy.mjs` | reasoning-control evidence shared by producer and asserter: mode-map parsing, telemetry sanitising, U9 problems |
 | `fixtures/` | three real `git diff`s + their provenance; see `fixtures/README.md` |
 
