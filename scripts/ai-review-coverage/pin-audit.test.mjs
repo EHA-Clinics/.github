@@ -50,15 +50,13 @@ const row = (over = {}) => ({
 });
 
 describe('DEFAULT_REPOS — the declared consumer matrix', () => {
-  it('is exactly the seven EHAC-2845 consumers', () => {
+  it('is exactly the core five consumers', () => {
     expect(DEFAULT_REPOS).toEqual([
       'EHA-Clinics/eha_care',
       'EHA-Clinics/eha-care-infra',
-      'EHA-Clinics/eha-clinic',
-      'EHA-Clinics/eha-clinic-recruitment-odoo-api',
-      'EHA-Clinics/get-care',
-      'EHA-Clinics/ehacare-clinical-decision-support',
-      'EHA-Clinics/eha-care-mobile',
+      'eHealthAfrica/kemiqa',
+      'eHealthAfrica/aiki',
+      'eHealthAfrica/eha-cloud-devops',
     ]);
   });
 

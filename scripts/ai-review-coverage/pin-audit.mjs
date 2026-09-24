@@ -17,8 +17,8 @@
  * It runs with the OPERATOR'S OWN `gh` login, which already has repo read on the consumers.
  * It deliberately stores NO cross-repo credential: there is nothing in CI to leak, rotate
  * or mis-scope. Run it at every org-workflow rollout, BEFORE claiming "fleet rollout
- * complete" — the claim that EHAC-2841 showed was made while five of seven consumers were
- * still two org re-pins behind.
+ * complete" — the claim that EHAC-2841 showed was made while several consumers were still
+ * two org re-pins behind.
  *
  * This is observability, not a gate: without `--expect` it always exits 0. With `--expect`
  * it exits 1 on any required caller that is not AT that exact org SHA (a caller pinned there
@@ -36,15 +36,19 @@ import { execFileSync } from 'node:child_process';
 import { basename } from 'node:path';
 import { writeFileSync } from 'node:fs';
 
-/** The declared consumer matrix (EHAC-2845). New consumers are added here by their rollout. */
+/**
+ * The declared consumer matrix (EHAC-2845): the core five. Consumers span two orgs —
+ * EHA-Clinics and eHealthAfrica — but the canonical workflow and history repo remains
+ * EHA-Clinics/.github, so every caller `uses:` it and both `extractOrgPin`'s regex and
+ * `fetchHistory`'s `repos/EHA-Clinics/.github/...` history path are unchanged. Other repos
+ * adopt as they need and are not audited by default; add one here only for a core rollout.
+ */
 export const DEFAULT_REPOS = Object.freeze([
   'EHA-Clinics/eha_care',
   'EHA-Clinics/eha-care-infra',
-  'EHA-Clinics/eha-clinic',
-  'EHA-Clinics/eha-clinic-recruitment-odoo-api',
-  'EHA-Clinics/get-care',
-  'EHA-Clinics/ehacare-clinical-decision-support',
-  'EHA-Clinics/eha-care-mobile',
+  'eHealthAfrica/kemiqa',
+  'eHealthAfrica/aiki',
+  'eHealthAfrica/eha-cloud-devops',
 ]);
 
 /** The caller files whose pins are inspected in each consumer. */
@@ -56,7 +60,7 @@ export const SCANNED_FILES = Object.freeze([
 
 /**
  * Files whose absence is a FAILURE under `--expect`. The streak caller legitimately does
- * not exist in five of the seven repos (this repository has no councils to read), so an
+ * not exist in most repos (a repo has no councils to read), so an
  * absent `ai-review-streak.yml` is informational, never a rollout failure.
  */
 export const REQUIRED_FILES = Object.freeze([
