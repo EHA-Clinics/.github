@@ -1,0 +1,8 @@
+# The repo whose reusable workflows every consumer inherits needs team ownership, not
+# personal ownership: a single-person gate is the same shape that let the four EHAC-2833
+# rollout merges land admin-merged with zero human approvals (EHAC-2848).
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+/.github/workflows/          @EHA-Clinics/devops @EHA-Clinics/platform-team
+/scripts/                    @EHA-Clinics/devops @EHA-Clinics/platform-team
+/vendor/                     @EHA-Clinics/devops @EHA-Clinics/platform-team
+*                            @EHA-Clinics/devops
