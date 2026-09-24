@@ -188,7 +188,14 @@ cross-repo credential.
 `pin-audit.mjs` replaces it and runs with the **operator's own `gh` login** (which already has
 repo read on the consumers) — it deliberately stores no cross-repo credential. Run it at every
 org-workflow rollout, *before* claiming "fleet rollout complete": EHAC-2841 showed that claim
-was once made while five of seven consumers were still two org re-pins behind.
+was once made while several consumers were still two org re-pins behind.
+
+The audited fleet is the **core five** — `EHA-Clinics/eha_care`, `EHA-Clinics/eha-care-infra`,
+`eHealthAfrica/kemiqa`, `eHealthAfrica/aiki`, `eHealthAfrica/eha-cloud-devops`. Consumers span
+two orgs (EHA-Clinics + eHealthAfrica), but the canonical workflow and history repo remains
+**`EHA-Clinics/.github`**: every caller `uses:` that repo, so the pin regex and the history
+path stay org-scoped to it for all five. Other repos adopt as they need and are not in the
+default fleet.
 
 ```bash
 node scripts/ai-review-coverage/pin-audit.mjs                       # observability — always exits 0
