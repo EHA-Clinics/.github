@@ -21,8 +21,10 @@
  * still two org re-pins behind.
  *
  * This is observability, not a gate: without `--expect` it always exits 0. With `--expect`
- * it exits 1 on any required caller that is not verified at that exact org SHA, which is the
- * rollout-acceptance check.
+ * it exits 1 on any required caller that is not AT that exact org SHA (a caller pinned there
+ * passes even once org main has moved on — aging is not a rollout failure), which is the
+ * rollout-acceptance check. Drift is reported separately and can be placed by date for pins
+ * whose commit never touched the called file.
  *
  * Usage:
  *   node scripts/ai-review-coverage/pin-audit.mjs
@@ -94,26 +96,36 @@ export function classifyRead({ status, stderr = '', body = '' } = {}) {
 }
 
 /**
- * Re-pins behind for `sha` in `chain` (commit SHAs oldest→newest): the number of org
- * commits that touched the called file AFTER the pinned one. `'unknown'` when the pin is
- * not in the chain (history truncated at 100, or the SHA is foreign).
+ * Re-pins behind for `sha` in `chain` (oldest→newest). The exact case counts entries after
+ * the pinned commit. When the pin is not IN the chain — legitimate, because a reusable-workflow
+ * ref can be any commit where the called file exists, including one that never touched it —
+ * fall back to the pin commit's date and count file-touching commits newer than it. Without a
+ * usable date the answer is `'unknown'`, never a guessed number.
  */
-export function computeDrift(chain, sha) {
+export function computeDrift(chain, sha, pinDateIso) {
   if (!Array.isArray(chain)) return 'unknown';
-  const idx = chain.indexOf(sha);
-  if (idx < 0) return 'unknown';
-  return chain.length - 1 - idx;
+  const idx = chain.findIndex((entry) => (typeof entry === 'string' ? entry : entry?.sha) === sha);
+  if (idx >= 0) return chain.length - 1 - idx;
+  if (!pinDateIso) return 'unknown';
+  const pinMs = Date.parse(pinDateIso);
+  if (!Number.isFinite(pinMs) || chain.length === 0) return 'unknown';
+  const dates = chain.map((entry) => (typeof entry === 'string' ? NaN : Date.parse(entry?.committedAt)));
+  if (dates.some((ms) => !Number.isFinite(ms))) return 'unknown';
+  return dates.filter((ms) => ms > pinMs).length;
 }
 
 /**
- * Finalize each pin row: `verified` when the pin is the newest commit in its file's chain,
- * `drifted` when it is behind or its position cannot be established. Absent/unverified rows
- * keep their class. Every row carries `drift` (0 | number | 'unknown' | null).
+ * Finalize each pin row: `verified` when the pin is the newest commit that touched its file,
+ * `drifted` when it is behind or its position cannot be established. `pinDateByPin` carries the
+ * pinned commit's date (one fetch per distinct pin) so an off-chain pin can still be placed by
+ * date. Absent/unverified rows keep their class. Every row carries `drift`
+ * (0 | number | 'unknown' | null).
  */
-export function applyDrift(rows, historyByTarget = {}) {
+export function applyDrift(rows, historyByTarget = {}, pinDateByPin = {}) {
   return rows.map((row) => {
     if (row.kind !== 'pin') return { ...row, drift: null, state: row.kind };
-    const drift = computeDrift(historyByTarget[row.target] ?? [], row.pin);
+    const chain = historyByTarget[row.target] ?? [];
+    const drift = computeDrift(chain, row.pin, pinDateByPin[row.pin] ?? null);
     return { ...row, drift, state: drift === 0 ? 'verified' : 'drifted' };
   });
 }
@@ -134,23 +146,28 @@ const short = (sha) => (typeof sha === 'string' ? sha.slice(0, 8) : String(sha))
 
 const failureOf = (row, expectedSha) => {
   const where = `${row.repo} ${row.workflow}`;
-  if (row.state === 'absent') return `${where}: ABSENT — required caller file missing`;
-  if (row.state === 'unverified') return `${where}: UNVERIFIED — ${row.detail}`;
-  if (row.state === 'drifted') return `${where}: DRIFTED — pinned \`${short(row.pin)}\`, ${row.drift} re-pin(s) behind \`${short(expectedSha)}\``;
-  return `${where}: pinned \`${short(row.pin)}\` ≠ expected \`${short(expectedSha)}\``;
+  if (row.kind === 'absent') return `${where}: ABSENT — required caller file missing`;
+  if (row.kind === 'unverified') return `${where}: UNVERIFIED — ${row.detail}`;
+  const drift = row.drift === null || row.drift === undefined ? '?' : row.drift;
+  return `${where}: pinned \`${short(row.pin)}\` ≠ expected \`${short(expectedSha)}\` (${drift} re-pin(s) behind)`;
 };
 
 /**
- * Rollout acceptance. Every row must be `verified` at `expectedSha`, EXCEPT an absent
- * non-required file (the streak caller is legitimately missing in most consumers). A
- * present-but-wrong pin, a drifted row, an unverified row, and an absent REQUIRED row are
- * all failures.
+ * Rollout acceptance: every required caller must be AT `expectedSha`. A readable row passes
+ * when its pin equals `expectedSha`, even when it has drifted — org main moving on afterwards
+ * is normal aging, not a rollout failure. Failures are: a required file absent, an unverified
+ * row, or a present row pinned elsewhere (the message shows both its pin and its drift). An
+ * absent `ai-review-streak.yml` is tolerated (non-required).
  */
 export function evaluateExpect(rows, expectedSha) {
   const failures = [];
   for (const row of rows) {
-    if (row.state === 'absent' && !REQUIRED_FILES.includes(row.workflow)) continue;
-    if (row.state === 'verified' && row.pin === expectedSha) continue;
+    if (row.kind === 'absent') {
+      if (REQUIRED_FILES.includes(row.workflow)) failures.push(failureOf(row, expectedSha));
+      continue;
+    }
+    if (row.kind === 'unverified') { failures.push(failureOf(row, expectedSha)); continue; }
+    if (row.pin === expectedSha) continue;
     failures.push(failureOf(row, expectedSha));
   }
   return { ok: failures.length === 0, failures };
@@ -196,12 +213,32 @@ export function readRow(repo, workflow, gh = ghApi) {
   return { repo, workflow, ...read };
 }
 
-/** ONE history fetch per distinct called file. The API is newest-first; the chain is oldest-first. */
+/**
+ * ONE history fetch per distinct called file: oldest→newest `{ sha, committedAt }` entries.
+ * The API returns newest-first, so the order is reversed in JS — the jq expression only shapes
+ * the fields. (The previous expression ended in `.reverse()`, which is not valid jq: it is a
+ * filter, called as `reverse`, not a method. gh exited non-zero, the blanket catch below turned
+ * that into an empty chain, and every pin read `'unknown'`.)
+ */
 export function fetchHistory(target, gh = ghApi) {
   try {
-    return JSON.parse(gh(`repos/EHA-Clinics/.github/commits?path=.github/workflows/${target}&sha=main&per_page=100`, '[.[]|.sha].reverse()'));
+    const raw = gh(
+      `repos/EHA-Clinics/.github/commits?path=.github/workflows/${target}&sha=main&per_page=100`,
+      '[.[] | {sha: .sha, committedAt: .commit.committer.date}]',
+    );
+    return JSON.parse(raw).reverse();
   } catch {
     return [];
+  }
+}
+
+/** The pinned commit's committer date, for the off-chain drift fallback. Null when unreadable. */
+export function pinCommitDate(pin, gh = ghApi) {
+  try {
+    const date = String(gh(`repos/EHA-Clinics/.github/commits/${pin}`, '.commit.committer.date') ?? '').trim();
+    return date || null;
+  } catch {
+    return null;
   }
 }
 
@@ -228,12 +265,14 @@ export async function main(argv) {
     for (const workflow of SCANNED_FILES) rows.push(readRow(repo, workflow));
   }
 
+  const pinRows = rows.filter((r) => r.kind === 'pin');
   const historyByTarget = {};
-  for (const target of new Set(rows.filter((r) => r.kind === 'pin').map((r) => r.target))) {
-    historyByTarget[target] = fetchHistory(target);
-  }
+  for (const target of new Set(pinRows.map((r) => r.target))) historyByTarget[target] = fetchHistory(target);
 
-  const finalRows = applyDrift(rows, historyByTarget);
+  const pinDateByPin = {};
+  for (const pin of new Set(pinRows.map((r) => r.pin))) pinDateByPin[pin] = pinCommitDate(pin);
+
+  const finalRows = applyDrift(rows, historyByTarget, pinDateByPin);
   const summary = summarize(finalRows);
   process.stdout.write(`${renderMarkdown(finalRows, summary)}\n`);
   if (opts.json) writeFileSync(opts.json, `${JSON.stringify({ rows: finalRows, summary }, null, 2)}\n`);
