@@ -1077,3 +1077,15 @@ describe('the AI Review Streak workflow reads records honestly (EHAC-2280 AC #3)
     for (const ref of refs) expect(ref).toMatch(/^[0-9a-f]{40}$/);
   });
 });
+
+describe('complete council report retention', () => {
+  it('uploads complete attempt reports even when validation fails', () => {
+    const upload = source().split('- name: Upload complete review reports\n')[1]?.split('\n  coverage-gate:')[0] ?? '';
+    expect(upload).toContain('always()');
+    expect(upload).toContain("steps.review.outcome == 'failure'");
+    expect(upload).toMatch(/uses: actions\/upload-artifact@[0-9a-f]{40}/);
+    expect(upload).toContain('${{ runner.temp }}/elek-reports/*.json');
+    expect(upload).toMatch(/if-no-files-found: error/);
+    expect(upload).not.toContain('pi-prompts');
+  });
+});
