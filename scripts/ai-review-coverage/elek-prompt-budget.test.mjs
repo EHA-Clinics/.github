@@ -351,8 +351,9 @@ describe('assertion 4 — no surviving restatement, defined mechanically', () =>
     expect(constants).toContain(320_000); // default model input budget
     expect(constants).toContain(8_000); // minimum diff prompt budget
     expect(constants).not.toContain(80_000); // the deleted full-diff threshold
+    // The lexical census also sees 0813 in the newly recognized dated model label.
     expect(constants).toEqual([
-      40, 120, 140, 240, 700, 1_200, 8_000, 64_000, 320_000, 540_000, 700_000, 2_700_000,
+      40, 120, 140, 240, 700, 813, 1_200, 8_000, 64_000, 320_000, 540_000, 700_000, 1_200_000, 2_700_000,
     ]);
     for (const caption of UPSTREAM_CAPTIONS) {
       expect(read(VENDORED), `caption not found upstream: ${caption}`).toContain(caption);
