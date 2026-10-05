@@ -721,7 +721,7 @@ jobs:
         # cost_usd / conclusion as outputs at EVERY ref, and all of them were unreachable
         # purely for want of a step id. The coverage measurement below consumes them.
         id: review
-        uses: EHA-Clinics/elek@9fdf61dea284ee68dee9d1b7a68e0636e277b372 # Elek #18: complete council source budgets and redacted attempt reports
+        uses: EHA-Clinics/elek@660fb49ca27dae6f22f91b940fd7651a20147d78 # Elek #18: complete council source budgets and redacted attempt reports
         with:
           # pi's native openrouter adapter — elek's tested path. The OpenAI-compatible
           # Databricks AI Gateway (provider: openai) hung pi indefinitely on tool-enabled
@@ -890,7 +890,7 @@ jobs:
           REVIEW_COST_USD: ${{ steps.review.outputs.cost_usd }}
           # The LITERAL pinned SHA, not an expression: this is what makes branch U1 detect a
           # future elek bump that forgets to re-verify elek-prompt-budget.mjs.
-          ELEK_REF: 9fdf61dea284ee68dee9d1b7a68e0636e277b372
+          ELEK_REF: 660fb49ca27dae6f22f91b940fd7651a20147d78
           REQUESTED_STRATEGY: ${{ inputs.review_strategy }}
           ACTOR_FILTER: ${{ inputs.actor_filter }}
           # EHAC-2103: the CONFIGURED council, so the coverage record can put what we asked for
