@@ -260,7 +260,7 @@ export function summarizeCoverageRecords(entries, { generatedAt = new Date().toI
     duration_seconds: [],
     by_role: { 'validator-review': validatorRoleCensus(), validator: validatorRoleCensus() },
   };
-  const staleHead = { councils: 0, runs: [] };
+  const staleHead = { councils: 0, runs: [], accepted_races: 0 };
 
   // A collapse is an independence defect ONLY on the validator-review audit lens: the
   // failover roster is reviewer-only, so a 404 failover runs the audit on a reviewer
@@ -342,7 +342,20 @@ export function summarizeCoverageRecords(entries, { generatedAt = new Date().toI
 
     // U4 (stale head) — a COUNCIL-level metric (EHAC-2841): U4 is about the council's
     // refs, not a model role, so it is no longer counted inside the validator census.
-    if (r.refs && r.refs.sha_match === false) {
+    // EHAC-2844: since elek eha-v1.7.0 the producer binds U4 to the REVIEWED tree, so
+    // sha_match false alone (the event head moved) is no longer a stale review. A race counts
+    // as ACCEPTED only when the record proves it: measured from git, a remote/head diff, the
+    // reviewed head equal to the measured head, and no U4. Every other council with a U4 reason
+    // or sha_match false — legacy records included, exactly as before — counts as stale.
+    const refs = r.refs ?? {};
+    const hasU4 = Array.isArray(r.unknown_reasons) && r.unknown_reasons.some((u) => u?.branch === 'U4');
+    const acceptedRace = !hasU4 && refs.sha_match === false && refs.measured_from === 'git' &&
+      (refs.diff_source === 'remote' || refs.diff_source === 'head') &&
+      typeof refs.reviewed_head_sha === 'string' && refs.reviewed_head_sha === refs.head_sha_git &&
+      typeof refs.reviewed_base_sha === 'string' && refs.reviewed_base_sha === refs.base_sha_git;
+    if (acceptedRace) {
+      staleHead.accepted_races++;
+    } else if (hasU4 || refs.sha_match === false) {
       staleHead.councils++;
       staleHead.runs.push({ run_id: e.run_id, created_at: e.created_at ?? null });
     }
@@ -441,6 +454,7 @@ export function renderMarkdown(s) {
   lines.push(`- elek pins: ${kv(s.elek_pins)}`);
   lines.push(`- stale-head councils (U4, push raced the review): ${s.stale_head?.councils ?? 0}` +
     (s.stale_head?.runs?.length ? ` — ${s.stale_head.runs.map((r) => `run ${r.run_id}`).join(', ')}` : ''));
+  lines.push(`- accepted head races (event head moved, reviewed head = measured head): ${s.stale_head?.accepted_races ?? 0}`);
   lines.push('');
 
   lines.push('### Per model', '');

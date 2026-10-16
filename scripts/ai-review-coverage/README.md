@@ -57,7 +57,7 @@ Each branch has its own passing test case.
 | U1 | elek pin drift: `ELEK_REF !== ELEK_REF_VERIFIED` | the workflow's literal `ELEK_REF` env vs the frozen constant |
 | U2 | empty diff while the PR reports changed files | catches elek's `getGitDiff` `catch -> return ""`, which the lenses see as *"(diff unavailable)"* |
 | U3 | `executedStrategy !== requestedStrategy` | `review_summary_json.review` (Fault 5) |
-| U4 | `git rev-parse origin/<head>` ≠ `pull_request.head.sha` | branch tip vs check-run SHA |
+| U4 | Measured from git (`refs.measured_from: git`): elek reported no provenance, an unreadable `diff_source`, or `api`; or `reviewed_head_sha` / `reviewed_base_sha` is missing or ≠ `git rev-parse origin/<head>` / `origin/<base>`. Not evaluated for `--diff-file`. A record from a pre-EHAC-2844 producer (no `measured_from`) keeps the legacy rule `head_sha_git` ≠ `head_sha_event` | reviewed tree vs measured tree (EHAC-2844); the event head moving after both read the branch is an accepted race, kept visible as `sha_match: false` and counted as `stale_head.accepted_races` by the streak reader |
 | U5 | missing/unparseable `coverage_json` or `review_summary_json`; `input_tokens` absent or 0; no `rollup` block | step outputs |
 | U6 | any file whose `diff --git` header parses as `(unknown)` | header parse |
 
@@ -102,7 +102,11 @@ as `jobs.review.outputs.coverage_json`, consumed as `needs.review.outputs.covera
   "elek":     { "ref": "<40-hex>", "ref_verified": "<40-hex>", "pin_ok": true },
   "strategy": { "requested": "council", "executed": "council", "match": true },
   "refs":     { "base_ref": "v2", "head_ref": "feat/x", "head_sha_git": "...",
-                "head_sha_event": "...", "sha_match": true, "shallow": false },
+                "head_sha_event": "...", "sha_match": true,
+                "base_sha_git": "...", "reviewed_head_sha": "<40-hex> | null",
+                "reviewed_base_sha": "<40-hex> | null",
+                "diff_source": "remote | head | api | invalid | null",
+                "measured_from": "git | diff-file", "shallow": false },
   "git_config": { "core.autocrlf": "false", "diff.noprefix": "false" },
   "diff":     { "chars": 137015, "files_diff": 15, "changed_files_api": 15,
                 "regime": "FULL | SLICES", "slice_ceiling_observed": 3846, "prompt_chars": 52715,
@@ -122,7 +126,7 @@ as `jobs.review.outputs.coverage_json`, consumed as `needs.review.outputs.covera
                                 "duration_seconds": 78.2, "turns_used": 6, "provider_retries": 0,
                                 "time_to_first_event_seconds": 2.1, "max_idle_seconds_observed": 18.4 } ],
                 "configured": { "review_models": [ "..." ], "validator_model": "...",
-                                "reasoning_modes": { "xiaomi/mimo-v2.5-pro": "enabled" } },
+                                "reasoning_modes": { "xiaomi/mimo-v2.6-pro": "enabled" } },
                 "policy": { "elek_status": "healthy | degraded | breached",
                             "producer_max_degraded": 1, "elek_failed_reviewer_lens_ids": [] },
                 "distinct_models": [ "..." ], "rollup": { "...": "..." } },

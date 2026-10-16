@@ -45,6 +45,12 @@ const payload = (over = {}) =>
       head_sha_git: 'a'.repeat(40),
       head_sha_event: 'a'.repeat(40),
       sha_match: true,
+      // EHAC-2844: an eha-v1.7.0 record measured from git, naming the tree elek reviewed.
+      base_sha_git: 'c'.repeat(40),
+      reviewed_head_sha: 'a'.repeat(40),
+      reviewed_base_sha: 'c'.repeat(40),
+      diff_source: 'remote',
+      measured_from: 'git',
       shallow: false,
     },
     diff: {
@@ -61,15 +67,15 @@ const payload = (over = {}) =>
     models: {
       runs: [
         { role: 'reviewer', lens_id: 'risk', model_label: 'deepseek/deepseek-v4-pro', conclusion: 'success' },
-        { role: 'reviewer', lens_id: 'design', model_label: 'xiaomi/mimo-v2.5-pro', conclusion: 'success' },
+        { role: 'reviewer', lens_id: 'design', model_label: 'xiaomi/mimo-v2.6-pro', conclusion: 'success' },
         { role: 'reviewer', lens_id: 'tests', model_label: 'openrouter/z-ai/glm-5.1', conclusion: 'success' },
         { role: 'validator', lens_id: null, model_label: 'openrouter/z-ai/glm-5.1', conclusion: 'success' },
       ],
       configured: {
-        review_models: ['deepseek/deepseek-v4-pro', 'xiaomi/mimo-v2.5-pro', 'openrouter/z-ai/glm-5.1'],
+        review_models: ['deepseek/deepseek-v4-pro', 'xiaomi/mimo-v2.6-pro', 'openrouter/z-ai/glm-5.1'],
         validator_model: 'openrouter/z-ai/glm-5.1',
       },
-      distinct_models: ['deepseek/deepseek-v4-pro', 'openrouter/z-ai/glm-5.1', 'xiaomi/mimo-v2.5-pro'],
+      distinct_models: ['deepseek/deepseek-v4-pro', 'openrouter/z-ai/glm-5.1', 'xiaomi/mimo-v2.6-pro'],
       rollup: {
         runs_total: 4,
         reviewer_lenses_total: 3,
@@ -255,7 +261,7 @@ describe('UNKNOWN branches — every one exits non-zero', () => {
     const base = JSON.parse(payload());
     base.models.runs = [
       { role: 'reviewer', lens_id: 'risk', model_label: 'deepseek/deepseek-v4-pro', conclusion: 'success' },
-      { role: 'reviewer', lens_id: 'design', model_label: 'xiaomi/mimo-v2.5-pro', conclusion: 'success' },
+      { role: 'reviewer', lens_id: 'design', model_label: 'xiaomi/mimo-v2.6-pro', conclusion: 'success' },
       { role: 'reviewer', lens_id: 'tests', model_label: 'openrouter/z-ai/glm-5.1', conclusion: 'failure' },
       { role: 'reviewer', lens_id: 'operations', model_label: 'deepseek/deepseek-v4-pro', conclusion: 'success' },
       { role: 'validator-review', lens_id: 'validator-self-review', model_label: 'openrouter/z-ai/glm-5.1', conclusion: 'failure' },
@@ -289,7 +295,7 @@ describe('UNKNOWN branches — every one exits non-zero', () => {
     const base = JSON.parse(payload());
     base.models.runs = [
       { role: 'reviewer', lens_id: 'risk', model_label: 'deepseek/deepseek-v4-pro', conclusion: 'success' },
-      { role: 'reviewer', lens_id: 'design', model_label: 'xiaomi/mimo-v2.5-pro', conclusion: 'success' },
+      { role: 'reviewer', lens_id: 'design', model_label: 'xiaomi/mimo-v2.6-pro', conclusion: 'success' },
       { role: 'reviewer', lens_id: 'tests', model_label: 'deepseek/deepseek-v4-flash', conclusion: 'success' },
       { role: 'reviewer', lens_id: 'operations', model_label: 'deepseek/deepseek-v4-pro', conclusion: 'success' },
       { role: 'validator-review', lens_id: 'validator-self-review', model_label: 'deepseek/deepseek-v4-pro', conclusion: 'success' },
@@ -370,21 +376,128 @@ describe('UNKNOWN branches — every one exits non-zero', () => {
     expectUnknown({ COVERAGE_JSON: JSON.stringify(base) }, 'U3');
   });
 
-  it('U4: head SHA mismatch', () => {
+  // A record from a producer older than EHAC-2844 (no measured_from / provenance) keeps the
+  // legacy git-vs-event rule.
+  const legacyRefs = (refs) => {
+    const { base_sha_git, reviewed_head_sha, reviewed_base_sha, diff_source, measured_from, ...rest } = refs;
+    return rest;
+  };
+
+  it('U4: head SHA mismatch (legacy record)', () => {
     const base = JSON.parse(payload());
-    base.refs = { ...base.refs, head_sha_git: 'a'.repeat(40), head_sha_event: 'b'.repeat(40), sha_match: false };
+    base.refs = { ...legacyRefs(base.refs), head_sha_git: 'a'.repeat(40), head_sha_event: 'b'.repeat(40), sha_match: false };
     expectUnknown({ COVERAGE_JSON: JSON.stringify(base) }, 'U4');
   });
 
   it('U4: the remedy names the re-run recovery while the verdict stays red (EHAC-2833)', () => {
     const base = JSON.parse(payload());
-    base.refs = { ...base.refs, head_sha_git: 'a'.repeat(40), head_sha_event: 'b'.repeat(40), sha_match: false };
+    base.refs = { ...legacyRefs(base.refs), head_sha_git: 'a'.repeat(40), head_sha_event: 'b'.repeat(40), sha_match: false };
     const result = run({ COVERAGE_JSON: JSON.stringify(base) });
     // Actionable, NOT non-blocking: exit 1 is asserted by expectUnknown above; here we
     // assert the reader gets the direction and the exact recovery in the same line.
     expect(result.stdout).toContain('@ai-review');
     expect(result.stdout).toContain('re-run');
     expect(result.status).toBe(1);
+  });
+
+  // EHAC-2844: the asserter re-derives U4 from the record's refs with the PRODUCER's rule, so a
+  // race the producer accepts is not re-reddened here, and a reviewed-tree mismatch the producer
+  // missed (or a hand-edited record) still is.
+  describe('U4 bound to the reviewed head (refs.reviewed_head_sha / diff_source)', () => {
+    const GIT = 'a'.repeat(40);
+    const EVENT = 'b'.repeat(40);
+    const BASE = 'c'.repeat(40);
+    const withRefs = (refs) => {
+      const base = JSON.parse(payload());
+      base.refs = {
+        ...base.refs, head_sha_git: GIT, head_sha_event: GIT, sha_match: true,
+        base_sha_git: BASE, reviewed_base_sha: BASE, measured_from: 'git', ...refs,
+      };
+      return JSON.stringify(base);
+    };
+
+    it('the healthy eha-v1.7.0 record is silent', () => {
+      const result = run({ COVERAGE_JSON: withRefs({ reviewed_head_sha: GIT, diff_source: 'remote' }) });
+      expect(result.stdout).not.toContain('U4');
+      expect(result.status).toBe(0);
+    });
+
+    it('raises U4 when the reviewed base is not the measured base, or is missing', () => {
+      expectUnknown({ COVERAGE_JSON: withRefs({ reviewed_head_sha: GIT, diff_source: 'remote', base_sha_git: 'e'.repeat(40) }) }, 'U4');
+      expectUnknown({ COVERAGE_JSON: withRefs({ reviewed_head_sha: GIT, diff_source: 'remote', reviewed_base_sha: null }) }, 'U4');
+    });
+
+    it.each([['an unrecognised string', 'workspace'], ['the producer invalid marker', 'invalid'], ['a number', 7]])(
+      'raises U4 when diff_source is %s',
+      (_label, source) => {
+        expectUnknown({ COVERAGE_JSON: withRefs({ reviewed_head_sha: GIT, diff_source: source }) }, 'U4');
+      },
+    );
+
+    it('raises U4 for a git-measured record with no provenance, even when git and event agree', () => {
+      expectUnknown({ COVERAGE_JSON: withRefs({ reviewed_head_sha: null, diff_source: null }) }, 'U4');
+    });
+
+    it('treats an unknown measured_from value as git (fail closed)', () => {
+      expectUnknown({ COVERAGE_JSON: withRefs({ reviewed_head_sha: null, diff_source: null, measured_from: 'cache' }) }, 'U4');
+    });
+
+    // A skipped review (a draft, say) reaches no elek summary, so it carries no provenance. It
+    // must stay the deliberate exit-0 NOT_REVIEWED, not turn UNKNOWN on the new U4 rule.
+    it('keeps a git-measured NOT_REVIEWED record without provenance at exit 0', () => {
+      const base = JSON.parse(withRefs({ reviewed_head_sha: null, reviewed_base_sha: null, diff_source: null }));
+      base.verdict = 'NOT_REVIEWED';
+      base.not_reviewed = { reason: 'pull_request_is_draft', actor: 'adothompson' };
+      const result = run({ COVERAGE_JSON: JSON.stringify(base) });
+      expect(result.stdout).toContain('NOT_REVIEWED');
+      expect(result.stdout).not.toContain('U4');
+      expect(result.status).toBe(0);
+    });
+
+    it('does not evaluate U4 for a --diff-file record', () => {
+      const result = run({
+        COVERAGE_JSON: withRefs({
+          measured_from: 'diff-file', head_sha_git: null, head_sha_event: null, sha_match: null,
+          base_sha_git: null, reviewed_head_sha: null, reviewed_base_sha: null, diff_source: null,
+        }),
+      });
+      expect(result.stdout).not.toContain('U4');
+      expect(result.status).toBe(0);
+    });
+
+    it('accepts the event head moving when the reviewed head is the measured head', () => {
+      const result = run({
+        COVERAGE_JSON: withRefs({ head_sha_event: EVENT, sha_match: false, reviewed_head_sha: GIT, diff_source: 'remote' }),
+      });
+      expect(result.stdout).not.toContain('U4');
+      expect(result.status).toBe(0);
+    });
+
+    it('raises U4 when the reviewed head is not the measured head', () => {
+      expectUnknown({ COVERAGE_JSON: withRefs({ reviewed_head_sha: EVENT, diff_source: 'head' }) }, 'U4');
+    });
+
+    it('raises U4 for the API diff even when git and event agree', () => {
+      expectUnknown({ COVERAGE_JSON: withRefs({ reviewed_head_sha: null, diff_source: 'api' }) }, 'U4');
+    });
+
+    it('raises U4 when diff_source is set but the reviewed head is missing or malformed', () => {
+      expectUnknown({ COVERAGE_JSON: withRefs({ reviewed_head_sha: null, diff_source: 'remote' }) }, 'U4');
+      expectUnknown({ COVERAGE_JSON: withRefs({ reviewed_head_sha: 'zz', diff_source: 'remote' }) }, 'U4');
+    });
+
+    it('keeps the legacy git-vs-event rule for a record with no measured_from (older producer)', () => {
+      const legacy = (refs) => {
+        const base = JSON.parse(payload());
+        const { base_sha_git, reviewed_head_sha, reviewed_base_sha, diff_source, measured_from, ...rest } = base.refs;
+        base.refs = { ...rest, ...refs };
+        return JSON.stringify(base);
+      };
+      expectUnknown({ COVERAGE_JSON: legacy({ head_sha_git: GIT, head_sha_event: EVENT, sha_match: false }) }, 'U4');
+      const agree = run({ COVERAGE_JSON: legacy({ head_sha_git: GIT, head_sha_event: GIT, sha_match: true }) });
+      expect(agree.stdout).not.toContain('U4');
+      expect(agree.status).toBe(0);
+    });
   });
 
   it('U5: COVERAGE_JSON missing entirely', () => {

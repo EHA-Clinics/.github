@@ -4,7 +4,7 @@ import { deriveModels, renderJobSummary } from './measure-review-coverage.mjs';
 import { evaluate } from './assert-review-coverage.mjs';
 import { canonicalReasoningConfig, configuredControl, readReasoningModes } from './reasoning-policy.mjs';
 
-const MIMO = 'xiaomi/mimo-v2.5-pro';
+const MIMO = 'xiaomi/mimo-v2.6-pro';
 const env = { OPENROUTER_MODEL_REASONING_MODES: JSON.stringify({ [MIMO]: 'enabled' }) };
 const reasoning = { requestedThinking: 'high', piThinking: 'high', configuredMode: 'enabled', effectiveControl: 'provider-default', adapted: true };
 const healthy = () => JSON.parse(readFileSync(new URL('./fixtures/council/healthy-council.json', import.meta.url), 'utf8'));
@@ -42,7 +42,7 @@ describe('reasoning gate positive and negative controls', () => {
     expect(renderJobSummary(coverage)).toContain('configuredMode=enabled; effectiveControl=provider-default');
   });
 
-  it.each(['[]', '{', '{"xiaomi/mimo-v2.5-pro":"high"}', '{"":"enabled"}'])('rejects invalid configured map %s', (raw) => {
+  it.each(['[]', '{', '{"xiaomi/mimo-v2.6-pro":"high"}', '{"":"enabled"}'])('rejects invalid configured map %s', (raw) => {
     const result = evaluate({ reviewResult: 'success', coverageRaw: JSON.stringify(current()), env: { OPENROUTER_MODEL_REASONING_MODES: raw } });
     expect(result.exitCode).toBe(1);
     expect(result.lines.join('\n')).toContain('U9');

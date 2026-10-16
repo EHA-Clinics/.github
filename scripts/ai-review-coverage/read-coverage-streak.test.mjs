@@ -181,7 +181,7 @@ describe('summarizeCoverageRecords', () => {
   it('collapses the openrouter/ prefix so one model is one row', () => {
     const s = summarizeCoverageRecords(entriesOf(fixture('mimo-reasoning-complete')));
     expect(Object.keys(s.models)).toEqual([
-      'deepseek/deepseek-v4-flash', 'deepseek/deepseek-v4-pro', 'xiaomi/mimo-v2.5-pro', 'z-ai/glm-5.3-flash',
+      'deepseek/deepseek-v4-flash', 'deepseek/deepseek-v4-pro', 'xiaomi/mimo-v2.6-pro', 'z-ai/glm-5.3-flash',
     ]);
   });
 
@@ -195,7 +195,7 @@ describe('summarizeCoverageRecords', () => {
     const second = structuredClone(record);
     second.models.runs.find((r) => r.lens_id === 'design').native_tokens_reasoning = 300;
     const s = summarizeCoverageRecords(entriesOf(record, second));
-    const mimo = s.models['xiaomi/mimo-v2.5-pro'];
+    const mimo = s.models['xiaomi/mimo-v2.6-pro'];
     expect(mimo.native_tokens_reasoning).toEqual({ n: 2, p50: 300, p90: 1200, p99: 1200, max: 1200 });
     expect(mimo.serving_providers).toEqual({ Xiaomi: 2 });
     expect(s.models['deepseek/deepseek-v4-pro'].native_tokens_reasoning.n).toBe(0);
@@ -240,13 +240,15 @@ describe('summarizeCoverageRecords', () => {
     expect(validate.by_role['validator-review']).toMatchObject({ attempts: 1, logical_runs: 1, failed_attempts: 0 });
     expect(validate.by_role.validator).toMatchObject({ attempts: 1, logical_runs: 1, failed_attempts: 0 });
     // U4 moved OUT of the validator census to council level (EHAC-2841).
-    expect(s.stale_head).toEqual({ councils: 0, runs: [] });
+    expect(s.stale_head).toEqual({ councils: 0, runs: [], accepted_races: 0 });
     expect(validate.stale_head).toBeUndefined();
   });
 
   it('counts stale-head councils at COUNCIL level and 404 failover collapses in the validator-review census (EHAC-2841)', () => {
+    // A legacy (pre-EHAC-2844) record: no measured_from / provenance, so sha_match false is stale.
+    const { base_sha_git, reviewed_head_sha, reviewed_base_sha, diff_source, measured_from, ...legacyRefs } = healthy.refs;
     const raced = structuredClone(healthy);
-    raced.refs = { ...healthy.refs, head_sha_git: 'a'.repeat(40), head_sha_event: 'b'.repeat(40), sha_match: false };
+    raced.refs = { ...legacyRefs, head_sha_git: 'a'.repeat(40), head_sha_event: 'b'.repeat(40), sha_match: false };
     const collapsed = structuredClone(healthy);
     // A measured attempt history (older fixtures carry none) with a 404 failover: the audit
     // was ASSIGNED to the validator and ran on a reviewer model.
@@ -259,6 +261,7 @@ describe('summarizeCoverageRecords', () => {
     const s = summarizeCoverageRecords(entriesOf(raced, collapsed));
     expect(s.stale_head.councils).toBe(1);
     expect(s.stale_head.runs).toEqual([{ run_id: 1000, created_at: '2026-09-20T12:00:00Z' }]);
+    expect(s.stale_head.accepted_races).toBe(0);
     // raced contributes its 2 projected validator attempts, collapsed its 1 measured one.
     expect(s.validator_roles.attempts).toBe(3);
     expect(s.validator_roles.independence_collapses).toBe(1);
@@ -273,6 +276,50 @@ describe('summarizeCoverageRecords', () => {
       n: 1, p50: 312.4, p90: 312.4, p99: 312.4, max: 312.4,
     });
     expect(s.validator_roles.by_role.validator.attempts).toBe(1);
+  });
+
+  // EHAC-2844: with elek eha-v1.7.0 provenance, U4 binds to the reviewed head, so sha_match
+  // false alone no longer means a stale review. The census counts U4 councils from the record's
+  // unknown_reasons (and legacy records with no provenance by sha_match, as before), and reports
+  // accepted races separately so the race window stays measurable.
+  it('counts U4 from unknown_reasons and accepted head races separately (EHAC-2844)', () => {
+    const GIT = 'a'.repeat(40);
+    const EVENT = 'b'.repeat(40);
+    const accepted = structuredClone(healthy);
+    accepted.refs = {
+      ...healthy.refs, head_sha_git: GIT, head_sha_event: EVENT, sha_match: false,
+      reviewed_head_sha: GIT, diff_source: 'remote', measured_from: 'git',
+    };
+    accepted.unknown_reasons = [];
+    const mismatched = structuredClone(healthy);
+    mismatched.refs = {
+      ...healthy.refs, head_sha_git: GIT, head_sha_event: GIT, sha_match: true,
+      reviewed_head_sha: EVENT, diff_source: 'head', measured_from: 'git',
+    };
+    mismatched.verdict = 'UNKNOWN';
+    mismatched.unknown_reasons = [{ branch: 'U4', message: 'elek reviewed head … differs' }];
+    const { base_sha_git, reviewed_head_sha, reviewed_base_sha, diff_source, measured_from, ...legacyRefs } = healthy.refs;
+    const legacy = structuredClone(healthy);
+    legacy.refs = { ...legacyRefs, head_sha_git: GIT, head_sha_event: EVENT, sha_match: false };
+    // gemini review (2026-10-16): sha_match false with NO U4 is accepted only when the record
+    // proves it; a record that names a different reviewed head is counted stale, not accepted.
+    const unproven = structuredClone(healthy);
+    unproven.refs = {
+      ...healthy.refs, head_sha_git: GIT, head_sha_event: EVENT, sha_match: false,
+      reviewed_head_sha: EVENT, diff_source: 'remote', measured_from: 'git',
+    };
+    unproven.unknown_reasons = [];
+    // gemini review round 2: equal heads alone do not prove the race; the base must match too.
+    const movedBase = structuredClone(healthy);
+    movedBase.refs = {
+      ...healthy.refs, head_sha_git: GIT, head_sha_event: EVENT, sha_match: false,
+      reviewed_head_sha: GIT, diff_source: 'remote', measured_from: 'git', base_sha_git: 'e'.repeat(40),
+    };
+    movedBase.unknown_reasons = [];
+    const s = summarizeCoverageRecords(entriesOf(accepted, mismatched, legacy, unproven, movedBase));
+    expect(s.stale_head.councils).toBe(4);
+    expect(s.stale_head.runs.map((r) => r.run_id)).toEqual([999, 998, 997, 996]);
+    expect(s.stale_head.accepted_races).toBe(1);
   });
 
   it('census a MEASURED final-validator attempt under by_role.validator, not just via projection (EHAC-2841)', () => {

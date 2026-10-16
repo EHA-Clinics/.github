@@ -67,7 +67,7 @@ jobs:
       # and a non-zero assert exit. If this step ever passes trivially, the gate is vacuous.
       - name: Prove the fixture-driven red end-to-end
         env:
-          ELEK_REF: c410bfe8cae9d6829e6825df749ce76641e2dfbb
+          ELEK_REF: 061c438c5ceb0dba3c916d6d18741249929f28fc
           REQUESTED_STRATEGY: council
           EXECUTED_STRATEGY: council
           REVIEW_INPUT_TOKENS: '83000'
@@ -84,21 +84,23 @@ jobs:
           # It must be supplied: the budget is per-model and reservation-aware, and at the
           # packer's own default this 137,015-char diff is inlined WHOLE and cuts nothing — so
           # without a reported budget this step would measure COMPLETE and correctly declare
-          # the gate vacuous. 61_000 is the budget at which this diff reproduces the rollup
-          # recorded before the version move (6 whole, 4 cut production files, 5 cut
-          # non-source), so the truncation proven here is the SAME truncation as before.
+          # the gate vacuous. 28_000 is a budget at which this diff has the incident's four
+          # production files cut (re-derived at eha-v1.7.0, EHAC-2844: the fair packer drops
+          # non-source before it cuts source, so the old 61_000 now keeps all source whole and
+          # this step would measure PARTIAL_NON_SOURCE). Four cut production files hold from
+          # 27_000 to 28_400, so 28_000 is not on an edge.
           REVIEW_SUMMARY_JSON: >-
             {"run":{"conclusion":"success"},
              "review":{"requestedStrategy":"council","executedStrategy":"council"},
              "cost":{"inputTokens":83000},
              "promptBudgets":[
-               {"lensId":"risk","modelLabel":"deepseek/deepseek-v4-pro",
-                "reservedChars":259000,"diffPromptBudgetChars":61000,"excludePaths":[]}],
+               {"lensId":"risk","modelLabel":"openrouter/z-ai/glm-5.3-flash",
+                "reservedChars":259000,"diffPromptBudgetChars":28000,"excludePaths":[]}],
              "modelRuns":[
-               {"role":"reviewer","lensId":"risk","modelLabel":"deepseek/deepseek-v4-pro","conclusion":"success"},
-               {"role":"reviewer","lensId":"design","modelLabel":"xiaomi/mimo-v2.5-pro","conclusion":"success"},
-               {"role":"reviewer","lensId":"tests","modelLabel":"openrouter/z-ai/glm-5.1","conclusion":"success"},
-               {"role":"validator","modelLabel":"openrouter/z-ai/glm-5.1","conclusion":"success"}]}
+               {"role":"reviewer","lensId":"risk","modelLabel":"openrouter/z-ai/glm-5.3-flash","conclusion":"success"},
+               {"role":"reviewer","lensId":"design","modelLabel":"openrouter/xiaomi/mimo-v2.6-pro","conclusion":"success"},
+               {"role":"reviewer","lensId":"tests","modelLabel":"openrouter/minimax/minimax-m3","conclusion":"success"},
+               {"role":"validator","modelLabel":"openrouter/deepseek/deepseek-v4.1-flash","conclusion":"success"}]}
         run: |
           set -euo pipefail
           COV="$(COUNCIL_MAX_DEGRADED=1 node scripts/ai-review-coverage/measure-review-coverage.mjs \

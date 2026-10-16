@@ -256,10 +256,13 @@ describe('council model configuration', () => {
   it('pins the council roster in lens order', () => {
     const models = stringInputDefault('review_models').split(',').map((model) => model.trim());
 
+    // AMENDED 2026-10-16 (EHAC-2844, owner ruling 1): Design moves to mimo-v2.6-pro and Tests
+    // to minimax-m3, both admitted by the key-backed guardrail probe (eha_care #4770, run
+    // 38911217929: HTTP 200 under data_collection deny); Risk and Operations stay on GLM.
     expect(models).toEqual([
       'openrouter/z-ai/glm-5.3-flash',
-      'xiaomi/mimo-v2.5-pro',
-      'openrouter/deepseek/deepseek-v4.1-flash',
+      'openrouter/xiaomi/mimo-v2.6-pro',
+      'openrouter/minimax/minimax-m3',
       'openrouter/z-ai/glm-5.3-flash',
     ]);
 
@@ -279,7 +282,30 @@ describe('council model configuration', () => {
     // council, it is one opinion rendered four times. Two independent families remain.
     expect(new Set(models).size).toBeGreaterThanOrEqual(3);
 
-    expect(stringInputDefault('validator_model')).toBe('openrouter/deepseek/deepseek-v4-pro-0813');
+    // AMENDED 2026-10-16 (EHAC-2844, ruling 1): the validator is deepseek-v4.1-flash, with
+    // deepseek-v4-pro-0813 as its one validator-review failover (EHAC-2522, below).
+    expect(stringInputDefault('validator_model')).toBe('openrouter/deepseek/deepseek-v4.1-flash');
+    // Independence: the validator is not also a reviewer lens, so it audits opinions it did
+    // not write. A tests-lens fallback to v4.1-flash would break this and must be flagged.
+    expect(models).not.toContain(stringInputDefault('validator_model'));
+  });
+
+  // EHAC-2522 (elek #22, eha-v1.7.0). The validator-review lane fails over ONCE on
+  // invalid_output to a pinned model. elek's own default is empty (no failover), so the real
+  // default lives here, and it only works if the elek step forwards it.
+  it('defaults and forwards the validator-review failover model', () => {
+    const failover = stringInputDefault('validator_review_failover_model');
+    expect(failover).toBe('openrouter/deepseek/deepseek-v4-pro-0813');
+    expect(failover).not.toBe(stringInputDefault('validator_model'));
+    const forwards = withoutComments(source())
+      .split('\n')
+      .filter((line) => /^\s+validator_review_failover_model: \$\{\{ inputs\.validator_review_failover_model \}\}\s*$/.test(line));
+    expect(forwards, 'the elek step must forward validator_review_failover_model exactly once').toHaveLength(1);
+    // Forwarded in the elek step's `with:`, next to validator_model, not in some other step.
+    const step = withoutComments(source()).match(/uses: EHA-Clinics\/elek@[0-9a-f]{40}[\s\S]*?\n {8}with:\n((?: {10}.*\n| *\n)+)/);
+    expect(step, 'elek step with: block not found').not.toBeNull();
+    expect(step[1]).toMatch(/^ {10}validator_model: \$\{\{ inputs\.validator_model \}\}$/m);
+    expect(step[1]).toMatch(/^ {10}validator_review_failover_model: \$\{\{ inputs\.validator_review_failover_model \}\}$/m);
   });
 
   // EHAC-2635. The floating alias resolves to the April build, is subject to DeepSeek's
@@ -309,6 +335,18 @@ describe('council model configuration', () => {
   it('budgets GLM 5.3 Flash at the conservative standard rate', () => {
     const rates = stringInputDefault('cost_rates').split(',');
     expect(rates).toContain('openrouter/z-ai/glm-5.3-flash=0.15:0.50');
+  });
+
+  // EHAC-2844 (2026-10-16). Rates read from the OpenRouter endpoint listings: v4-pro-0813 was
+  // budgeted at HALF its price (0.66:1.98 against 1.32:3.96), so max_cost_usd under-counted the
+  // validator; with v4-pro-0813 now the failover, its rate prices the one extra attempt.
+  it('prices every council model at its listed OpenRouter rate', () => {
+    const rates = stringInputDefault('cost_rates').split(',').map((entry) => entry.trim());
+    expect(rates).toContain('openrouter/xiaomi/mimo-v2.6-pro=0.435:0.87');
+    expect(rates).toContain('openrouter/minimax/minimax-m3=0.30:1.20');
+    expect(rates).toContain('openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20');
+    expect(rates).toContain('openrouter/deepseek/deepseek-v4-pro-0813=1.32:3.96');
+    expect(rates.some((entry) => entry.includes('mimo-v2.5-pro'))).toBe(false);
   });
 
   // Model-AGNOSTIC by design. An earlier draft asserted a specific model version and was
@@ -999,8 +1037,11 @@ describe('reasoning capability policy reaches every consumer', () => {
     // sized from measured native_tokens_reasoning (see the input's comment); this pins the SHAPE —
     // a budgeted `enabled` entry — so nobody quietly drops the cap or moves it onto the global
     // reasoning_max_tokens, which would replace every lens's control at once.
-    expect(modes).toEqual({ 'xiaomi/mimo-v2.5-pro': { mode: 'enabled', max_tokens: 12000 } });
-    expect(Number.isSafeInteger(modes['xiaomi/mimo-v2.5-pro'].max_tokens)).toBe(true);
+    // EHAC-2844: the key follows the roster to mimo-v2.6-pro (probed in capped form, 200), keeps
+    // the roster's `openrouter/` spelling (elek and reasoning-policy.mjs both strip it) and the
+    // same 12000 budget.
+    expect(modes).toEqual({ 'openrouter/xiaomi/mimo-v2.6-pro': { mode: 'enabled', max_tokens: 12000 } });
+    expect(Number.isSafeInteger(modes['openrouter/xiaomi/mimo-v2.6-pro'].max_tokens)).toBe(true);
     expect(Object.keys(modes).filter((id) => !roster.includes(canonical(id)))).toEqual([]);
   });
 
