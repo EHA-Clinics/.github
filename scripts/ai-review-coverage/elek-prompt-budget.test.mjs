@@ -351,9 +351,10 @@ describe('assertion 4 — no surviving restatement, defined mechanically', () =>
     expect(constants).toContain(320_000); // default model input budget
     expect(constants).toContain(8_000); // minimum diff prompt budget
     expect(constants).not.toContain(80_000); // the deleted full-diff threshold
-    expect(constants).toEqual([
-      40, 120, 140, 240, 700, 1_200, 8_000, 64_000, 320_000, 540_000, 700_000, 2_700_000,
-    ]);
+    // eha-v1.7.0 (EHAC-2844): the fair packer dropped the uniform slice-cap constants 40, 240
+    // and 1_200; 64_000 (the per-file cap, ruling 5) and the budget constants remain.
+    expect(constants).toEqual([120, 140, 700, 8_000, 64_000, 320_000, 540_000, 700_000, 2_700_000]);
+    expect(constants).toContain(64_000); // the per-file cap: no budget raise (ruling 5)
     for (const caption of UPSTREAM_CAPTIONS) {
       expect(read(VENDORED), `caption not found upstream: ${caption}`).toContain(caption);
     }
@@ -513,11 +514,13 @@ describe('file ranking is OBSERVED from the vendored sorter, not reimplemented',
 // ---------------------------------------------------------------------------------------
 
 describe('coverage attribution over the real #3515 diff', () => {
-  // The budget at which this real diff reproduces the rollup recorded before the version move.
-  // It must be named explicitly: the packer's budget is per-model and reservation-aware and is
-  // now REPORTED by the run, and at the packer's own default this diff is inlined WHOLE and cuts
-  // nothing — a fixture that cannot truncate cannot prove the gate is able to go red.
-  const INCIDENT_BUDGET_CHARS = 61_000;
+  // A budget at which this real diff has the incident's four production files cut. It must be
+  // named explicitly: the packer's budget is per-model and reservation-aware and is now REPORTED
+  // by the run, and at the packer's own default this diff is inlined WHOLE and cuts nothing — a
+  // fixture that cannot truncate cannot prove the gate is able to go red. Re-derived at
+  // eha-v1.7.0 (EHAC-2844): the fair packer drops non-source before it cuts source, so the old
+  // 61_000 now keeps every production file whole; four are cut from 27_000 to 28_400.
+  const INCIDENT_BUDGET_CHARS = 28_000;
 
   it('separates cut production source from cut tests', () => {
     const { rollup, regime, slice_ceiling_observed } = attributeCoverage(fixture('pr-3515.diff'), {
@@ -527,13 +530,14 @@ describe('coverage attribution over the real #3515 diff', () => {
     expect(rollup.files_total).toBe(15);
     expect(rollup.source_partial).toBe(4);
     expect(rollup.source_absent).toBe(0);
-    expect(rollup.whole).toBe(6);
-    expect(rollup.non_source_partial).toBe(5);
-    expect(rollup.non_source_absent).toBe(0);
+    expect(rollup.whole).toBe(1);
+    // Source first: every non-source file is dropped before any production file is cut.
+    expect(rollup.non_source_partial).toBe(0);
+    expect(rollup.non_source_absent).toBe(10);
     expect(rollup.unknown_paths).toBe(0);
-    expect(rollup.whole + rollup.source_partial + rollup.non_source_partial).toBe(15);
+    expect(rollup.whole + rollup.source_partial + rollup.non_source_absent).toBe(15);
     // OBSERVED, not upstream's internal budget: the largest slice that actually survived.
-    expect(slice_ceiling_observed).toBe(3_738);
+    expect(slice_ceiling_observed).toBe(5_956);
   });
 
   it('reports files dropped from the prompt ENTIRELY when the ceiling really binds', () => {
@@ -545,7 +549,7 @@ describe('coverage attribution over the real #3515 diff', () => {
     expect(squeezed.rollup.non_source_absent).toBe(10);
     expect(squeezed.rollup.source_partial).toBe(1);
     expect(squeezed.rollup.whole).toBe(0);
-    expect(squeezed.slice_ceiling_observed).toBe(528);
+    expect(squeezed.slice_ceiling_observed).toBe(715);
   });
 
   it('reports every file WHOLE when the full diff is inlined', () => {

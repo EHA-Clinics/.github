@@ -260,7 +260,7 @@ export function summarizeCoverageRecords(entries, { generatedAt = new Date().toI
     duration_seconds: [],
     by_role: { 'validator-review': validatorRoleCensus(), validator: validatorRoleCensus() },
   };
-  const staleHead = { councils: 0, runs: [] };
+  const staleHead = { councils: 0, runs: [], accepted_races: 0 };
 
   // A collapse is an independence defect ONLY on the validator-review audit lens: the
   // failover roster is reviewer-only, so a 404 failover runs the audit on a reviewer
@@ -342,9 +342,18 @@ export function summarizeCoverageRecords(entries, { generatedAt = new Date().toI
 
     // U4 (stale head) — a COUNCIL-level metric (EHAC-2841): U4 is about the council's
     // refs, not a model role, so it is no longer counted inside the validator census.
-    if (r.refs && r.refs.sha_match === false) {
+    // EHAC-2844: since elek eha-v1.7.0 the producer binds U4 to the REVIEWED head, so
+    // sha_match false alone (the event head moved) is no longer a stale review. A council
+    // counts when its record carries a U4 reason, or — a legacy record with no diff_source —
+    // when sha_match is false, exactly as before. Races the producer accepted are counted
+    // separately, so the race window stays measurable from records.
+    const hasU4 = Array.isArray(r.unknown_reasons) && r.unknown_reasons.some((u) => u?.branch === 'U4');
+    const hasProvenance = typeof r.refs?.diff_source === 'string' && r.refs.diff_source !== '';
+    if (hasU4 || (!hasProvenance && r.refs?.sha_match === false)) {
       staleHead.councils++;
       staleHead.runs.push({ run_id: e.run_id, created_at: e.created_at ?? null });
+    } else if (r.refs?.sha_match === false) {
+      staleHead.accepted_races++;
     }
 
     const chars = num(r.diff?.chars);
@@ -441,6 +450,7 @@ export function renderMarkdown(s) {
   lines.push(`- elek pins: ${kv(s.elek_pins)}`);
   lines.push(`- stale-head councils (U4, push raced the review): ${s.stale_head?.councils ?? 0}` +
     (s.stale_head?.runs?.length ? ` — ${s.stale_head.runs.map((r) => `run ${r.run_id}`).join(', ')}` : ''));
+  lines.push(`- accepted head races (event head moved, reviewed head = measured head): ${s.stale_head?.accepted_races ?? 0}`);
   lines.push('');
 
   lines.push('### Per model', '');

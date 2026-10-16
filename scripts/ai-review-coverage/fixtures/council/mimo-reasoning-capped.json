@@ -4,8 +4,8 @@
   "not_reviewed": null,
   "unknown_reasons": [],
   "elek": {
-    "ref": "c410bfe8cae9d6829e6825df749ce76641e2dfbb",
-    "ref_verified": "c410bfe8cae9d6829e6825df749ce76641e2dfbb",
+    "ref": "061c438c5ceb0dba3c916d6d18741249929f28fc",
+    "ref_verified": "061c438c5ceb0dba3c916d6d18741249929f28fc",
     "pin_ok": true
   },
   "strategy": {
@@ -66,14 +66,14 @@
       {
         "role": "reviewer",
         "lens_id": "design",
-        "model_label": "openrouter/xiaomi/mimo-v2.5-pro",
+        "model_label": "openrouter/xiaomi/mimo-v2.6-pro",
         "conclusion": "success",
         "input_tokens": 1500,
         "output_tokens": 900,
         "cost_usd": 0.004,
         "failure_class": null,
-        "assigned_model_label": "openrouter/xiaomi/mimo-v2.5-pro",
-        "actual_model_label": "openrouter/xiaomi/mimo-v2.5-pro",
+        "assigned_model_label": "openrouter/xiaomi/mimo-v2.6-pro",
+        "actual_model_label": "openrouter/xiaomi/mimo-v2.6-pro",
         "failover_used": false,
         "attempt_count": 1,
         "reasoning": {
@@ -196,8 +196,8 @@
         "lens_id": "design",
         "role": "reviewer",
         "attempt": 1,
-        "assigned_model": "openrouter/xiaomi/mimo-v2.5-pro",
-        "actual_model": "openrouter/xiaomi/mimo-v2.5-pro",
+        "assigned_model": "openrouter/xiaomi/mimo-v2.6-pro",
+        "actual_model": "openrouter/xiaomi/mimo-v2.6-pro",
         "failover": false,
         "conclusion": "success",
         "reasoning": {
@@ -281,13 +281,13 @@
     "configured": {
       "review_models": [
         "openrouter/deepseek/deepseek-v4-pro",
-        "openrouter/xiaomi/mimo-v2.5-pro",
+        "openrouter/xiaomi/mimo-v2.6-pro",
         "openrouter/deepseek/deepseek-v4-flash",
         "openrouter/z-ai/glm-5.3-flash"
       ],
       "validator_model": "openrouter/deepseek/deepseek-v4-pro",
       "reasoning_modes": {
-        "xiaomi/mimo-v2.5-pro": {
+        "xiaomi/mimo-v2.6-pro": {
           "mode": "enabled",
           "max_tokens": 12000
         }
@@ -305,7 +305,7 @@
     "distinct_models": [
       "openrouter/deepseek/deepseek-v4-flash",
       "openrouter/deepseek/deepseek-v4-pro",
-      "openrouter/xiaomi/mimo-v2.5-pro",
+      "openrouter/xiaomi/mimo-v2.6-pro",
       "openrouter/z-ai/glm-5.3-flash"
     ],
     "rollup": {

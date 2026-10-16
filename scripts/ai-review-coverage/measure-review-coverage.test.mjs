@@ -32,12 +32,15 @@ const SDK_ADAPTER = 'apps/ehacare/frontend/src/common/services/sdkClientAdapter.
  * diff is inlined WHOLE and cuts nothing. A fixture that cannot truncate cannot prove the gate
  * is able to go red, which is the one thing these cases exist to prove.
  *
- * Why THIS value: 61,000 is the budget at which the real #3515 diff reproduces the ROLLUP
- * recorded before the version move — 6 whole, 4 cut production files, 5 cut non-source, none
- * dropped entirely. The counts are identical to the pre-move measurement, so the truncation
- * being detected is the same truncation as before, not a new artefact of the new packer.
+ * Why THIS value: 28,000 is a budget at which the real #3515 diff has the SAME four production
+ * files cut as the incident (encounterService, labOrders, prescriptionService, tenantRoster),
+ * with sdkClientAdapter still whole and no production file dropped. Re-derived at eha-v1.7.0
+ * (EHAC-2844): the fair packer fills source first and drops non-source before it cuts source,
+ * so at the old 61,000 it keeps every production file whole (PARTIAL_NON_SOURCE) and the old
+ * rollup (4 cut source beside 5 cut non-source) can no longer occur at any budget. Four cut
+ * production files hold from 27,000 to 28,400; 28,000 sits inside that band, not on an edge.
  */
-const INCIDENT_BUDGET_CHARS = 61_000;
+const INCIDENT_BUDGET_CHARS = 28_000;
 
 const promptBudgetSummary = (maxChars = INCIDENT_BUDGET_CHARS, excludePaths = []) =>
   JSON.stringify({
@@ -106,7 +109,7 @@ describe('buildCoverage — the fixture-driven red', () => {
     expect(coverage.diff.chars).toBe(137_015);
     expect(coverage.diff.files_diff).toBe(15);
     expect(coverage.diff.regime).toBe('SLICES');
-    expect(coverage.diff.slice_ceiling_observed).toBe(3_738); // R14: observed, not upstream's internal budget
+    expect(coverage.diff.slice_ceiling_observed).toBe(5_956); // R14: observed, not upstream's internal budget
     expect(coverage.diff.budget_chars).toBe(INCIDENT_BUDGET_CHARS);
     expect(coverage.diff.budget_source).toBe('reported-by-run');
   });
@@ -125,19 +128,16 @@ describe('buildCoverage — the fixture-driven red', () => {
     expect(roster.patch_chars).toBe(15_215);
     expect(roster.shown_chars).toBeLessThan(roster.patch_chars);
     expect(roster.shown_chars).toBeGreaterThan(0);
-    // MEASURED on the committed fixture, then independently confirmed by hand:
-    // patch.slice(0, perFileBudget - 140).replace(/\n[^\n]*$/,'') — the last newline inside
-    // the cut sits at index 3,706. Re-derived for the current packer, not carried forward: the
-    // per-file budget is no longer a fixed 4,000, it is the reported diff budget shared across
-    // the changed files, which at the incident budget lands just under 3,878 for this diff.
-    // The hand-derivation is stable across that neighbourhood — 3,860 and 3,878 both cut at
-    // 3,706 — because the trim lands on the same line boundary either way.
+    // MEASURED on the committed fixture at the eha-v1.7.0 packer, not carried forward. The
+    // fair packer gives each cut production file a max-min fair share of what is left after
+    // the whole ones, then trims to the last line boundary, so the cut lands at 5,924 here.
+    // (At c410bfe and 61,000 it was 3,706, 24%: the uniform slice cap.)
     //
-    // 76% of the tenant-isolation primitive is outside the prompt. That is the whole point:
-    // the review reported "no high-confidence issues" without having seen three quarters of
-    // the file, and the pin move alone was never the fix.
-    expect(roster.shown_chars).toBe(3_706);
-    expect(roster.pct).toBe(24);
+    // 62% of the tenant-isolation primitive is still outside the prompt at this budget. That is
+    // the point of the fixture: a review that has not seen most of the file must not read as
+    // complete, whichever packer produced the cut.
+    expect(roster.shown_chars).toBe(5_924);
+    expect(roster.pct).toBe(38);
   });
 
   it('derives shownChars from the ported packer — at least one file is genuinely cut', () => {
@@ -151,8 +151,10 @@ describe('buildCoverage — the fixture-driven red', () => {
     // incapable of red. This assertion is the guard against that.
     expect(cut.length).toBeGreaterThan(0);
     expect(cut.every((row) => row.shown_chars < row.patch_chars)).toBe(true);
-    // No file is dropped whole at this size: the failure mode is truncation, not omission.
+    // No PRODUCTION file is dropped whole at this size: the source failure mode is truncation,
+    // not omission. (The fair packer drops the ten non-source files first.)
     expect(coverage.rollup.source_absent).toBe(0);
+    expect(coverage.rollup.non_source_absent).toBe(10);
     expect(coverage.rollup.source_partial).toBe(4);
     expect(coverage.rollup.files_total).toBe(15);
   });
@@ -195,8 +197,8 @@ describe('buildCoverage — the green control', () => {
 });
 
 describe('buildCoverage — PARTIAL_NON_SOURCE (synthetic subset of the real diff)', () => {
-  // Real file sections, re-selected: every production-source file in the subset fits
-  // inside the 4,000-char per-file clamp, so only tests/fixtures get cut.
+  // Real file sections, re-selected: the one production-source file in the subset
+  // (sdkClientAdapter) is packed first and fits, so only tests/fixtures get cut.
   const NON_SOURCE_CUT_SUBSET = new Set([
     SDK_ADAPTER,
     'apps/ehacare/frontend/src/__tests__/helpers/tenantIsolationFixtures.ts',
@@ -232,7 +234,9 @@ describe('buildCoverage — PARTIAL_NON_SOURCE (synthetic subset of the real dif
     expect(coverage.verdict).toBe('PARTIAL_NON_SOURCE');
     expect(coverage.rollup.source_partial).toBe(0);
     expect(coverage.rollup.source_absent).toBe(0);
-    expect(coverage.rollup.non_source_partial).toBe(5);
+    // Measured at the eha-v1.7.0 packer and the 28_000 incident budget (5 at c410bfe/61_000).
+    expect(coverage.rollup.non_source_partial).toBe(6);
+    expect(coverage.rollup.non_source_absent).toBe(0);
     expect(byPath(coverage, SDK_ADAPTER).verdict).toBe('WHOLE');
   });
 });
@@ -270,6 +274,103 @@ describe('buildCoverage — UNKNOWN detection (U1-U6)', () => {
     const coverage = cover({}, { headShaGit: 'a'.repeat(40), headShaEvent: 'b'.repeat(40) });
     expect(coverage.verdict).toBe('UNKNOWN');
     expect(branches(coverage)).toContain('U4');
+  });
+
+  // EHAC-2844 (elek eha-v1.7.0, #20): elek now reports WHICH tree it reviewed. U4 binds to that
+  // reviewed head instead of the live event head, so a push that lands after elek read its diff
+  // is an accepted race (the record names the older head the review describes), while a review
+  // of a different tree, or of the unbound API diff, stays red.
+  describe('U4 bound to the reviewed head (summary entity provenance)', () => {
+    const GIT = 'a'.repeat(40);
+    const EVENT = 'b'.repeat(40);
+    const BASE = 'c'.repeat(40);
+    const withEntity = (entity) => ({
+      REVIEW_SUMMARY_JSON: JSON.stringify({ ...JSON.parse(promptBudgetSummary()), entity }),
+    });
+
+    it('records reviewed_head_sha, reviewed_base_sha and diff_source in refs', () => {
+      const coverage = cover(
+        withEntity({ diffSource: 'remote', reviewedHeadSha: GIT, reviewedBaseSha: BASE }),
+        { headShaGit: GIT, headShaEvent: GIT },
+      );
+      expect(coverage.refs).toMatchObject({
+        head_sha_git: GIT,
+        head_sha_event: GIT,
+        sha_match: true,
+        reviewed_head_sha: GIT,
+        reviewed_base_sha: BASE,
+        diff_source: 'remote',
+      });
+      expect(branches(coverage)).not.toContain('U4');
+      expect(coverage.verdict).toBe('COMPLETE');
+    });
+
+    it('accepts a push that raced the review when the reviewed head is the measured head', () => {
+      const coverage = cover(
+        withEntity({ diffSource: 'remote', reviewedHeadSha: GIT, reviewedBaseSha: BASE }),
+        { headShaGit: GIT, headShaEvent: EVENT },
+      );
+      // sha_match keeps its meaning (git vs event) so the race stays visible in the census…
+      expect(coverage.refs.sha_match).toBe(false);
+      // …but it is not U4: the review and the measurement describe the same tree.
+      expect(branches(coverage)).not.toContain('U4');
+      expect(coverage.verdict).toBe('COMPLETE');
+    });
+
+    it('raises U4 when the reviewed head differs from the measured head', () => {
+      const coverage = cover(
+        withEntity({ diffSource: 'head', reviewedHeadSha: EVENT, reviewedBaseSha: BASE }),
+        { headShaGit: GIT, headShaEvent: EVENT },
+      );
+      expect(coverage.verdict).toBe('UNKNOWN');
+      expect(branches(coverage)).toContain('U4');
+      expect(coverage.unknown_reasons.find((u) => u.branch === 'U4').message).toContain(EVENT);
+    });
+
+    it('raises U4 for the API diff, which no head SHA binds, even when git and event agree', () => {
+      const coverage = cover(withEntity({ diffSource: 'api' }), { headShaGit: GIT, headShaEvent: GIT });
+      expect(coverage.verdict).toBe('UNKNOWN');
+      expect(branches(coverage)).toContain('U4');
+      expect(coverage.refs.diff_source).toBe('api');
+      expect(coverage.refs.reviewed_head_sha).toBeNull();
+    });
+
+    it.each([
+      ['missing', undefined],
+      ['malformed', 'not-a-sha'],
+      ['upper-case', 'A'.repeat(40)],
+    ])('raises U4 when diff_source is set but the reviewed head is %s', (_label, sha) => {
+      const coverage = cover(
+        withEntity({ diffSource: 'remote', reviewedHeadSha: sha, reviewedBaseSha: BASE }),
+        { headShaGit: GIT, headShaEvent: GIT },
+      );
+      expect(branches(coverage)).toContain('U4');
+      expect(coverage.refs.reviewed_head_sha).toBeNull();
+    });
+
+    it('accepts a 64-hex (SHA-256) reviewed head that equals the measured head', () => {
+      const sha256 = 'd'.repeat(64);
+      const coverage = cover(
+        withEntity({ diffSource: 'remote', reviewedHeadSha: sha256, reviewedBaseSha: BASE }),
+        { headShaGit: sha256, headShaEvent: sha256 },
+      );
+      expect(branches(coverage)).not.toContain('U4');
+      expect(coverage.refs.reviewed_head_sha).toBe(sha256);
+    });
+
+    it('falls back to the legacy git-vs-event rule when elek reports no provenance', () => {
+      const legacy = cover(withEntity({ actor: 'adothompson' }), { headShaGit: GIT, headShaEvent: EVENT });
+      expect(branches(legacy)).toContain('U4');
+      expect(legacy.refs.diff_source).toBeNull();
+      expect(legacy.refs.reviewed_head_sha).toBeNull();
+      // An unrecognised diff_source is not provenance: legacy rule, never a silent pass.
+      const unknownSource = cover(
+        withEntity({ diffSource: 'workspace', reviewedHeadSha: GIT }),
+        { headShaGit: GIT, headShaEvent: EVENT },
+      );
+      expect(branches(unknownSource)).toContain('U4');
+      expect(unknownSource.refs.diff_source).toBeNull();
+    });
   });
 
   it('U5: input_tokens absent or zero', () => {
@@ -430,7 +531,7 @@ describe('deriveModels — per-lens ground truth (EHAC-2162, EHAC-2103)', () => 
   // The real modelRuns from eha_care PR #3564, run 31223046934.
   const PR_3564_RUNS = [
     { role: 'reviewer', lensId: 'risk', modelLabel: 'deepseek/deepseek-v4-pro', conclusion: 'success' },
-    { role: 'reviewer', lensId: 'design', modelLabel: 'xiaomi/mimo-v2.5-pro', conclusion: 'success' },
+    { role: 'reviewer', lensId: 'design', modelLabel: 'xiaomi/mimo-v2.6-pro', conclusion: 'success' },
     { role: 'reviewer', lensId: 'tests', modelLabel: 'openrouter/z-ai/glm-5.1', conclusion: 'failure' },
     { role: 'reviewer', lensId: 'operations', modelLabel: 'deepseek/deepseek-v4-pro', conclusion: 'success' },
     { role: 'validator-review', lensId: 'validator-self-review', modelLabel: 'openrouter/z-ai/glm-5.1', conclusion: 'failure' },
@@ -454,7 +555,7 @@ describe('deriveModels — per-lens ground truth (EHAC-2162, EHAC-2103)', () => 
     expect(models.distinct_models).toEqual([
       'deepseek/deepseek-v4-pro',
       'openrouter/z-ai/glm-5.1',
-      'xiaomi/mimo-v2.5-pro',
+      'xiaomi/mimo-v2.6-pro',
     ]);
   });
 
@@ -477,9 +578,9 @@ describe('deriveModels — per-lens ground truth (EHAC-2162, EHAC-2103)', () => 
   it('records the configured council alongside the observed one', () => {
     const models = deriveModels(
       { modelRuns: PR_3564_RUNS },
-      { REVIEW_MODELS: 'deepseek/deepseek-v4-pro, xiaomi/mimo-v2.5-pro', VALIDATOR_MODEL: 'openrouter/z-ai/glm-5.1' },
+      { REVIEW_MODELS: 'deepseek/deepseek-v4-pro, xiaomi/mimo-v2.6-pro', VALIDATOR_MODEL: 'openrouter/z-ai/glm-5.1' },
     );
-    expect(models.configured.review_models).toEqual(['deepseek/deepseek-v4-pro', 'xiaomi/mimo-v2.5-pro']);
+    expect(models.configured.review_models).toEqual(['deepseek/deepseek-v4-pro', 'xiaomi/mimo-v2.6-pro']);
     expect(models.configured.validator_model).toBe('openrouter/z-ai/glm-5.1');
   });
 
@@ -494,7 +595,7 @@ describe('deriveModels — per-lens ground truth (EHAC-2162, EHAC-2103)', () => 
           cost: { inputTokens: 83_000 },
           modelRuns: PR_3564_RUNS,
         }),
-        REVIEW_MODELS: 'deepseek/deepseek-v4-pro,xiaomi/mimo-v2.5-pro,openrouter/z-ai/glm-5.1',
+        REVIEW_MODELS: 'deepseek/deepseek-v4-pro,xiaomi/mimo-v2.6-pro,openrouter/z-ai/glm-5.1',
         VALIDATOR_MODEL: 'openrouter/z-ai/glm-5.1',
       }),
       context: healthyContext({ changedFilesApi: 2 }),

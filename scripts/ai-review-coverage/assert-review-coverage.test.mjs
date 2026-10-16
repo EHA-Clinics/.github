@@ -61,15 +61,15 @@ const payload = (over = {}) =>
     models: {
       runs: [
         { role: 'reviewer', lens_id: 'risk', model_label: 'deepseek/deepseek-v4-pro', conclusion: 'success' },
-        { role: 'reviewer', lens_id: 'design', model_label: 'xiaomi/mimo-v2.5-pro', conclusion: 'success' },
+        { role: 'reviewer', lens_id: 'design', model_label: 'xiaomi/mimo-v2.6-pro', conclusion: 'success' },
         { role: 'reviewer', lens_id: 'tests', model_label: 'openrouter/z-ai/glm-5.1', conclusion: 'success' },
         { role: 'validator', lens_id: null, model_label: 'openrouter/z-ai/glm-5.1', conclusion: 'success' },
       ],
       configured: {
-        review_models: ['deepseek/deepseek-v4-pro', 'xiaomi/mimo-v2.5-pro', 'openrouter/z-ai/glm-5.1'],
+        review_models: ['deepseek/deepseek-v4-pro', 'xiaomi/mimo-v2.6-pro', 'openrouter/z-ai/glm-5.1'],
         validator_model: 'openrouter/z-ai/glm-5.1',
       },
-      distinct_models: ['deepseek/deepseek-v4-pro', 'openrouter/z-ai/glm-5.1', 'xiaomi/mimo-v2.5-pro'],
+      distinct_models: ['deepseek/deepseek-v4-pro', 'openrouter/z-ai/glm-5.1', 'xiaomi/mimo-v2.6-pro'],
       rollup: {
         runs_total: 4,
         reviewer_lenses_total: 3,
@@ -255,7 +255,7 @@ describe('UNKNOWN branches — every one exits non-zero', () => {
     const base = JSON.parse(payload());
     base.models.runs = [
       { role: 'reviewer', lens_id: 'risk', model_label: 'deepseek/deepseek-v4-pro', conclusion: 'success' },
-      { role: 'reviewer', lens_id: 'design', model_label: 'xiaomi/mimo-v2.5-pro', conclusion: 'success' },
+      { role: 'reviewer', lens_id: 'design', model_label: 'xiaomi/mimo-v2.6-pro', conclusion: 'success' },
       { role: 'reviewer', lens_id: 'tests', model_label: 'openrouter/z-ai/glm-5.1', conclusion: 'failure' },
       { role: 'reviewer', lens_id: 'operations', model_label: 'deepseek/deepseek-v4-pro', conclusion: 'success' },
       { role: 'validator-review', lens_id: 'validator-self-review', model_label: 'openrouter/z-ai/glm-5.1', conclusion: 'failure' },
@@ -289,7 +289,7 @@ describe('UNKNOWN branches — every one exits non-zero', () => {
     const base = JSON.parse(payload());
     base.models.runs = [
       { role: 'reviewer', lens_id: 'risk', model_label: 'deepseek/deepseek-v4-pro', conclusion: 'success' },
-      { role: 'reviewer', lens_id: 'design', model_label: 'xiaomi/mimo-v2.5-pro', conclusion: 'success' },
+      { role: 'reviewer', lens_id: 'design', model_label: 'xiaomi/mimo-v2.6-pro', conclusion: 'success' },
       { role: 'reviewer', lens_id: 'tests', model_label: 'deepseek/deepseek-v4-flash', conclusion: 'success' },
       { role: 'reviewer', lens_id: 'operations', model_label: 'deepseek/deepseek-v4-pro', conclusion: 'success' },
       { role: 'validator-review', lens_id: 'validator-self-review', model_label: 'deepseek/deepseek-v4-pro', conclusion: 'success' },
@@ -385,6 +385,52 @@ describe('UNKNOWN branches — every one exits non-zero', () => {
     expect(result.stdout).toContain('@ai-review');
     expect(result.stdout).toContain('re-run');
     expect(result.status).toBe(1);
+  });
+
+  // EHAC-2844: the asserter re-derives U4 from the record's refs with the PRODUCER's rule, so a
+  // race the producer accepts is not re-reddened here, and a reviewed-tree mismatch the producer
+  // missed (or a hand-edited record) still is.
+  describe('U4 bound to the reviewed head (refs.reviewed_head_sha / diff_source)', () => {
+    const GIT = 'a'.repeat(40);
+    const EVENT = 'b'.repeat(40);
+    const withRefs = (refs) => {
+      const base = JSON.parse(payload());
+      base.refs = { ...base.refs, head_sha_git: GIT, head_sha_event: GIT, sha_match: true, ...refs };
+      return JSON.stringify(base);
+    };
+
+    it('accepts the event head moving when the reviewed head is the measured head', () => {
+      const result = run({
+        COVERAGE_JSON: withRefs({ head_sha_event: EVENT, sha_match: false, reviewed_head_sha: GIT, diff_source: 'remote' }),
+      });
+      expect(result.stdout).not.toContain('U4');
+      expect(result.status).toBe(0);
+    });
+
+    it('raises U4 when the reviewed head is not the measured head', () => {
+      expectUnknown({ COVERAGE_JSON: withRefs({ reviewed_head_sha: EVENT, diff_source: 'head' }) }, 'U4');
+    });
+
+    it('raises U4 for the API diff even when git and event agree', () => {
+      expectUnknown({ COVERAGE_JSON: withRefs({ reviewed_head_sha: null, diff_source: 'api' }) }, 'U4');
+    });
+
+    it('raises U4 when diff_source is set but the reviewed head is missing or malformed', () => {
+      expectUnknown({ COVERAGE_JSON: withRefs({ reviewed_head_sha: null, diff_source: 'remote' }) }, 'U4');
+      expectUnknown({ COVERAGE_JSON: withRefs({ reviewed_head_sha: 'zz', diff_source: 'remote' }) }, 'U4');
+    });
+
+    it('keeps the legacy git-vs-event rule when the record carries no provenance', () => {
+      expectUnknown(
+        { COVERAGE_JSON: withRefs({ head_sha_event: EVENT, sha_match: false, reviewed_head_sha: null, diff_source: null }) },
+        'U4',
+      );
+      // An unrecognised diff_source is not provenance.
+      expectUnknown(
+        { COVERAGE_JSON: withRefs({ head_sha_event: EVENT, sha_match: false, reviewed_head_sha: GIT, diff_source: 'workspace' }) },
+        'U4',
+      );
+    });
   });
 
   it('U5: COVERAGE_JSON missing entirely', () => {

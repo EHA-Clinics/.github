@@ -410,9 +410,31 @@ export function deriveUnknownBranches(coverage, maxDegraded = DEFAULT_COUNCIL_MA
   // U4 counts are also read back per-run by the streak reader from
   // unknown_reasons / refs.sha_match, so the census can size the race window from
   // records rather than anecdotes.
+  //
+  // EHAC-2844 (elek eha-v1.7.0, #20): when the record says which tree elek REVIEWED
+  // (refs.diff_source in the elek enum), U4 is re-derived from that, with the producer's rule:
+  // U4 iff the API diff was reviewed, or no valid reviewed head is named, or it is not the
+  // measured head (refs.head_sha_git). The event head moving after both read the branch is then
+  // an accepted race: the review and the measurement describe one tree. Without provenance the
+  // legacy git-vs-event rule below stands unchanged.
   const shaGit = coverage?.refs?.head_sha_git ?? null;
   const shaEvent = coverage?.refs?.head_sha_event ?? null;
-  if (shaGit && shaEvent && shaGit !== shaEvent) {
+  const diffSource = ['remote', 'head', 'api'].includes(coverage?.refs?.diff_source) ? coverage.refs.diff_source : null;
+  const reviewedHead = typeof coverage?.refs?.reviewed_head_sha === 'string' &&
+    /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(coverage.refs.reviewed_head_sha)
+    ? coverage.refs.reviewed_head_sha
+    : null;
+  if (diffSource === 'api') {
+    add(
+      'U4',
+      'U4 elek reviewed the GitHub API diff (diff_source api), which no head SHA binds — the reviewed tree cannot be shown to be the measured one. Re-run `@ai-review` so elek reviews the git diff.',
+    );
+  } else if (diffSource !== null && (reviewedHead === null || reviewedHead !== shaGit)) {
+    add(
+      'U4',
+      `U4 elek reviewed head ${reviewedHead ?? '(none recorded)'} but the measured branch tip is ${shaGit ?? '(unknown)'} — the review and the measured diff describe different trees. Re-run \`@ai-review\` on the current head.`,
+    );
+  } else if (diffSource === null && shaGit && shaEvent && shaGit !== shaEvent) {
     const shaRemedy = /^[0-9a-f]{40}$/.test(shaGit) && /^[0-9a-f]{40}$/.test(shaEvent)
       ? `the reviewed tip describes commit ${shaGit}; the check run names ${shaEvent}. A push raced the review — re-run \`@ai-review\` on the current head. If the head was force-pushed BACKWARDS, investigate the branch instead.`
       : 'A push raced the review — re-run `@ai-review` on the current head.';

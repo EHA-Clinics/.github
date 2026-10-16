@@ -4,8 +4,8 @@
   "not_reviewed": null,
   "unknown_reasons": [],
   "elek": {
-    "ref": "c410bfe8cae9d6829e6825df749ce76641e2dfbb",
-    "ref_verified": "c410bfe8cae9d6829e6825df749ce76641e2dfbb",
+    "ref": "061c438c5ceb0dba3c916d6d18741249929f28fc",
+    "ref_verified": "061c438c5ceb0dba3c916d6d18741249929f28fc",
     "pin_ok": true
   },
   "strategy": {
@@ -45,7 +45,7 @@
     "configured": {
       "review_models": [
         "openrouter/deepseek/deepseek-v4-pro",
-        "openrouter/xiaomi/mimo-v2.5-pro",
+        "openrouter/xiaomi/mimo-v2.6-pro",
         "openrouter/deepseek/deepseek-v4-flash"
       ],
       "validator_model": "openrouter/deepseek/deepseek-v4-pro"

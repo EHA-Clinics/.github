@@ -120,7 +120,14 @@ on:
         # grounds — see the distinct-model invariant in workflow-invariants.test.mjs, relaxed in
         # the same change. glm-5.3-flash supports named-effort reasoning, so no reasoning-modes
         # entry is added.
-        default: 'openrouter/z-ai/glm-5.3-flash,xiaomi/mimo-v2.5-pro,openrouter/deepseek/deepseek-v4.1-flash,openrouter/z-ai/glm-5.3-flash'
+        # AMENDED 2026-10-16 (EHAC-2844, owner ruling 1): Design moves xiaomi/mimo-v2.5-pro ->
+        # openrouter/xiaomi/mimo-v2.6-pro and Tests moves deepseek-v4.1-flash -> minimax-m3.
+        # Both were admitted by a key-backed probe through the eha_care repo key and the callers'
+        # provider object (data_collection deny, require_parameters true): eha_care #4770, run
+        # 38911217929, HTTP 200 on each, with glm-5.3-flash 200 and kimi-k2.7-code 404 as the
+        # controls. v4.1-flash becomes the validator, so no lens shares the validator's model.
+        # minimax-m3 supports named-effort reasoning, so no reasoning-modes entry is added.
+        default: 'openrouter/z-ai/glm-5.3-flash,openrouter/xiaomi/mimo-v2.6-pro,openrouter/minimax/minimax-m3,openrouter/z-ai/glm-5.3-flash'
         description: 'Comma-separated OpenRouter model ids for the council lenses (round-robin assigned).'
       openrouter_model_reasoning_modes:
         type: string
@@ -134,7 +141,10 @@ on:
         # reasoning_max_tokens stays unset — it would replace every lens's control at once.
         # Requires elek >= eha-v1.5.0 (object-form map); older pins reject it at preflight, and the
         # gate (reasoning-policy.mjs) fails U9 unless MiMo's telemetry shows max-tokens at this number.
-        default: '{"xiaomi/mimo-v2.5-pro":{"mode":"enabled","max_tokens":12000}}'
+        # AMENDED 2026-10-16 (EHAC-2844): the key follows the Design lens to mimo-v2.6-pro, spelt
+        # as in the roster (elek and reasoning-policy.mjs both strip `openrouter/`). The budget is
+        # carried forward unchanged; mimo-v2.6-pro answered the capped form with HTTP 200.
+        default: '{"openrouter/xiaomi/mimo-v2.6-pro":{"mode":"enabled","max_tokens":12000}}'
         description: 'Canonical OpenRouter model capability map: effort (default), enabled (provider-default reasoning, with the unchanged output limit sent as max_tokens), or {"mode": ..., "max_tokens": N} to cap that model alone.'
       validator_model:
         type: string
@@ -144,8 +154,28 @@ on:
         # the explicit `openrouter/` prefix for the same reason the Tests lane does: a dated
         # variant has no bundled native-provider entry, and a bare `deepseek/...` spec fails with
         # "No API key found for deepseek".
-        default: 'openrouter/deepseek/deepseek-v4-pro-0813'
+        # AMENDED 2026-10-16 (EHAC-2844, owner ruling 1): the validator moves to
+        # deepseek-v4.1-flash (probed 200), and v4-pro-0813 becomes its one failover below.
+        default: 'openrouter/deepseek/deepseek-v4.1-flash'
         description: 'Model that reconciles and validates lens findings before posting.'
+      validator_review_failover_model:
+        type: string
+        # EHAC-2522 (elek #22, eha-v1.7.0): the validator-review lane fails over ONCE, to this
+        # pinned model, when its first attempt ends invalid_output (provider_unavailable keeps
+        # its existing next-distinct-model failover; timeout, stall and max_turns stay
+        # non-retryable on that lane). elek's own default is empty (no failover); the org default
+        # is set here. It must differ from validator_model, or the failover would re-ask the
+        # model that just failed. The pre-run cost estimate prices the extra attempt.
+        #
+        # GUARD CONSEQUENCE. A pinned failover switches elek's serial-budget guard to the
+        # retry-aware formula even when validator_run_timeout_seconds is unset:
+        # 37 + max(2R, 2V) + V with V = R, i.e. 37 + 3R. The fleet default (R 600, 35 min) needs
+        # 1837 <= 2100 and fits; eha_care and eha-care-infra (R 900, V 1200, 65 min) need
+        # 3637 <= 3900 and fit. A caller at R 900 with V unset and a 45-minute cap needs 2737 >
+        # 2700 and is refused at preflight: raise job_timeout_minutes to 46, or pass '' here,
+        # BEFORE re-pinning (kemiqa and aiki at 2026-10-16).
+        default: 'openrouter/deepseek/deepseek-v4-pro-0813'
+        description: 'Pinned model the validator-review lane fails over to once when its first attempt ends invalid_output. Empty disables the failover. A pinned failover makes the serial guard require 37 + 3 x run_timeout_seconds when validator_run_timeout_seconds is unset.'
       validator_run_timeout_seconds:
         type: string
         # EHAC-2833 (2026-09-22): the VALIDATOR roles (validator-review audit lens + final
@@ -163,7 +193,9 @@ on:
         # (elek eha-v1.6.0); the 2026-09-21/22 eha_care PR #4235 runs (35663630056, 35701047274)
         # both lost 4/4 healthy lens reports to a 900s validator timeout that streamed
         # CONTINUOUSLY (max_idle 5.4s). More wall clock is the evidenced remedy for that shape;
-        # a timeout retry was falsified by measurement (run 32105023640) and remains forbidden.
+        # a VALIDATOR timeout retry was falsified by measurement (run 32105023640) and remains
+        # forbidden. (Since eha-v1.7.0 a REVIEWER lens timeout retries once on the next distinct
+        # model with a shorter budget that fits job_timeout_minutes; validator roles never do.)
         default: ''
         description: 'Wall-clock budget (seconds) for the validator-review lens and the final synthesis. Empty inherits run_timeout_seconds. Callers MUST raise job_timeout_minutes first — the guard refuses arithmetic that does not fit.'
       validator_thinking:
@@ -212,7 +244,12 @@ on:
         # snapshot, and an unpriced model resolves to source "unknown" and $0 — which
         # selectReviewPlanWithinBudget then FILTERS OUT of the figure compared against
         # max_cost_usd, so the cap would silently stop counting the validator.
-        default: 'xiaomi/mimo-v2.5-pro=0.435:0.87,openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20,openrouter/z-ai/glm-5.3-flash=0.15:0.50,openrouter/deepseek/deepseek-v4-pro-0813=0.66:1.98'
+        # AMENDED 2026-10-16 (EHAC-2844): rates from the OpenRouter endpoint listings. mimo-v2.6-pro
+        # 0.435:0.87 and minimax-m3 0.30:1.20 for the new lenses; v4-pro-0813 CORRECTED from
+        # 0.66:1.98 to its listed 1.32:3.96 (it was budgeted at half price); it now prices the
+        # validator-review failover and, with eha-v1.7.0, the one extra reviewer attempt. The
+        # mimo-v2.5-pro rate is removed with the model (the orphan-rate invariant requires it).
+        default: 'openrouter/xiaomi/mimo-v2.6-pro=0.435:0.87,openrouter/minimax/minimax-m3=0.30:1.20,openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20,openrouter/z-ai/glm-5.3-flash=0.15:0.50,openrouter/deepseek/deepseek-v4-pro-0813=1.32:3.96'
         description: 'Per-model cost rates as model=inputPerMillion:outputPerMillion, comma-separated.'
       mode:
         type: string
@@ -721,7 +758,7 @@ jobs:
         # cost_usd / conclusion as outputs at EVERY ref, and all of them were unreachable
         # purely for want of a step id. The coverage measurement below consumes them.
         id: review
-        uses: EHA-Clinics/elek@c410bfe8cae9d6829e6825df749ce76641e2dfbb # Elek #16 eha-v1.6.1 (EHAC-2841): failover reports attribute to the model that produced them; testable role timeouts; configuration_error classification; MAX_SAFE_INTEGER rejection
+        uses: EHA-Clinics/elek@061c438c5ceb0dba3c916d6d18741249929f28fc # Elek #19-#23 eha-v1.7.0 (EHAC-2844, EHAC-2522): pi 1.1.0; source-first fair packing; U4 reviewed-head fields; validator-review invalid_output failover; one-shot lens timeout retry
         with:
           # pi's native openrouter adapter — elek's tested path. The OpenAI-compatible
           # Databricks AI Gateway (provider: openai) hung pi indefinitely on tool-enabled
@@ -732,6 +769,7 @@ jobs:
           review_strategy: ${{ inputs.review_strategy }}
           review_models: ${{ inputs.review_models }}
           validator_model: ${{ inputs.validator_model }}
+          validator_review_failover_model: ${{ inputs.validator_review_failover_model }}
           severity_threshold: ${{ inputs.severity_threshold }}
           max_cost_usd: ${{ inputs.max_cost_usd }}
           cost_rates: ${{ inputs.cost_rates }}
@@ -890,7 +928,7 @@ jobs:
           REVIEW_COST_USD: ${{ steps.review.outputs.cost_usd }}
           # The LITERAL pinned SHA, not an expression: this is what makes branch U1 detect a
           # future elek bump that forgets to re-verify elek-prompt-budget.mjs.
-          ELEK_REF: c410bfe8cae9d6829e6825df749ce76641e2dfbb
+          ELEK_REF: 061c438c5ceb0dba3c916d6d18741249929f28fc
           REQUESTED_STRATEGY: ${{ inputs.review_strategy }}
           ACTOR_FILTER: ${{ inputs.actor_filter }}
           # EHAC-2103: the CONFIGURED council, so the coverage record can put what we asked for
