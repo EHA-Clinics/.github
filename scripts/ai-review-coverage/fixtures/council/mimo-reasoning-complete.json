@@ -19,6 +19,11 @@
     "head_sha_git": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "head_sha_event": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "sha_match": true,
+    "base_sha_git": "cccccccccccccccccccccccccccccccccccccccc",
+    "reviewed_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "reviewed_base_sha": "cccccccccccccccccccccccccccccccccccccccc",
+    "diff_source": "remote",
+    "measured_from": "git",
     "shallow": false
   },
   "diff": {

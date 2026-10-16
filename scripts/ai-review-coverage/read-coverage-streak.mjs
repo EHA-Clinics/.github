@@ -342,18 +342,21 @@ export function summarizeCoverageRecords(entries, { generatedAt = new Date().toI
 
     // U4 (stale head) — a COUNCIL-level metric (EHAC-2841): U4 is about the council's
     // refs, not a model role, so it is no longer counted inside the validator census.
-    // EHAC-2844: since elek eha-v1.7.0 the producer binds U4 to the REVIEWED head, so
-    // sha_match false alone (the event head moved) is no longer a stale review. A council
-    // counts when its record carries a U4 reason, or — a legacy record with no diff_source —
-    // when sha_match is false, exactly as before. Races the producer accepted are counted
-    // separately, so the race window stays measurable from records.
+    // EHAC-2844: since elek eha-v1.7.0 the producer binds U4 to the REVIEWED tree, so
+    // sha_match false alone (the event head moved) is no longer a stale review. A race counts
+    // as ACCEPTED only when the record proves it: measured from git, a remote/head diff, the
+    // reviewed head equal to the measured head, and no U4. Every other council with a U4 reason
+    // or sha_match false — legacy records included, exactly as before — counts as stale.
+    const refs = r.refs ?? {};
     const hasU4 = Array.isArray(r.unknown_reasons) && r.unknown_reasons.some((u) => u?.branch === 'U4');
-    const hasProvenance = typeof r.refs?.diff_source === 'string' && r.refs.diff_source !== '';
-    if (hasU4 || (!hasProvenance && r.refs?.sha_match === false)) {
+    const acceptedRace = !hasU4 && refs.sha_match === false && refs.measured_from === 'git' &&
+      (refs.diff_source === 'remote' || refs.diff_source === 'head') &&
+      typeof refs.reviewed_head_sha === 'string' && refs.reviewed_head_sha === refs.head_sha_git;
+    if (acceptedRace) {
+      staleHead.accepted_races++;
+    } else if (hasU4 || refs.sha_match === false) {
       staleHead.councils++;
       staleHead.runs.push({ run_id: e.run_id, created_at: e.created_at ?? null });
-    } else if (r.refs?.sha_match === false) {
-      staleHead.accepted_races++;
     }
 
     const chars = num(r.diff?.chars);

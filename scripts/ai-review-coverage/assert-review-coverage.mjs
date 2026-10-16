@@ -411,30 +411,42 @@ export function deriveUnknownBranches(coverage, maxDegraded = DEFAULT_COUNCIL_MA
   // unknown_reasons / refs.sha_match, so the census can size the race window from
   // records rather than anecdotes.
   //
-  // EHAC-2844 (elek eha-v1.7.0, #20): when the record says which tree elek REVIEWED
-  // (refs.diff_source in the elek enum), U4 is re-derived from that, with the producer's rule:
-  // U4 iff the API diff was reviewed, or no valid reviewed head is named, or it is not the
-  // measured head (refs.head_sha_git). The event head moving after both read the branch is then
-  // an accepted race: the review and the measurement describe one tree. Without provenance the
-  // legacy git-vs-event rule below stands unchanged.
-  const shaGit = coverage?.refs?.head_sha_git ?? null;
-  const shaEvent = coverage?.refs?.head_sha_event ?? null;
-  const diffSource = ['remote', 'head', 'api'].includes(coverage?.refs?.diff_source) ? coverage.refs.diff_source : null;
-  const reviewedHead = typeof coverage?.refs?.reviewed_head_sha === 'string' &&
-    /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(coverage.refs.reviewed_head_sha)
-    ? coverage.refs.reviewed_head_sha
-    : null;
-  if (diffSource === 'api') {
-    add(
-      'U4',
-      'U4 elek reviewed the GitHub API diff (diff_source api), which no head SHA binds — the reviewed tree cannot be shown to be the measured one. Re-run `@ai-review` so elek reviews the git diff.',
-    );
-  } else if (diffSource !== null && (reviewedHead === null || reviewedHead !== shaGit)) {
-    add(
-      'U4',
-      `U4 elek reviewed head ${reviewedHead ?? '(none recorded)'} but the measured branch tip is ${shaGit ?? '(unknown)'} — the review and the measured diff describe different trees. Re-run \`@ai-review\` on the current head.`,
-    );
-  } else if (diffSource === null && shaGit && shaEvent && shaGit !== shaEvent) {
+  // EHAC-2844 (elek eha-v1.7.0, #20): a record measured from git (refs.measured_from 'git')
+  // is re-derived with the PRODUCER's rule over the tree elek says it REVIEWED: U4 unless
+  // diff_source is remote or head AND reviewed_head_sha / reviewed_base_sha are valid and equal
+  // the measured head_sha_git / base_sha_git. No provenance, an unreadable diff_source and the
+  // unbound API diff are all U4; an unknown measured_from value is treated as git (fail closed).
+  // The event head moving after both read the branch is an accepted race. A --diff-file record
+  // has no tree to bind. A record with no measured_from comes from a producer older than
+  // EHAC-2844, and keeps the legacy git-vs-event rule below unchanged.
+  const refs = coverage?.refs ?? {};
+  const shaGit = refs.head_sha_git ?? null;
+  const shaEvent = refs.head_sha_event ?? null;
+  const validSha = (value) => (typeof value === 'string' && /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(value) ? value : null);
+  const measuredFrom = refs.measured_from ?? null;
+  const reviewedHead = validSha(refs.reviewed_head_sha);
+  const reviewedBase = validSha(refs.reviewed_base_sha);
+  const baseGit = refs.base_sha_git ?? null;
+  const rerun = 'Re-run `@ai-review` on the current head.';
+  if (measuredFrom !== null && measuredFrom !== 'diff-file') {
+    if (refs.diff_source === null || refs.diff_source === undefined) {
+      add('U4', `U4 the record carries no reviewed-tree provenance (refs.diff_source), so the reviewed tree cannot be shown to be the measured one. ${rerun}`);
+    } else if (refs.diff_source === 'api') {
+      add('U4', 'U4 elek reviewed the GitHub API diff (diff_source api), which no commit binds — the reviewed tree cannot be shown to be the measured one. Re-run `@ai-review` so elek reviews the git diff.');
+    } else if (refs.diff_source !== 'remote' && refs.diff_source !== 'head') {
+      add('U4', `U4 the record's diff_source (${JSON.stringify(refs.diff_source)}) is not remote, head or api — the reviewed tree cannot be shown to be the measured one. ${rerun}`);
+    } else if (reviewedHead === null || reviewedHead !== shaGit) {
+      add(
+        'U4',
+        `U4 elek reviewed head ${reviewedHead ?? '(none recorded)'} but the measured branch tip is ${shaGit ?? '(unknown)'} — the review and the measured diff describe different trees. ${rerun}`,
+      );
+    } else if (reviewedBase === null || reviewedBase !== baseGit) {
+      add(
+        'U4',
+        `U4 elek diffed from base ${reviewedBase ?? '(none recorded)'} but the measured base is ${baseGit ?? '(unknown)'} — the review and the measured diff describe different trees. ${rerun}`,
+      );
+    }
+  } else if (measuredFrom === null && shaGit && shaEvent && shaGit !== shaEvent) {
     const shaRemedy = /^[0-9a-f]{40}$/.test(shaGit) && /^[0-9a-f]{40}$/.test(shaEvent)
       ? `the reviewed tip describes commit ${shaGit}; the check run names ${shaEvent}. A push raced the review — re-run \`@ai-review\` on the current head. If the head was force-pushed BACKWARDS, investigate the branch instead.`
       : 'A push raced the review — re-run `@ai-review` on the current head.';

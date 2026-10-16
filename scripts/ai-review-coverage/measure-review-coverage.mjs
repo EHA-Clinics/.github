@@ -356,20 +356,26 @@ export const REVIEWED_DIFF_SOURCES = Object.freeze(['remote', 'head', 'api']);
 
 /**
  * EHAC-2844 — which tree elek says it reviewed (elek #20). Read as DATA from the run's summary:
- * a SHA is accepted only as 40- or 64-char lower-case hex, and diffSource only from the enum, so
- * a malformed value is recorded as null rather than trusted. `diffSource: null` means "no
- * provenance" (an older elek), and the caller then keeps the legacy U4 rule.
+ * a SHA is accepted only as 40- or 64-char lower-case hex. `diffSource` is the enum value, null
+ * when elek reported NO provenance at all (no diffSource, reviewedHeadSha or reviewedBaseSha
+ * key), and the marker 'invalid' when provenance was claimed but diffSource is missing or not in
+ * the enum — a claim that cannot be read is never treated as "no claim" (that would fall back to
+ * a weaker rule: fail open).
  * @param {any} summary
  * @returns {{ diffSource: string|null, reviewedHeadSha: string|null, reviewedBaseSha: string|null }}
  */
 export function reviewedProvenance(summary) {
-  const entity = summary?.entity;
+  const entity = summary?.entity && typeof summary.entity === 'object' ? summary.entity : {};
   const sha = (value) => (typeof value === 'string' && /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(value) ? value : null);
-  const diffSource = REVIEWED_DIFF_SOURCES.includes(entity?.diffSource) ? entity.diffSource : null;
+  const claimed = ['diffSource', 'reviewedHeadSha', 'reviewedBaseSha'].some(
+    (key) => entity[key] !== undefined && entity[key] !== null,
+  );
+  let diffSource = null;
+  if (claimed) diffSource = REVIEWED_DIFF_SOURCES.includes(entity.diffSource) ? entity.diffSource : 'invalid';
   return {
     diffSource,
-    reviewedHeadSha: sha(entity?.reviewedHeadSha),
-    reviewedBaseSha: sha(entity?.reviewedBaseSha),
+    reviewedHeadSha: sha(entity.reviewedHeadSha),
+    reviewedBaseSha: sha(entity.reviewedBaseSha),
   };
 }
 
@@ -556,38 +562,51 @@ export function buildCoverage({ diffText, env = {}, context = {}, inventoryCap =
 
   // ---- reviewed tree vs measured tree (U4) ------------------------------------------
   //
-  // EHAC-2844: bound to the REVIEWED head when elek reports one (eha-v1.7.0, #20). The diff
-  // measured here is origin/<base>...origin/<head> at headShaGit, so the question U4 answers is
-  // "did elek review that same tree?". With provenance it is answered directly: U4 iff elek
-  // reviewed the unbound API diff, or names no valid reviewed head, or names a different one.
-  // A push that lands after both read the branch moves only the EVENT head; the review and the
-  // measurement still describe one tree, so that race is accepted, and sha_match (git vs event,
-  // unchanged meaning) keeps it visible to the census. A base mismatch is recorded, never
-  // escalated. Without provenance (older elek) the legacy rule stands: git vs event.
+  // EHAC-2844: bound to the tree elek REVIEWED (eha-v1.7.0, #20). The diff measured here is
+  // origin/<base>...origin/<head> at baseShaGit...headShaGit, so U4 answers "did elek review
+  // that same diff?". elek at this pin reports provenance for EVERY reviewed diff (both SHAs for
+  // a git diff), and U1 already reds any other pin, so in git mode a missing, unreadable or
+  // unbound claim is U4: no provenance, diff_source invalid or api, or a reviewed head or base
+  // that is missing or differs from the measured one. Both sides read the same checkout refs,
+  // so a push that lands after they read the branch moves only the live EVENT head; that race is
+  // accepted here (the record names the reviewed head, which consumers bind currency to), and
+  // sha_match (git vs event, unchanged meaning) keeps it visible to the census. Offline
+  // (--diff-file) there is no tree to bind, exactly as before: U4 is not evaluated.
   const headShaGit = context.headShaGit ?? null;
   const headShaEvent = context.headShaEvent ?? null;
+  const baseShaGit = context.baseShaGit ?? null;
+  const measuredFrom = context.measuredFrom === 'diff-file' ? 'diff-file' : 'git';
   const shaMatch = headShaGit && headShaEvent ? headShaGit === headShaEvent : null;
   const provenance = reviewedProvenance(summary);
-  if (provenance.diffSource === 'api') {
-    addUnknown(
-      'U4',
-      'elek reviewed the GitHub API diff (diff_source api), which no head SHA binds — the reviewed tree cannot be shown to be the measured one.',
-    );
-  } else if (provenance.diffSource !== null && provenance.reviewedHeadSha === null) {
-    addUnknown(
-      'U4',
-      `elek reports diff_source ${provenance.diffSource} but no valid reviewed head SHA — the reviewed tree cannot be shown to be the measured one (git rev-parse origin/${context.headRef ?? '(head)'} is ${headShaGit}).`,
-    );
-  } else if (provenance.diffSource !== null && provenance.reviewedHeadSha !== headShaGit) {
-    addUnknown(
-      'U4',
-      `elek reviewed head ${provenance.reviewedHeadSha} but git rev-parse origin/${context.headRef ?? '(head)'} is ${headShaGit} — the review and the measured diff describe different trees.`,
-    );
-  } else if (provenance.diffSource === null && shaMatch === false) {
-    addUnknown(
-      'U4',
-      `git rev-parse origin/${context.headRef ?? '(head)'} is ${headShaGit} but the pull-request head SHA is ${headShaEvent} — the review and the check run describe different trees.`,
-    );
+  const headLabel = `origin/${context.headRef ?? '(head)'}`;
+  const baseLabel = `origin/${context.baseRef ?? '(base)'}`;
+  if (measuredFrom === 'git') {
+    if (provenance.diffSource === null) {
+      addUnknown(
+        'U4',
+        'elek reported no reviewed-tree provenance (summary entity.diffSource / reviewedHeadSha) — elek at this pin reports it for every reviewed diff, so the reviewed tree cannot be shown to be the measured one.',
+      );
+    } else if (provenance.diffSource === 'invalid') {
+      addUnknown(
+        'U4',
+        'elek reported reviewed-tree provenance this gate cannot read (entity.diffSource is not remote, head or api) — the reviewed tree cannot be shown to be the measured one.',
+      );
+    } else if (provenance.diffSource === 'api') {
+      addUnknown(
+        'U4',
+        'elek reviewed the GitHub API diff (diff_source api), which no commit binds — the reviewed tree cannot be shown to be the measured one.',
+      );
+    } else if (provenance.reviewedHeadSha === null || provenance.reviewedHeadSha !== headShaGit) {
+      addUnknown(
+        'U4',
+        `elek reviewed head ${provenance.reviewedHeadSha ?? '(none recorded)'} but git rev-parse ${headLabel} is ${headShaGit} — the review and the measured diff describe different trees.`,
+      );
+    } else if (provenance.reviewedBaseSha === null || provenance.reviewedBaseSha !== baseShaGit) {
+      addUnknown(
+        'U4',
+        `elek diffed from base ${provenance.reviewedBaseSha ?? '(none recorded)'} but git rev-parse ${baseLabel} is ${baseShaGit} — the review and the measured diff describe different trees.`,
+      );
+    }
   }
 
   // ---- unparseable header paths (U6) ----------------------------------------------
@@ -646,10 +665,12 @@ export function buildCoverage({ diffText, env = {}, context = {}, inventoryCap =
       head_sha_git: headShaGit,
       head_sha_event: headShaEvent,
       sha_match: shaMatch,
-      // EHAC-2844: what elek says it reviewed (null when an older elek reports nothing).
+      // EHAC-2844: what elek says it reviewed, the measured base, and how the diff was measured.
+      base_sha_git: baseShaGit,
       reviewed_head_sha: provenance.reviewedHeadSha,
       reviewed_base_sha: provenance.reviewedBaseSha,
       diff_source: provenance.diffSource,
+      measured_from: measuredFrom,
       // Recorded, NOT escalated on its own: elek re-fetches --depth=100 over our
       // fetch-depth: 0 checkout, so a shallow marker may be entirely routine.
       shallow: context.shallow ?? null,
@@ -746,9 +767,11 @@ function unknownRecord(reasons, { env = {}, context = {} } = {}) {
       head_sha_git: null,
       head_sha_event: null,
       sha_match: null,
+      base_sha_git: null,
       reviewed_head_sha: null,
       reviewed_base_sha: null,
       diff_source: null,
+      measured_from: null,
       shallow: null,
     },
     git_config: { ...GIT_CONFIG },
@@ -966,6 +989,8 @@ async function main(argv, env) {
       headRef: env.HEAD_REF ?? null,
       headShaGit: null,
       headShaEvent: null,
+      baseShaGit: null,
+      measuredFrom: 'diff-file',
       changedFilesApi: null,
       shallow: null,
       actor: env.GITHUB_ACTOR ?? '',
@@ -992,12 +1017,19 @@ async function main(argv, env) {
     } catch {
       headShaGit = null;
     }
+    // EHAC-2844: the measured base, so U4 can bind the reviewed base as well as the head.
+    let baseShaGit = null;
+    try {
+      baseShaGit = git(['rev-parse', `origin/${pr.baseRef}`]).trim();
+    } catch {
+      baseShaGit = null;
+    }
     try {
       shallow = git(['rev-parse', '--is-shallow-repository']).trim() === 'true';
     } catch {
       shallow = null;
     }
-    context = { ...pr, headShaGit, shallow };
+    context = { ...pr, headShaGit, baseShaGit, measuredFrom: 'git', shallow };
   }
 
   const coverage = buildCoverage({ diffText, env, context });
