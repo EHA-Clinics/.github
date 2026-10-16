@@ -416,6 +416,18 @@ describe('buildCoverage — UNKNOWN detection (U1-U6)', () => {
       expect(coverage.refs.diff_source).toBe('invalid');
     });
 
+    // gemini review round 2 asked whether a skipped review (no elek summary, so no provenance)
+    // now turns UNKNOWN. It does not: a NOT_REVIEWED record keeps only U1. Pinned here.
+    it('keeps a skipped (draft) review NOT_REVIEWED in git mode, with no U4, despite no provenance', () => {
+      const coverage = cover(
+        { REVIEW_SUMMARY_JSON: '', REVIEW_INPUT_TOKENS: '', SKIP_REASON: 'pull_request_is_draft' },
+        { headShaGit: GIT, headShaEvent: GIT, baseShaGit: BASE },
+      );
+      expect(coverage.verdict).toBe('NOT_REVIEWED');
+      expect(coverage.not_reviewed?.reason).toBe('pull_request_is_draft');
+      expect(branches(coverage)).not.toContain('U4');
+    });
+
     it('does not evaluate U4 offline (--diff-file): there is no measured tree to bind', () => {
       const offline = cover(withEntity({ actor: 'adothompson' }), {
         headShaGit: null, headShaEvent: null, baseShaGit: null, measuredFrom: 'diff-file',

@@ -309,9 +309,16 @@ describe('summarizeCoverageRecords', () => {
       reviewed_head_sha: EVENT, diff_source: 'remote', measured_from: 'git',
     };
     unproven.unknown_reasons = [];
-    const s = summarizeCoverageRecords(entriesOf(accepted, mismatched, legacy, unproven));
-    expect(s.stale_head.councils).toBe(3);
-    expect(s.stale_head.runs.map((r) => r.run_id)).toEqual([999, 998, 997]);
+    // gemini review round 2: equal heads alone do not prove the race; the base must match too.
+    const movedBase = structuredClone(healthy);
+    movedBase.refs = {
+      ...healthy.refs, head_sha_git: GIT, head_sha_event: EVENT, sha_match: false,
+      reviewed_head_sha: GIT, diff_source: 'remote', measured_from: 'git', base_sha_git: 'e'.repeat(40),
+    };
+    movedBase.unknown_reasons = [];
+    const s = summarizeCoverageRecords(entriesOf(accepted, mismatched, legacy, unproven, movedBase));
+    expect(s.stale_head.councils).toBe(4);
+    expect(s.stale_head.runs.map((r) => r.run_id)).toEqual([999, 998, 997, 996]);
     expect(s.stale_head.accepted_races).toBe(1);
   });
 

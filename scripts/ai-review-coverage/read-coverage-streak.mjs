@@ -351,7 +351,8 @@ export function summarizeCoverageRecords(entries, { generatedAt = new Date().toI
     const hasU4 = Array.isArray(r.unknown_reasons) && r.unknown_reasons.some((u) => u?.branch === 'U4');
     const acceptedRace = !hasU4 && refs.sha_match === false && refs.measured_from === 'git' &&
       (refs.diff_source === 'remote' || refs.diff_source === 'head') &&
-      typeof refs.reviewed_head_sha === 'string' && refs.reviewed_head_sha === refs.head_sha_git;
+      typeof refs.reviewed_head_sha === 'string' && refs.reviewed_head_sha === refs.head_sha_git &&
+      typeof refs.reviewed_base_sha === 'string' && refs.reviewed_base_sha === refs.base_sha_git;
     if (acceptedRace) {
       staleHead.accepted_races++;
     } else if (hasU4 || refs.sha_match === false) {
