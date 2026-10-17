@@ -14,8 +14,9 @@ unavailable.
 
 A council run has two phases:
 
-1. **4 read-only lens reviewers** — Risk, Design, Tests, and Operations — run in parallel with no MCP access. The models are assigned in list order: Risk → DeepSeek V4 Pro, Design → MiMo V2.5 Pro, Tests → DeepSeek V4.1 Flash, Operations → GLM 5.3 Flash.
-2. **A DeepSeek V4 Pro validator/synthesizer** treats every lens finding as a hypothesis, drops speculative/cosmetic/duplicate/stale items, requires severity + confidence + evidence + impact + fix, and posts **one** deduplicated tracking comment plus inline comments on changed lines.
+1. **4 read-only lens reviewers** — Risk, Design, Tests, and Operations — run in parallel with no MCP access. The models are assigned in list order: Risk → GLM 5.3 Flash, Design → MiniMax M3, Tests → GLM 5.3 Flash, Operations → GLM 5.3 Flash (EHAC-3622, owner's final roster "glm tests + v4-pro audit"). A lens whose run fails retries once on the next distinct roster model: GLM → MiniMax → GLM. No lens's first attempt may share the validator's model. **Standing owner ruling 2026-10-17 (EHAC-3622), "Allow it for any lens":** a lens's one failover retry may land on the validator's model. No chain does under this roster.
+   Beside the lenses runs **an independent audit (elek's advisor lens) on DeepSeek V4 Pro 0813** (`advisor_model`). It is neither a lens model nor the validator. If it ends `invalid_output`, it fails over once to DeepSeek V4.1 Flash (`validator_review_failover_model`).
+2. **A DeepSeek V4.1 Flash validator/synthesizer** treats every lens finding as a hypothesis, drops speculative/cosmetic/duplicate/stale items, requires severity + confidence + evidence + impact + fix, and posts **one** deduplicated tracking comment plus inline comments on changed lines.
 
 GLM 5.3 Flash is an additive model-diversity trial assigned to the existing Operations lens under EHAC-2466; it does not increase the number of model executions. Keep the other lane assignments and validator stable while evaluating its latency, reliability, cost, and unique findings in real PRs. Exception: the Tests lane moved from DeepSeek V4 Flash to V4.1 Flash on 2026-09-11 (EHAC-2634) — DeepSeek retired the legacy v4-flash alias, so this is explicit migration onto the successor model, not trial churn. The Tests entry carries the explicit `openrouter/` provider prefix: elek resolves a model spec's provider from its first segment, and V4.1-Flash has no bundled native-provider entry, so a bare `deepseek/...` spec fails with "No API key found for deepseek".
 
@@ -31,13 +32,14 @@ jobs:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
     with:
       review_strategy: 'council'
-      review_models: 'openrouter/z-ai/glm-5.3-flash,openrouter/xiaomi/mimo-v2.6-pro,openrouter/minimax/minimax-m3,openrouter/z-ai/glm-5.3-flash'
+      review_models: 'openrouter/z-ai/glm-5.3-flash,openrouter/minimax/minimax-m3,openrouter/z-ai/glm-5.3-flash,openrouter/z-ai/glm-5.3-flash'
       validator_model: 'openrouter/deepseek/deepseek-v4.1-flash'
-      validator_review_failover_model: 'openrouter/deepseek/deepseek-v4-pro-0813'
+      advisor_model: 'openrouter/deepseek/deepseek-v4-pro-0813'
+      validator_review_failover_model: 'openrouter/deepseek/deepseek-v4.1-flash'
       thinking: 'high'
       severity_threshold: 'important'
       max_cost_usd: '1.00'
-      cost_rates: 'openrouter/xiaomi/mimo-v2.6-pro=0.435:0.87,openrouter/minimax/minimax-m3=0.30:1.20,openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20,openrouter/z-ai/glm-5.3-flash=0.15:0.50,openrouter/deepseek/deepseek-v4-pro-0813=1.32:3.96'
+      cost_rates: 'openrouter/minimax/minimax-m3=0.30:1.20,openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20,openrouter/z-ai/glm-5.3-flash=0.15:0.50,openrouter/deepseek/deepseek-v4-pro-0813=1.32:3.96'
 ```
 
 **Inputs:**
@@ -45,21 +47,22 @@ jobs:
 | Input | Type | Default | Description |
 |-------|------|---------|-------------|
 | `review_strategy` | string | `council` | Review strategy: `council` (4 lenses + validator), `crosscheck`, or `solo`. |
-| `review_models` | string | `openrouter/z-ai/glm-5.3-flash,openrouter/xiaomi/mimo-v2.6-pro,openrouter/minimax/minimax-m3,openrouter/z-ai/glm-5.3-flash` | Comma-separated OpenRouter model IDs assigned in order to Risk, Design, Tests, and Operations. Risk and Operations deliberately share GLM 5.3 Flash (EHAC-2635, cost); the list must stay exactly four long because binding is positional. A leading `openrouter/` segment selects pi's OpenRouter adapter explicitly (required for models with no bundled native-provider entry). Design (MiMo V2.6 Pro) and Tests (MiniMax M3) were admitted by a key-backed guardrail probe on 2026-10-16 (EHAC-2844). |
-| `validator_model` | string | `openrouter/deepseek/deepseek-v4.1-flash` | Model that synthesizes lens findings and posts the single deduplicated review. No reviewer lens shares it. |
-| `validator_review_failover_model` | string | `openrouter/deepseek/deepseek-v4-pro-0813` | **EHAC-2522 (elek eha-v1.7.0).** Pinned model the validator-review lane fails over to ONCE when its first attempt ends `invalid_output` (`provider_unavailable` keeps its next-distinct-model failover). Must differ from `validator_model`. Empty disables the failover (elek's own default). **Guard:** a pinned failover makes elek's serial guard require `37 + 3 × run_timeout_seconds` when `validator_run_timeout_seconds` is unset, so a caller at `run_timeout_seconds: 900` needs `job_timeout_minutes` ≥ 46 (or this input set to `''`) before it re-pins. |
+| `review_models` | string | `openrouter/z-ai/glm-5.3-flash,openrouter/minimax/minimax-m3,openrouter/z-ai/glm-5.3-flash,openrouter/z-ai/glm-5.3-flash` | Comma-separated OpenRouter model IDs assigned in order to Risk, Design, Tests, and Operations. The list must stay exactly four long because binding is positional. A leading `openrouter/` segment selects pi's OpenRouter adapter explicitly (required for models with no bundled native-provider entry). MiniMax M3 was admitted by a key-backed guardrail probe on 2026-10-16 (EHAC-2844). On 2026-10-17 (EHAC-3622) MiMo V2.6 Pro left the council (design 17/27, failover retries 1/14 on elek eha-v1.7.0), and Design moved to MiniMax M3. Tests moved to GLM 5.3 Flash under the owner's final roster: DeepSeek V4.1 Flash failed the canary Tests lens with `invalid_output`, and a direct probe showed it leaves its final JSON in the reasoning channel. GLM therefore runs three of the four lenses, and MiniMax M3 is the only other reviewer family. |
+| `validator_model` | string | `openrouter/deepseek/deepseek-v4.1-flash` | Model that synthesizes lens findings and posts the single deduplicated review. No reviewer lens's first attempt may share it. By standing owner ruling (EHAC-3622), any lens's failover retry may land on it. |
+| `advisor_model` | string | `openrouter/deepseek/deepseek-v4-pro-0813` | **EHAC-3622.** Model for elek's independent audit (advisor) lens, which runs beside the reviewer lenses with role `validator-review`. It keeps the validator-review budget and the pinned failover. Empty reuses `validator_model`; `off`, `none`, `false` or `disabled` skip the audit. It must be neither a lens model nor the validator. |
+| `validator_review_failover_model` | string | `openrouter/deepseek/deepseek-v4.1-flash` | **EHAC-2522 (elek eha-v1.7.0).** Pinned model the validator-review lane fails over to ONCE when its first attempt ends `invalid_output` (`provider_unavailable` keeps its next-distinct-model failover). Must differ from the model that lane runs: `advisor_model` when set, otherwise `validator_model`. Empty disables the failover (elek's own default). **Guard:** a pinned failover makes elek's serial guard require `37 + 3 × run_timeout_seconds` when `validator_run_timeout_seconds` is unset, so a caller at `run_timeout_seconds: 900` needs `job_timeout_minutes` ≥ 46 (or this input set to `''`) before it re-pins. |
 | `thinking` | string | `high` | Requested Pi thinking: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Enabled-mode models request provider-default reasoning. |
 | `max_turns` | number | `30` | Max conversation turns per reviewer. Raised from `20` on 2026-08-16: the `tests` lane was flaking against the ceiling rather than the diff, failing twice at 20 and then passing at 18 on a near-identical diff. |
 | `severity_threshold` | string | `important` | Minimum severity to post (`info`, `important`, `critical`). |
 | `max_cost_usd` | string | `1.00` | Per-PR cost guardrail; elek auto-downgrades council → crosscheck → solo on large diffs to stay within budget. |
-| `cost_rates` | string | `openrouter/xiaomi/mimo-v2.6-pro=0.435:0.87,openrouter/minimax/minimax-m3=0.30:1.20,openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20,openrouter/z-ai/glm-5.3-flash=0.15:0.50,openrouter/deepseek/deepseek-v4-pro-0813=1.32:3.96` | `model=input:output` USD-per-million-token overrides. The GLM rate uses conservative standard pricing rather than a temporary promotion. DeepSeek V4 Pro 0813 was corrected to its listed 1.32:3.96 on 2026-10-16 (it had been budgeted at half price). |
+| `cost_rates` | string | `openrouter/minimax/minimax-m3=0.30:1.20,openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20,openrouter/z-ai/glm-5.3-flash=0.15:0.50,openrouter/deepseek/deepseek-v4-pro-0813=1.32:3.96` | `model=input:output` USD-per-million-token overrides. The GLM rate uses conservative standard pricing rather than a temporary promotion. DeepSeek V4 Pro 0813 was corrected to its listed 1.32:3.96 on 2026-10-16 (it had been budgeted at half price). |
 | `mode` | string | `review` | `review` and `review+edit` currently use the same read-only surface. |
 | `model` | string | `openrouter/deepseek/deepseek-v4.1-flash` | Single-model override for `solo` strategy; ignored under `council`. |
 | `trigger_phrase` | string | `@ai-review` | Comment phrase that triggers an on-demand review. |
 | `scope_paths` | string | (unset) | Comma-separated globs limiting which changed files are in scope. Evaluated **inside** this workflow, so an out-of-scope PR reports a green `NOT_REVIEWED` rather than no check run at all. Prefer this over a `paths:` filter on the caller — see the note below the table. |
 | `actor_filter` | string | (unset) | Allowlist of **human** actors. **Authoritative and exclusive when set**: `isActorAuthorized` returns the list result and never consults repo permissions, so anyone absent is denied. When unset, falls back to `OWNER`/`MEMBER`/`COLLABORATOR` and then a repo-permission lookup. |
 | `openrouter_provider_preferences` | string | (unset) | **EHAC-2280.** OpenRouter provider-routing preferences as a JSON object string, merged into the request's `provider` field. Parsed **fail-closed** in elek: unparseable JSON, a non-object, or any key outside the thirteen documented routing keys refuses the run rather than routing unmanaged. Unset means no `provider` object is sent and routing is exactly as before. Keep `allow_fallbacks: true` — excluding endpoints trades a latency problem for an availability one. Endpoint identity does not predict latency: the same endpoint (`deepinfra/fp8`) was measured at 386 ms and 10,277 ms seconds apart, a wider spread than between two different endpoints, which is why `preferred_min_throughput` (deprioritises, over a rolling window) is preferred to `order` (pins). |
-| `openrouter_model_reasoning_modes` | string | `{"openrouter/xiaomi/mimo-v2.6-pro":{"mode":"enabled","max_tokens":12000}}` | Canonical OpenRouter model capability map beside the council roster. `effort` preserves Pi's named control; `enabled` requests provider-default reasoning; `{"mode": …, "max_tokens": N}` caps that model alone. MiMo's 12,000 is sized from measured `native_tokens_reasoning` (p99 6,106 over 35 councils). Callers may override; app and infra inherit this default. |
+| `openrouter_model_reasoning_modes` | string | `{"openrouter/z-ai/glm-5.3-flash":{"mode":"enabled","max_tokens":4000}}` | Canonical OpenRouter model capability map beside the council roster. `effort` preserves Pi's named control; `enabled` requests provider-default reasoning; `{"mode": …, "max_tokens": N}` caps that model alone. Since EHAC-3622, GLM 5.3 Flash is capped at 4,000 reasoning tokens. Direct probes found its CI failures were reasoning runaway: 1.9k–15.7k tokens uncapped, and Pi's named thinking does not bound it. Capped at 4,000 it went 4/4 in 13–40 s. MiMo's 12,000 cap left with MiMo. Callers may override; app and infra inherit this default. |
 | `reasoning_max_tokens` | string | (unset) | Optional OpenRouter budget replacing both effort and enabled. Controls are mutually exclusive; provider support determines enforcement. A successful request does not prove a hard token ceiling. Any scheduled off/budget conflict fails preflight. Production keeps this unset. |
 | `allowed_bots` | string | (unset) | Allowlist of bot actors (`*` permits all). Bot authorship is evaluated independently from human actor trust; without this input, bot-authored PRs report `NOT_REVIEWED`. |
 | `job_timeout_minutes` | number | `35` | Wall-clock ceiling for the WHOLE review job — the reviewer wave plus the validator, not one model run. The real bound is serial: `setup + wave_cap + validator_cap`, because lenses run in parallel but the synthesis runs after them. Raised 30 → 35 (EHAC-2833) for the retry-aware guard formula. A job killed by this cap loses the coverage record entirely, so raise it **before** raising `run_timeout_seconds` or `validator_run_timeout_seconds`, never after. |
@@ -167,7 +170,11 @@ The `max_cost_usd` guardrail bounds each review. Actual spend varies with diff s
 
 ### Reasoning-mode evidence
 
-MiMo is configured with `enabled` because its catalog exposes reasoning without named-effort
+> **EHAC-3622 (2026-10-17):** MiMo has left the council. GLM 5.3 Flash now carries the one
+> per-model cap, `{"mode":"enabled","max_tokens":4000}`. The notes below record why MiMo ran
+> `enabled` with a 12,000 cap. The mechanism they describe is the same one GLM uses now.
+
+MiMo was configured with `enabled` because its catalog exposes reasoning without named-effort
 selection. `thinking: high` records the caller's request; MiMo's effective control is
 `provider-default`, not named high effort. A token budget, when deliberately configured, takes
 precedence over both modes. Off preserves Pi's existing payload in effort mode and omits reasoning
@@ -184,7 +191,7 @@ For enabled-mode models, Elek also sends the unchanged output limit as top-level
 MiMo rejects Pi's `max_completion_tokens` alias under the existing strict parameter policy.
 This output limit is separate from `reasoning_max_tokens`, which remains unset in production.
 
-MiMo carries a **per-model** reasoning budget in the default map (`{"mode":"enabled","max_tokens":12000}`,
+MiMo carried a **per-model** reasoning budget in the default map until EHAC-3622 (`{"mode":"enabled","max_tokens":12000}`,
 elek ≥ eha-v1.5.0). It bounds the one model that has no named-effort control without touching the
 others, which the global input cannot do. It was sized from the coverage records — 35 MiMo councils,
 p99 6,106 native reasoning tokens — via `scripts/ai-review-coverage/read-coverage-streak.mjs`, and
