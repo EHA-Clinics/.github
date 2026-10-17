@@ -288,12 +288,16 @@ describe('council model configuration', () => {
     // AMENDED 2026-10-16 (EHAC-2844, ruling 1): the validator is deepseek-v4.1-flash, with
     // deepseek-v4-pro-0813 as its one validator-review failover (EHAC-2522, below).
     expect(stringInputDefault('validator_model')).toBe('openrouter/deepseek/deepseek-v4.1-flash');
-    // Independence: the validator is not also a reviewer lens, so it audits opinions it did
-    // not write. A tests-lens fallback to v4.1-flash would break this and must be flagged.
-    // AMENDED 2026-10-17 (EHAC-3622): one NAMED exception. The owner put the Tests lens on the
-    // validator's model ("better than v4 pro ... and more cost effective"). The exception is
-    // keyed by lens POSITION, so moving the validator's model onto Risk, Design or Operations
-    // still fails here. Removing the exception means emptying this list, not widening it.
+  });
+
+  // Independence: the validator is not also a reviewer lens, so it audits opinions it did not
+  // write. Kept as its own case so a lesion on it is not hidden behind the roster pin above.
+  // AMENDED 2026-10-17 (EHAC-3622): one NAMED exception. The owner put the Tests lens on the
+  // validator's model ("better than v4 pro ... and more cost effective"). The exception is
+  // keyed by lens POSITION, so moving the validator's model onto Risk, Design or Operations
+  // still fails here. Removing the exception means emptying this list, not widening it.
+  it('keeps every lens except the excepted Tests lens off the validator model', () => {
+    const models = stringInputDefault('review_models').split(',').map((model) => model.trim());
     const LENSES = ['risk', 'design', 'tests', 'operations'];
     const SHARES_VALIDATOR_BY_EXCEPTION = ['tests']; // EHAC-3622, owner ruling 2026-10-17
     const validator = stringInputDefault('validator_model');
