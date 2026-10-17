@@ -132,10 +132,11 @@ on:
         # failover retry. Design moves to minimax-m3 (design retries 7/9). Tests moves back to
         # deepseek-v4.1-flash, on the owner's choice ("better than v4 pro ... and more cost
         # effective"; tests 34/38 at .github c410bfe). That is a NAMED EXCEPTION to the
-        # independence rule: the Tests lens now shares the validator's model. It holds for Tests
-        # alone, and workflow-invariants.test.mjs still forbids it for every other lens. Three
-        # distinct models remain, and elek's next-distinct failover (strategy.ts
-        # selectFailoverModel) becomes glm -> minimax -> v4.1-flash -> glm.
+        # independence rule: the Tests lens now shares the validator's model. Three distinct
+        # models remain, and elek's next-distinct failover (strategy.ts selectFailoverModel)
+        # becomes glm -> minimax -> v4.1-flash -> glm. So Design's one failover retry ALSO lands
+        # on the validator's model; that crossing is pending an owner ruling.
+        # workflow-invariants.test.mjs names both crossings and forbids any other.
         default: 'openrouter/z-ai/glm-5.3-flash,openrouter/minimax/minimax-m3,openrouter/deepseek/deepseek-v4.1-flash,openrouter/z-ai/glm-5.3-flash'
         description: 'Comma-separated OpenRouter model ids for the council lenses (round-robin assigned).'
       openrouter_model_reasoning_modes:

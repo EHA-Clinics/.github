@@ -251,6 +251,28 @@ describe('the review job exports the coverage record', () => {
   });
 });
 
+/**
+ * elek eha-v1.7.0 lens failover, re-implemented so a chain is computed from the shipped roster
+ * rather than asserted from memory (EHAC-3622). It mirrors src/review/strategy.ts:143-189:
+ * identity is the lower-cased last two path segments (normalizeModelIdentity); the roster is
+ * de-duplicated in order (distinctModels); a failed lens retries ONCE on the next distinct
+ * model after its own, wrapping round (selectFailoverModel). It returns the identity, not the
+ * spec, because every caller here compares identities.
+ */
+const modelIdentity = (id) => String(id ?? '').trim().toLowerCase().replace(/\/+/g, '/').replace(/^\/|\/$/g, '')
+  .split('/').filter(Boolean).slice(-2).join('/');
+function selectFailoverModel(roster, assigned) {
+  const distinct = [...new Set(roster.map(modelIdentity))];
+  const own = modelIdentity(assigned);
+  const index = distinct.indexOf(own);
+  const start = index >= 0 ? index + 1 : 0;
+  for (let i = 0; i < distinct.length; i++) {
+    const candidate = distinct[(start + i) % distinct.length];
+    if (candidate !== own) return candidate;
+  }
+  return undefined;
+}
+
 // EHAC-2166 — the council model config, guarded on the two ways it has actually gone wrong.
 describe('council model configuration', () => {
   it('pins the council roster in lens order', () => {
@@ -292,18 +314,31 @@ describe('council model configuration', () => {
 
   // Independence: the validator is not also a reviewer lens, so it audits opinions it did not
   // write. Kept as its own case so a lesion on it is not hidden behind the roster pin above.
-  // AMENDED 2026-10-17 (EHAC-3622): one NAMED exception. The owner put the Tests lens on the
-  // validator's model ("better than v4 pro ... and more cost effective"). The exception is
-  // keyed by lens POSITION, so moving the validator's model onto Risk, Design or Operations
-  // still fails here. Removing the exception means emptying this list, not widening it.
-  it('keeps every lens except the excepted Tests lens off the validator model', () => {
-    const models = stringInputDefault('review_models').split(',').map((model) => model.trim());
+  // AMENDED 2026-10-17 (EHAC-3622): NAMED exceptions, keyed by lens POSITION, so moving the
+  // validator's model onto any other lens still fails here. The check covers the lens's first
+  // attempt AND its one failover retry, because a retry that lands on the validator's model
+  // breaks independence just as a first attempt does.
+  //  - First attempt, Tests: owner ruling ("better than v4 pro ... and more cost effective").
+  //  - Failover, Design: minimax -> v4.1-flash under elek's next-distinct rule. The owner asked
+  //    for lenses to fall back to v4.1-flash, but this crossing has NOT been ruled on as an
+  //    independence exception. It is listed so the gate names it; it must be ruled on before
+  //    this roster ships (EHAC-3622 PR body).
+  // Removing an exception means emptying its list, not widening it.
+  it('keeps every lens off the validator model, first attempt and failover, except as named', () => {
+    const roster = stringInputDefault('review_models').split(',').map((model) => model.trim());
     const LENSES = ['risk', 'design', 'tests', 'operations'];
     const SHARES_VALIDATOR_BY_EXCEPTION = ['tests']; // EHAC-3622, owner ruling 2026-10-17
-    const validator = stringInputDefault('validator_model');
-    const sharing = LENSES.filter((lens, i) => models[i] === validator);
-    const unexcused = sharing.filter((lens) => !SHARES_VALIDATOR_BY_EXCEPTION.includes(lens));
+    const FAILOVER_SHARES_VALIDATOR_PENDING_RULING = ['design']; // EHAC-3622, see above
+    const validator = modelIdentity(stringInputDefault('validator_model'));
+    const first = LENSES.filter((lens, i) => modelIdentity(roster[i]) === validator);
+    const unexcused = first.filter((lens) => !SHARES_VALIDATOR_BY_EXCEPTION.includes(lens));
     expect(unexcused, `lens(es) on the validator model without an exception: ${unexcused.join(', ')}`).toEqual([]);
+    const retry = LENSES.filter((lens, i) => !first.includes(lens) && selectFailoverModel(roster, roster[i]) === validator);
+    const retryUnexcused = retry.filter((lens) => !FAILOVER_SHARES_VALIDATOR_PENDING_RULING.includes(lens));
+    expect(retryUnexcused, `lens(es) whose failover lands on the validator model without an exception: ${retryUnexcused.join(', ')}`).toEqual([]);
+    // Each exception must be live: a stale entry would silently pre-authorise a future crossing.
+    expect(first.filter((lens) => SHARES_VALIDATOR_BY_EXCEPTION.includes(lens))).toEqual(SHARES_VALIDATOR_BY_EXCEPTION);
+    expect(retry.filter((lens) => FAILOVER_SHARES_VALIDATOR_PENDING_RULING.includes(lens))).toEqual(FAILOVER_SHARES_VALIDATOR_PENDING_RULING);
   });
 
   // EHAC-2522 (elek #22, eha-v1.7.0). The validator-review lane fails over ONCE on
@@ -379,7 +414,7 @@ describe('council model configuration', () => {
       stringInputDefault('validator_model'),
       stringInputDefault('validator_review_failover_model'),
       stringInputDefault('model'),
-    ].map(canonical);
+    ].map(canonical).filter(Boolean); // an empty failover input disables it; nothing to price
     const unpriced = [...new Set(runnable)].filter((model) => !priced.has(model));
     expect(unpriced, `council models with no cost_rates entry: ${unpriced.join(', ')}`).toEqual([]);
   });
@@ -413,18 +448,8 @@ describe('council model configuration', () => {
   // validator-review role. So a new model cannot become a failover target without its evidence
   // being added in the same change.
   it('fails every lens over to a model with live success on the pinned elek', () => {
-    const identity = (id) => id.trim().toLowerCase().replace(/\/+/g, '/').replace(/^\/|\/$/g, '')
-      .split('/').filter(Boolean).slice(-2).join('/');
-    const selectFailoverModel = (roster, assigned) => {
-      const distinct = [...new Map(roster.map((m) => [identity(m), m])).keys()];
-      const index = distinct.indexOf(identity(assigned));
-      const start = index >= 0 ? index + 1 : 0;
-      for (let i = 0; i < distinct.length; i++) {
-        const candidate = distinct[(start + i) % distinct.length];
-        if (candidate !== identity(assigned)) return candidate;
-      }
-      return undefined;
-    };
+    const elekPin = withoutComments(source()).match(/uses: EHA-Clinics\/elek@([0-9a-f]{40})/)?.[1];
+    expect(elekPin, 'elek pin not found in the workflow').toBeDefined();
 
     // From the eha_care council records of 2026-10-16/17. `reviewer` is the pin where the model
     // last succeeded as a lens. `current` is its success on elek 061c438, in any role.
@@ -433,21 +458,21 @@ describe('council model configuration', () => {
     const LIVE_SUCCESS = {
       'z-ai/glm-5.3-flash': {
         reviewer: { pin: '061c438', evidence: 'risk/operations 40/54 first, tests retry 5/5; run 39042921885' },
-        current: { role: 'reviewer', evidence: 'run 39042921885' },
+        current: { pin: '061c438', role: 'reviewer', evidence: 'run 39042921885' },
       },
       'minimax/minimax-m3': {
         reviewer: { pin: '061c438', evidence: 'tests 22/27 first, design retry 7/9; run 39042921885' },
-        current: { role: 'reviewer', evidence: 'run 39042921885' },
+        current: { pin: '061c438', role: 'reviewer', evidence: 'run 39042921885' },
       },
       'deepseek/deepseek-v4.1-flash': {
         reviewer: { pin: 'c410bfe', evidence: 'tests 34/38 first; run 39021117296' },
-        current: { role: 'validator-review', evidence: 'validator-review 24/27, synthesis 20/22; run 39043284074' },
+        current: { pin: '061c438', role: 'validator-review', evidence: 'validator-review 24/27, synthesis 20/22; run 39043284074' },
       },
     };
 
     const roster = stringInputDefault('review_models').split(',');
     const chain = Object.fromEntries(
-      [...new Set(roster.map(identity))].map((model) => [model, selectFailoverModel(roster, model)]),
+      [...new Set(roster.map(modelIdentity))].map((model) => [model, selectFailoverModel(roster, model)]),
     );
     for (const [from, to] of Object.entries(chain)) {
       expect(to, `${from} has no distinct failover model`).toBeDefined();
@@ -456,7 +481,11 @@ describe('council model configuration', () => {
         `${from} fails over to ${to}, which has no recorded live success on elek 061c438`,
       ).toBeDefined();
       expect(LIVE_SUCCESS[to].reviewer?.evidence, `${to} has no recorded success as a lens`).toMatch(/run \d{11}/);
-      expect(['reviewer', 'validator-review']).toContain(LIVE_SUCCESS[to].current?.role);
+      // The current-pin evidence must be FOR the pin the workflow ships, with a run id, so
+      // evidence retained from an older elek cannot satisfy it.
+      expect(elekPin.startsWith(LIVE_SUCCESS[to].current?.pin ?? '-'), `${to}'s current evidence is not for elek ${elekPin}`).toBe(true);
+      expect(LIVE_SUCCESS[to].current.evidence, `${to} has no run id on the current pin`).toMatch(/run \d{11}/);
+      expect(['reviewer', 'validator-review']).toContain(LIVE_SUCCESS[to].current.role);
     }
     // Fixed lens order plus next-distinct means each lens's fallback follows from the roster
     // order. A per-lens fallback choice (for example glm -> v4.1-flash) would need an elek change.
