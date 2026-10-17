@@ -283,12 +283,15 @@ describe('council model configuration', () => {
     // to minimax-m3, both admitted by the key-backed guardrail probe (eha_care #4770, run
     // 38911217929: HTTP 200 under data_collection deny); Risk and Operations stay on GLM.
     // AMENDED 2026-10-17 (EHAC-3622): mimo leaves (design 17/27, failover retries 1/14 on elek
-    // 061c438). Design moves to minimax-m3. Tests returns to deepseek-v4.1-flash on the owner's
-    // choice (tests 34/38 at .github c410bfe).
+    // 061c438). Design moves to minimax-m3.
+    // AMENDED 2026-10-17 (EHAC-3622, owner's final roster "glm tests + v4-pro audit"): Tests moves
+    // to glm-5.3-flash. v4.1-flash failed the canary Tests lens with invalid_output (run
+    // 39063907146), and a direct probe showed it leaves its final JSON in the reasoning channel
+    // at every cap.
     expect(models).toEqual([
       'openrouter/z-ai/glm-5.3-flash',
       'openrouter/minimax/minimax-m3',
-      'openrouter/deepseek/deepseek-v4.1-flash',
+      'openrouter/z-ai/glm-5.3-flash',
       'openrouter/z-ai/glm-5.3-flash',
     ]);
 
@@ -306,7 +309,11 @@ describe('council model configuration', () => {
     // The weaker property is still worth asserting, because the failure this guard exists to
     // catch is collapse, not duplication: a council whose lenses all run one model is not a
     // council, it is one opinion rendered four times. Two independent families remain.
-    expect(new Set(models).size).toBeGreaterThanOrEqual(3);
+    // RELAXED AGAIN 2026-10-17 (EHAC-3622, owner's final roster): >= 3 -> >= 2. glm takes risk,
+    // tests and operations, and minimax takes design. Two reviewer families remain, plus
+    // deepseek-v4-pro-0813 as the independent audit (advisor) and deepseek-v4.1-flash as the
+    // validator. The collapse this guards against (one model on every lens) still fails.
+    expect(new Set(models).size).toBeGreaterThanOrEqual(2);
 
     // AMENDED 2026-10-16 (EHAC-2844, ruling 1): the validator is deepseek-v4.1-flash, with
     // deepseek-v4-pro-0813 as its one validator-review failover (EHAC-2522, below).
@@ -315,24 +322,42 @@ describe('council model configuration', () => {
 
   // Independence: the validator is not also a reviewer lens, so it audits opinions it did not
   // write. Kept as its own case so a lesion on it is not hidden behind the roster pin above.
-  // AMENDED 2026-10-17 (EHAC-3622): one NAMED first-attempt exception, keyed by lens POSITION, so
-  // moving the validator's model onto Risk, Design or Operations still fails here. The Tests
-  // exception is an owner ruling ("better than v4 pro ... and more cost effective").
-  // FAILOVER RETRIES ARE DELIBERATELY NOT CHECKED. Owner ruling 2026-10-17 (EHAC-3622), Adam:
-  // "Allow it for any lens." Any lens's one failover retry may land on the validator's model.
-  // Under this roster, Design's does. A failover check would therefore be a gate that cannot
-  // fail, so there is none. What still constrains a failover is the evidence case below: every
-  // target must have live success. Removing the exception means emptying its list, not widening it.
-  it('keeps every lens but Tests off the validator model on its first attempt', () => {
+  // AMENDED 2026-10-17 (EHAC-3622, owner's final roster): STRICT for every lens. The Tests
+  // exception is gone with v4.1-flash's Tests slot, so no lens's first attempt may run the
+  // validator's model.
+  // FAILOVER RETRIES ARE DELIBERATELY NOT CHECKED. Standing owner ruling 2026-10-17
+  // (EHAC-3622), Adam: "Allow it for any lens." Any lens's one failover retry may land on the
+  // validator's model. No chain does under this roster (glm -> minimax -> glm), but a check
+  // would still be a gate the ruling forbids from failing. What constrains a failover target is
+  // the evidence case below.
+  it('keeps every lens off the validator model on its first attempt', () => {
     const roster = stringInputDefault('review_models').split(',').map((model) => model.trim());
     const LENSES = ['risk', 'design', 'tests', 'operations'];
-    const SHARES_VALIDATOR_BY_EXCEPTION = ['tests']; // EHAC-3622, owner ruling 2026-10-17
     const validator = modelIdentity(stringInputDefault('validator_model'));
-    const first = LENSES.filter((lens, i) => modelIdentity(roster[i]) === validator);
-    const unexcused = first.filter((lens) => !SHARES_VALIDATOR_BY_EXCEPTION.includes(lens));
-    expect(unexcused, `lens(es) on the validator model without an exception: ${unexcused.join(', ')}`).toEqual([]);
-    // The exception must be live: a stale entry would silently pre-authorise a future crossing.
-    expect(first.filter((lens) => SHARES_VALIDATOR_BY_EXCEPTION.includes(lens))).toEqual(SHARES_VALIDATOR_BY_EXCEPTION);
+    const sharing = LENSES.filter((lens, i) => modelIdentity(roster[i]) === validator);
+    expect(sharing, `lens(es) on the validator model: ${sharing.join(', ')}`).toEqual([]);
+  });
+
+  // EHAC-3622 (2026-10-17, owner's final roster "glm tests + v4-pro audit"). The independent
+  // audit (elek's advisor lens, role validator-review) is only independent if it runs a model
+  // that neither wrote a lens report nor reconciles them. Its one pinned failover must also
+  // differ from it: elek refuses to re-ask the model that just failed (strategy.ts:258-263),
+  // which would leave the audit lane with no failover at all.
+  it('runs the audit lens on a model that is neither a lens nor the validator, and fails it over elsewhere', () => {
+    const advisor = stringInputDefault('advisor_model');
+    const lensModels = stringInputDefault('review_models').split(',').map(modelIdentity);
+    expect(lensModels, 'the advisor model is also a lens model').not.toContain(modelIdentity(advisor));
+    expect(modelIdentity(advisor), 'the advisor model is the validator model').not.toBe(modelIdentity(stringInputDefault('validator_model')));
+    expect(
+      modelIdentity(stringInputDefault('validator_review_failover_model')),
+      'the audit-lane failover is the advisor model itself',
+    ).not.toBe(modelIdentity(advisor));
+    const forwards = withoutComments(source())
+      .split('\n')
+      .filter((line) => /^ {10}advisor_model: \$\{\{ inputs\.advisor_model \}\}\s*$/.test(line));
+    expect(forwards, 'the elek step must forward advisor_model exactly once').toHaveLength(1);
+    // The pin comes LAST so the independence assertions above are what a lesion reds on.
+    expect(advisor).toBe('openrouter/deepseek/deepseek-v4-pro-0813');
   });
 
   // EHAC-2522 (elek #22, eha-v1.7.0). The validator-review lane fails over ONCE on
@@ -340,8 +365,10 @@ describe('council model configuration', () => {
   // default lives here, and it only works if the elek step forwards it.
   it('defaults and forwards the validator-review failover model', () => {
     const failover = stringInputDefault('validator_review_failover_model');
-    expect(failover).toBe('openrouter/deepseek/deepseek-v4-pro-0813');
-    expect(failover).not.toBe(stringInputDefault('validator_model'));
+    // AMENDED 2026-10-17 (EHAC-3622): the audit lane runs advisor_model (v4-pro-0813), so the
+    // failover moves to deepseek-v4.1-flash. It must differ from the ADVISOR, the model the lane
+    // actually runs; that is asserted in the advisor case above.
+    expect(failover).toBe('openrouter/deepseek/deepseek-v4.1-flash');
     const forwards = withoutComments(source())
       .split('\n')
       .filter((line) => /^\s+validator_review_failover_model: \$\{\{ inputs\.validator_review_failover_model \}\}\s*$/.test(line));
@@ -406,6 +433,7 @@ describe('council model configuration', () => {
     const runnable = [
       ...stringInputDefault('review_models').split(','),
       stringInputDefault('validator_model'),
+      stringInputDefault('advisor_model'),
       stringInputDefault('validator_review_failover_model'),
       stringInputDefault('model'),
     ].map(canonical).filter(Boolean); // an empty failover input disables it; nothing to price
@@ -423,6 +451,7 @@ describe('council model configuration', () => {
     const inputs = [
       'review_models',
       'validator_model',
+      'advisor_model',
       'validator_review_failover_model',
       'model',
       'cost_rates',
@@ -447,8 +476,7 @@ describe('council model configuration', () => {
 
     // From the eha_care council records of 2026-10-16/17. `reviewer` is the pin where the model
     // last succeeded as a lens. `current` is its success on elek 061c438, in any role.
-    // v4.1-flash last ran as a lens at .github c410bfe (elek before eha-v1.7.0). On 061c438 it
-    // ran only as the validator.
+    // Only failover TARGETS need an entry. Under the final roster those are glm and minimax.
     const LIVE_SUCCESS = {
       'z-ai/glm-5.3-flash': {
         reviewer: { pin: '061c438', evidence: 'risk/operations 40/54 first, tests retry 5/5; run 39042921885' },
@@ -457,10 +485,6 @@ describe('council model configuration', () => {
       'minimax/minimax-m3': {
         reviewer: { pin: '061c438', evidence: 'tests 22/27 first, design retry 7/9; run 39042921885' },
         current: { pin: '061c438', role: 'reviewer', evidence: 'run 39042921885' },
-      },
-      'deepseek/deepseek-v4.1-flash': {
-        reviewer: { pin: 'c410bfe', evidence: 'tests 34/38 first; run 39021117296' },
-        current: { pin: '061c438', role: 'validator-review', evidence: 'validator-review 24/27, synthesis 20/22; run 39043284074' },
       },
     };
 
@@ -485,8 +509,7 @@ describe('council model configuration', () => {
     // order. A per-lens fallback choice (for example glm -> v4.1-flash) would need an elek change.
     expect(chain).toEqual({
       'z-ai/glm-5.3-flash': 'minimax/minimax-m3',
-      'minimax/minimax-m3': 'deepseek/deepseek-v4.1-flash',
-      'deepseek/deepseek-v4.1-flash': 'z-ai/glm-5.3-flash',
+      'minimax/minimax-m3': 'z-ai/glm-5.3-flash',
     });
   });
 
