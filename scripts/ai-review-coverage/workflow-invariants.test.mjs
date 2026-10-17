@@ -259,10 +259,13 @@ describe('council model configuration', () => {
     // AMENDED 2026-10-16 (EHAC-2844, owner ruling 1): Design moves to mimo-v2.6-pro and Tests
     // to minimax-m3, both admitted by the key-backed guardrail probe (eha_care #4770, run
     // 38911217929: HTTP 200 under data_collection deny); Risk and Operations stay on GLM.
+    // AMENDED 2026-10-17 (EHAC-3622): mimo leaves (design 17/27, failover retries 1/14 on elek
+    // 061c438). Design moves to minimax-m3. Tests returns to deepseek-v4.1-flash on the owner's
+    // choice (tests 34/38 at .github c410bfe).
     expect(models).toEqual([
       'openrouter/z-ai/glm-5.3-flash',
-      'openrouter/xiaomi/mimo-v2.6-pro',
       'openrouter/minimax/minimax-m3',
+      'openrouter/deepseek/deepseek-v4.1-flash',
       'openrouter/z-ai/glm-5.3-flash',
     ]);
 
@@ -287,7 +290,16 @@ describe('council model configuration', () => {
     expect(stringInputDefault('validator_model')).toBe('openrouter/deepseek/deepseek-v4.1-flash');
     // Independence: the validator is not also a reviewer lens, so it audits opinions it did
     // not write. A tests-lens fallback to v4.1-flash would break this and must be flagged.
-    expect(models).not.toContain(stringInputDefault('validator_model'));
+    // AMENDED 2026-10-17 (EHAC-3622): one NAMED exception. The owner put the Tests lens on the
+    // validator's model ("better than v4 pro ... and more cost effective"). The exception is
+    // keyed by lens POSITION, so moving the validator's model onto Risk, Design or Operations
+    // still fails here. Removing the exception means emptying this list, not widening it.
+    const LENSES = ['risk', 'design', 'tests', 'operations'];
+    const SHARES_VALIDATOR_BY_EXCEPTION = ['tests']; // EHAC-3622, owner ruling 2026-10-17
+    const validator = stringInputDefault('validator_model');
+    const sharing = LENSES.filter((lens, i) => models[i] === validator);
+    const unexcused = sharing.filter((lens) => !SHARES_VALIDATOR_BY_EXCEPTION.includes(lens));
+    expect(unexcused, `lens(es) on the validator model without an exception: ${unexcused.join(', ')}`).toEqual([]);
   });
 
   // EHAC-2522 (elek #22, eha-v1.7.0). The validator-review lane fails over ONCE on
@@ -342,11 +354,113 @@ describe('council model configuration', () => {
   // validator; with v4-pro-0813 now the failover, its rate prices the one extra attempt.
   it('prices every council model at its listed OpenRouter rate', () => {
     const rates = stringInputDefault('cost_rates').split(',').map((entry) => entry.trim());
-    expect(rates).toContain('openrouter/xiaomi/mimo-v2.6-pro=0.435:0.87');
     expect(rates).toContain('openrouter/minimax/minimax-m3=0.30:1.20');
     expect(rates).toContain('openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20');
     expect(rates).toContain('openrouter/deepseek/deepseek-v4-pro-0813=1.32:3.96');
     expect(rates.some((entry) => entry.includes('mimo-v2.5-pro'))).toBe(false);
+  });
+
+  // EHAC-3622 (2026-10-17). This is the converse of the orphan-rate check below. An unpriced
+  // model resolves in elek to source "unknown" and $0, and selectReviewPlanWithinBudget then
+  // drops it from the figure compared with max_cost_usd. So every model the council can run
+  // (each lens, the validator, the validator-review failover and the solo `model`) needs an
+  // exact rate here, and the cap must never silently stop counting a lens.
+  it('prices every model the council can run', () => {
+    const canonical = (id) => id.trim().replace(/^openrouter\//, '');
+    const priced = new Set(
+      stringInputDefault('cost_rates').split(',').map((entry) => canonical(entry.split('=')[0])),
+    );
+    const runnable = [
+      ...stringInputDefault('review_models').split(','),
+      stringInputDefault('validator_model'),
+      stringInputDefault('validator_review_failover_model'),
+      stringInputDefault('model'),
+    ].map(canonical);
+    const unpriced = [...new Set(runnable)].filter((model) => !priced.has(model));
+    expect(unpriced, `council models with no cost_rates entry: ${unpriced.join(', ')}`).toEqual([]);
+  });
+
+  // EHAC-3622 (2026-10-17). mimo-v2.6-pro left the council on measured failure. On elek
+  // eha-v1.7.0 (061c438, 27 eha_care councils) it finished design 17/27, with 9 of the
+  // failures at the 900s wall clock, and 1/14 as a failover retry (13 timeouts). Its reasoning
+  // cap, cost rate and roster slot went together. Re-admitting any MiMo build should take new
+  // evidence and a deliberate edit here, not a quiet roster change. Comments are excluded, so the
+  // AMENDED history in the workflow cannot trip this check.
+  it('runs no MiMo model in any roster input', () => {
+    const inputs = [
+      'review_models',
+      'validator_model',
+      'validator_review_failover_model',
+      'model',
+      'cost_rates',
+      'openrouter_model_reasoning_modes',
+    ];
+    for (const input of inputs) {
+      expect(stringInputDefault(input), `${input} still names a MiMo model`).not.toMatch(/mimo/i);
+    }
+  });
+
+  // EHAC-3622 (2026-10-17). A lens whose run fails retries ONCE on the next distinct roster
+  // model, wrapping round. That is elek eha-v1.7.0 src/review/strategy.ts:175-189
+  // (selectFailoverModel over distinctModels, identity = lower-cased last two path segments).
+  // It is re-implemented here so the chain is computed from the shipped roster, not asserted
+  // from memory. Each failover target must have recorded live evidence, pinned below with run
+  // ids: a reviewer success, plus a success on the current elek pin 061c438 in a reviewer or
+  // validator-review role. So a new model cannot become a failover target without its evidence
+  // being added in the same change.
+  it('fails every lens over to a model with live success on the pinned elek', () => {
+    const identity = (id) => id.trim().toLowerCase().replace(/\/+/g, '/').replace(/^\/|\/$/g, '')
+      .split('/').filter(Boolean).slice(-2).join('/');
+    const selectFailoverModel = (roster, assigned) => {
+      const distinct = [...new Map(roster.map((m) => [identity(m), m])).keys()];
+      const index = distinct.indexOf(identity(assigned));
+      const start = index >= 0 ? index + 1 : 0;
+      for (let i = 0; i < distinct.length; i++) {
+        const candidate = distinct[(start + i) % distinct.length];
+        if (candidate !== identity(assigned)) return candidate;
+      }
+      return undefined;
+    };
+
+    // From the eha_care council records of 2026-10-16/17. `reviewer` is the pin where the model
+    // last succeeded as a lens. `current` is its success on elek 061c438, in any role.
+    // v4.1-flash last ran as a lens at .github c410bfe (elek before eha-v1.7.0). On 061c438 it
+    // ran only as the validator.
+    const LIVE_SUCCESS = {
+      'z-ai/glm-5.3-flash': {
+        reviewer: { pin: '061c438', evidence: 'risk/operations 40/54 first, tests retry 5/5; run 39042921885' },
+        current: { role: 'reviewer', evidence: 'run 39042921885' },
+      },
+      'minimax/minimax-m3': {
+        reviewer: { pin: '061c438', evidence: 'tests 22/27 first, design retry 7/9; run 39042921885' },
+        current: { role: 'reviewer', evidence: 'run 39042921885' },
+      },
+      'deepseek/deepseek-v4.1-flash': {
+        reviewer: { pin: 'c410bfe', evidence: 'tests 34/38 first; run 39021117296' },
+        current: { role: 'validator-review', evidence: 'validator-review 24/27, synthesis 20/22; run 39043284074' },
+      },
+    };
+
+    const roster = stringInputDefault('review_models').split(',');
+    const chain = Object.fromEntries(
+      [...new Set(roster.map(identity))].map((model) => [model, selectFailoverModel(roster, model)]),
+    );
+    for (const [from, to] of Object.entries(chain)) {
+      expect(to, `${from} has no distinct failover model`).toBeDefined();
+      expect(
+        LIVE_SUCCESS[to],
+        `${from} fails over to ${to}, which has no recorded live success on elek 061c438`,
+      ).toBeDefined();
+      expect(LIVE_SUCCESS[to].reviewer?.evidence, `${to} has no recorded success as a lens`).toMatch(/run \d{11}/);
+      expect(['reviewer', 'validator-review']).toContain(LIVE_SUCCESS[to].current?.role);
+    }
+    // Fixed lens order plus next-distinct means each lens's fallback follows from the roster
+    // order. A per-lens fallback choice (for example glm -> v4.1-flash) would need an elek change.
+    expect(chain).toEqual({
+      'z-ai/glm-5.3-flash': 'minimax/minimax-m3',
+      'minimax/minimax-m3': 'deepseek/deepseek-v4.1-flash',
+      'deepseek/deepseek-v4.1-flash': 'z-ai/glm-5.3-flash',
+    });
   });
 
   // Model-AGNOSTIC by design. An earlier draft asserted a specific model version and was
@@ -1029,7 +1143,7 @@ describe('the README documents the NOT_REVIEWED allowlist accurately (EHAC-2294)
 
 
 describe('reasoning capability policy reaches every consumer', () => {
-  it('keeps the default MiMo override alongside its configured council model', () => {
+  it('keeps the default reasoning map empty and in step with the council roster', () => {
     const modes = JSON.parse(stringInputDefault('openrouter_model_reasoning_modes'));
     const canonical = (id) => id.replace(/^openrouter\//, '');
     const roster = stringInputDefault('review_models').split(',').map((id) => canonical(id.trim()));
@@ -1040,8 +1154,10 @@ describe('reasoning capability policy reaches every consumer', () => {
     // EHAC-2844: the key follows the roster to mimo-v2.6-pro (probed in capped form, 200), keeps
     // the roster's `openrouter/` spelling (elek and reasoning-policy.mjs both strip it) and the
     // same 12000 budget.
-    expect(modes).toEqual({ 'openrouter/xiaomi/mimo-v2.6-pro': { mode: 'enabled', max_tokens: 12000 } });
-    expect(Number.isSafeInteger(modes['openrouter/xiaomi/mimo-v2.6-pro'].max_tokens)).toBe(true);
+    // AMENDED 2026-10-17 (EHAC-3622): mimo left the roster and its capped entry went with it.
+    // Every remaining council model has named-effort control, so the map is empty. A future
+    // `enabled` model must come back with a measured budget and a pin here.
+    expect(modes).toEqual({});
     expect(Object.keys(modes).filter((id) => !roster.includes(canonical(id)))).toEqual([]);
   });
 

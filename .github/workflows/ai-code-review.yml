@@ -47,7 +47,7 @@ on:
         # `model-ignored-by-guardrail` on every request. Leaving it as the single-strategy default
         # would have left a dead model armed for any non-council run.
         default: 'openrouter/deepseek/deepseek-v4.1-flash'
-        description: 'OpenRouter model id (e.g., openrouter/deepseek/deepseek-v4.1-flash, xiaomi/mimo-v2.5-pro)'
+        description: 'OpenRouter model id (e.g., openrouter/deepseek/deepseek-v4.1-flash, openrouter/minimax/minimax-m3)'
       trigger_phrase:
         type: string
         default: '@ai-review'
@@ -127,7 +127,16 @@ on:
         # 38911217929, HTTP 200 on each, with glm-5.3-flash 200 and kimi-k2.7-code 404 as the
         # controls. v4.1-flash becomes the validator, so no lens shares the validator's model.
         # minimax-m3 supports named-effort reasoning, so no reasoning-modes entry is added.
-        default: 'openrouter/z-ai/glm-5.3-flash,openrouter/xiaomi/mimo-v2.6-pro,openrouter/minimax/minimax-m3,openrouter/z-ai/glm-5.3-flash'
+        # AMENDED 2026-10-17 (EHAC-3622): mimo-v2.6-pro leaves the council. On elek eha-v1.7.0
+        # (061c438, 27 councils) it finished design 17/27 (9 timeouts at 900s) and only 1/14 as a
+        # failover retry. Design moves to minimax-m3 (design retries 7/9). Tests moves back to
+        # deepseek-v4.1-flash, on the owner's choice ("better than v4 pro ... and more cost
+        # effective"; tests 34/38 at .github c410bfe). That is a NAMED EXCEPTION to the
+        # independence rule: the Tests lens now shares the validator's model. It holds for Tests
+        # alone, and workflow-invariants.test.mjs still forbids it for every other lens. Three
+        # distinct models remain, and elek's next-distinct failover (strategy.ts
+        # selectFailoverModel) becomes glm -> minimax -> v4.1-flash -> glm.
+        default: 'openrouter/z-ai/glm-5.3-flash,openrouter/minimax/minimax-m3,openrouter/deepseek/deepseek-v4.1-flash,openrouter/z-ai/glm-5.3-flash'
         description: 'Comma-separated OpenRouter model ids for the council lenses (round-robin assigned).'
       openrouter_model_reasoning_modes:
         type: string
@@ -144,7 +153,11 @@ on:
         # AMENDED 2026-10-16 (EHAC-2844): the key follows the Design lens to mimo-v2.6-pro, spelt
         # as in the roster (elek and reasoning-policy.mjs both strip `openrouter/`). The budget is
         # carried forward unchanged; mimo-v2.6-pro answered the capped form with HTTP 200.
-        default: '{"openrouter/xiaomi/mimo-v2.6-pro":{"mode":"enabled","max_tokens":12000}}'
+        # AMENDED 2026-10-17 (EHAC-3622): the map is empty because mimo has left the roster. Every
+        # remaining council model (glm-5.3-flash, minimax-m3, deepseek-v4.1-flash and the
+        # deepseek-v4-pro-0813 failover) has named-effort control, so all of them run as `effort`. Both elek
+        # and reasoning-policy.mjs read '{}' as "no overrides", and U9 then requires no budget.
+        default: '{}'
         description: 'Canonical OpenRouter model capability map: effort (default), enabled (provider-default reasoning, with the unchanged output limit sent as max_tokens), or {"mode": ..., "max_tokens": N} to cap that model alone.'
       validator_model:
         type: string
@@ -249,7 +262,10 @@ on:
         # 0.66:1.98 to its listed 1.32:3.96 (it was budgeted at half price); it now prices the
         # validator-review failover and, with eha-v1.7.0, the one extra reviewer attempt. The
         # mimo-v2.5-pro rate is removed with the model (the orphan-rate invariant requires it).
-        default: 'openrouter/xiaomi/mimo-v2.6-pro=0.435:0.87,openrouter/minimax/minimax-m3=0.30:1.20,openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20,openrouter/z-ai/glm-5.3-flash=0.15:0.50,openrouter/deepseek/deepseek-v4-pro-0813=1.32:3.96'
+        # AMENDED 2026-10-17 (EHAC-3622): the mimo-v2.6-pro rate leaves with the model. Every other
+        # entry stays: v4-pro-0813 still prices the validator-review failover, and v4.1-flash now
+        # prices the Tests lens as well as the validator.
+        default: 'openrouter/minimax/minimax-m3=0.30:1.20,openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20,openrouter/z-ai/glm-5.3-flash=0.15:0.50,openrouter/deepseek/deepseek-v4-pro-0813=1.32:3.96'
         description: 'Per-model cost rates as model=inputPerMillion:outputPerMillion, comma-separated.'
       mode:
         type: string
