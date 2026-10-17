@@ -100,7 +100,8 @@ const stats = (values) => ({
  *   record      — artifact downloaded and parsed to a JSON object
  *   expired     — artifact existed and is past retention                (out of window)
  *   cancelled   — run cancelled; the upload step may never have executed (out of window)
- *   not_executed — run never ran jobs (startup_failure, skipped, action_required, in progress)
+ *   not_executed — run never ran jobs (startup_failure, skipped, action_required, in progress),
+ *                  or a caller's repeat gate skipped the council (gateSkippedCouncil, EHAC-2844)
  *   absent      — completed run with no artifact                       (FAULT)
  *   unreadable  — artifact present but not a JSON object               (FAULT)
  * A test-built entry may omit `kind`; a record makes it `record`, anything else `absent`.
@@ -548,6 +549,33 @@ export function listRuns({ repo, workflows, limit, ghExec = gh, warn = () => {} 
   return newestFirst(runs).slice(0, limit);
 }
 
+export const REPEAT_GATE_JOB = 'Council repeat gate';
+export const COUNCIL_JOB_SUFFIXES = Object.freeze([' / AI Code Review (council)', ' / AI Review Coverage']);
+
+/**
+ * EHAC-2844 (ruling 6): a caller may run a `Council repeat gate` job that skips a repeated
+ * `@ai-review` on an unchanged, satisfied head. That run concludes `success` with NO coverage
+ * artifact, by design. It is a gate-skipped council (not a fault) only when ALL hold:
+ *   - the run's jobs are non-empty and every one has a string name;
+ *   - no job is the reusable workflow's council or coverage job (names ending
+ *     " / AI Code Review (council)" or " / AI Review Coverage"): a council that ran must record;
+ *   - exactly one `Council repeat gate` job exists and it concluded `success`;
+ *   - every other job (the skipped caller job, e.g. "AI Review On Demand (Council)", and the
+ *     `Council record` helper) concluded `skipped`, and at least one such job exists.
+ * Observed shape of a skipped caller job (eha_care run 39013948948): exactly one job named
+ * "AI Review On Demand (Council)", completed/skipped, and 0 artifacts. Anything else stays a FAULT.
+ * @param {Array<{ name?: unknown, conclusion?: unknown }>} jobs
+ */
+export function gateSkippedCouncil(jobs) {
+  if (!Array.isArray(jobs) || jobs.length === 0) return false;
+  if (jobs.some((j) => typeof j?.name !== 'string')) return false;
+  if (jobs.some((j) => COUNCIL_JOB_SUFFIXES.some((s) => j.name.endsWith(s)))) return false;
+  const gates = jobs.filter((j) => j.name === REPEAT_GATE_JOB);
+  if (gates.length !== 1 || gates[0].conclusion !== 'success') return false;
+  const others = jobs.filter((j) => j.name !== REPEAT_GATE_JOB);
+  return others.length > 0 && others.every((j) => j.conclusion === 'skipped');
+}
+
 /** Turn one listed run into an observation. Never throws; every failure mode is a `kind`. */
 export function fetchEntry({ repo, run, dir, ghExec = gh }) {
   const base = { run_id: run.run_id, created_at: run.created_at, head_branch: run.head_branch, workflow: run.workflow, event: run.event, conclusion: run.conclusion };
@@ -562,7 +590,19 @@ export function fetchEntry({ repo, run, dir, ghExec = gh }) {
   } catch (err) {
     return { ...base, kind: 'unreadable', detail: `artifact listing failed: ${firstLine(err)}` };
   }
-  if (artifacts.length === 0) return { ...base, kind: 'absent', detail: `no ${ARTIFACT_NAME} artifact on a ${run.conclusion} run` };
+  if (artifacts.length === 0) {
+    const absent = { ...base, kind: 'absent', detail: `no ${ARTIFACT_NAME} artifact on a ${run.conclusion} run` };
+    // EHAC-2844: only a success run can be a gate-skipped council; a jobs-read failure stays a FAULT.
+    if (run.conclusion !== 'success') return absent;
+    let jobs;
+    try {
+      jobs = JSON.parse(ghExec(['api', `repos/${repo}/actions/runs/${run.run_id}/jobs?filter=latest&per_page=100`])).jobs;
+    } catch (err) {
+      return { ...absent, detail: `${absent.detail}; jobs listing failed: ${firstLine(err)}` };
+    }
+    if (gateSkippedCouncil(jobs)) return { ...base, kind: 'not_executed', detail: 'council skipped by the repeat gate (no coverage record by design)' };
+    return absent;
+  }
   if (artifacts.every((a) => a.expired)) return { ...base, kind: 'expired' };
 
   const target = join(dir, String(run.run_id));

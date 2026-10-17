@@ -19,6 +19,7 @@ import {
   classifyEntry,
   computeStreaks,
   fetchEntry,
+  gateSkippedCouncil,
   listRuns,
   main,
   parseArgs,
@@ -487,6 +488,76 @@ describe('fetchEntry — every failure mode is a kind, never a throw', () => {
     const e = fetchEntry({ repo: 'o/r', run: base, dir: dir(), ghExec });
     expect(e.kind).toBe('unreadable');
     expect(e.detail).toBe('download failed: HTTP 403: forbidden');
+  });
+});
+
+// EHAC-2844 (ruling 6): a caller's `Council repeat gate` skips a repeated @ai-review on an unchanged,
+// satisfied head; that run concludes success with NO coverage artifact by design. The skipped caller
+// job's shape is observed, not assumed: eha_care run 39013948948 (a non-request comment run) lists
+// exactly one job, {name: "AI Review On Demand (Council)", status: completed, conclusion: skipped},
+// and 0 artifacts. A gate-skipped run adds a successful gate job and a skipped record job.
+describe('gateSkippedCouncil — a gate-skipped council is not a fault, nothing else is (EHAC-2844)', () => {
+  const OBSERVED = { name: 'AI Review On Demand (Council)', status: 'completed', conclusion: 'skipped' };
+  const gate = (conclusion = 'success') => ({ name: 'Council repeat gate', status: 'completed', conclusion });
+  const record = (conclusion = 'skipped') => ({ name: 'Council record', status: 'completed', conclusion });
+  const SKIPPED = [gate(), OBSERVED, record()];
+
+  it('accepts the gate-skipped shape built on the observed skipped caller job', () => {
+    expect(gateSkippedCouncil(SKIPPED)).toBe(true);
+  });
+
+  it.each([
+    ['the observed run alone (no gate job: not a repeat skip)', [OBSERVED]],
+    ['no jobs at all', []],
+    ['an unreadable jobs value', undefined],
+    ['a job with no name', [gate(), { conclusion: 'skipped' }]],
+    ['only the gate job', [gate()]],
+    ['a gate that failed', [gate('failure'), OBSERVED, record()]],
+    ['a gate that was skipped', [gate('skipped'), OBSERVED, record()]],
+    ['two gate jobs', [gate(), gate(), OBSERVED, record()]],
+    ['a council job that ran', [gate(), { name: 'AI Review On Demand (Council) / AI Code Review (council)', conclusion: 'success' }, record()]],
+    ['a coverage job that ran', [gate(), { name: 'AI Review On Demand (Council) / AI Review Coverage', conclusion: 'failure' }, record()]],
+    ['a skipped council-suffix job (a council job never counts as skipped)', [gate(), { name: 'X / AI Code Review (council)', conclusion: 'skipped' }, record()]],
+    ['a record job that ran', [gate(), OBSERVED, record('success')]],
+    ['a caller job that did not skip', [gate(), { ...OBSERVED, conclusion: 'failure' }, record()]],
+  ])('rejects %s, so a missing record stays a FAULT', (_name, jobs) => {
+    expect(gateSkippedCouncil(jobs)).toBe(false);
+  });
+
+  const base = { run_id: 39013948948, created_at: '2026-10-17T10:00:00Z', head_branch: 'v2', event: 'issue_comment', workflow: 'ai-review-on-demand.yml', status: 'completed', conclusion: 'success' };
+  const dir = () => mkdtempSync(join(tmpdir(), 'streak-skip-'));
+  const ghFor = (jobs) => (args) => {
+    if (args[1].endsWith('/artifacts')) return JSON.stringify({ artifacts: [] });
+    if (args[1].includes('/jobs')) {
+      if (jobs instanceof Error) throw jobs;
+      return JSON.stringify({ total_count: jobs.length, jobs });
+    }
+    throw new Error(`unexpected ${args.join(' ')}`);
+  };
+
+  it('fetchEntry classes a gate-skipped success run as not_executed, out of window, not a fault', () => {
+    const e = fetchEntry({ repo: 'o/r', run: base, dir: dir(), ghExec: ghFor(SKIPPED) });
+    expect(e.kind).toBe('not_executed');
+    expect(e.detail).toMatch(/skipped by the repeat gate/);
+  });
+
+  it('fetchEntry keeps the FAULT for any other artifact-less success run, and when the jobs read fails', () => {
+    expect(fetchEntry({ repo: 'o/r', run: base, dir: dir(), ghExec: ghFor([OBSERVED]) }).kind).toBe('absent');
+    const err = new Error('boom'); err.stderr = 'HTTP 502: bad gateway';
+    const failed = fetchEntry({ repo: 'o/r', run: base, dir: dir(), ghExec: ghFor(err) });
+    expect(failed.kind).toBe('absent');
+    expect(failed.detail).toMatch(/jobs listing failed: HTTP 502: bad gateway/);
+  });
+
+  it('fetchEntry never reads jobs for a failure run: no coverage there is always a FAULT', () => {
+    // The jobs would even look gate-skipped; a failure run must still be a FAULT, and unread.
+    const calls = [];
+    const e = fetchEntry({ repo: 'o/r', run: { ...base, conclusion: 'failure' }, dir: dir(), ghExec: (args) => {
+      calls.push(args[1]);
+      return ghFor(SKIPPED)(args);
+    } });
+    expect(e.kind).toBe('absent');
+    expect(calls.filter((c) => c.includes('/jobs'))).toEqual([]);
   });
 });
 
