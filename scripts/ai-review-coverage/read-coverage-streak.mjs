@@ -594,12 +594,15 @@ export function fetchEntry({ repo, run, dir, ghExec = gh }) {
     const absent = { ...base, kind: 'absent', detail: `no ${ARTIFACT_NAME} artifact on a ${run.conclusion} run` };
     // EHAC-2844: only a success run can be a gate-skipped council; a jobs-read failure stays a FAULT.
     if (run.conclusion !== 'success') return absent;
-    let jobs;
+    let listing;
     try {
-      jobs = JSON.parse(ghExec(['api', `repos/${repo}/actions/runs/${run.run_id}/jobs?filter=latest&per_page=100`])).jobs;
+      listing = JSON.parse(ghExec(['api', `repos/${repo}/actions/runs/${run.run_id}/jobs?filter=latest&per_page=100`]));
     } catch (err) {
       return { ...absent, detail: `${absent.detail}; jobs listing failed: ${firstLine(err)}` };
     }
+    // One page only: a listing that is not provably complete keeps the FAULT.
+    const jobs = listing?.jobs;
+    if (!Array.isArray(jobs) || listing.total_count !== jobs.length) return absent;
     if (gateSkippedCouncil(jobs)) return { ...base, kind: 'not_executed', detail: 'council skipped by the repeat gate (no coverage record by design)' };
     return absent;
   }

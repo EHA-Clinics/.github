@@ -549,6 +549,14 @@ describe('gateSkippedCouncil — a gate-skipped council is not a fault, nothing 
     expect(failed.detail).toMatch(/jobs listing failed: HTTP 502: bad gateway/);
   });
 
+  it('fetchEntry keeps the FAULT when the jobs listing is not provably complete (total_count differs)', () => {
+    const partial = (args) => {
+      if (args[1].endsWith('/artifacts')) return JSON.stringify({ artifacts: [] });
+      return JSON.stringify({ total_count: 101, jobs: SKIPPED });
+    };
+    expect(fetchEntry({ repo: 'o/r', run: base, dir: dir(), ghExec: partial }).kind).toBe('absent');
+  });
+
   it('fetchEntry never reads jobs for a failure run: no coverage there is always a FAULT', () => {
     // The jobs would even look gate-skipped; a failure run must still be a FAULT, and unread.
     const calls = [];
