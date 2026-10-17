@@ -18,6 +18,7 @@ import { describe, expect, it } from 'vitest';
 
 import { ELEK_REF_VERIFIED } from './elek-prompt-budget.mjs';
 import { NOT_REVIEWED_REASONS } from './measure-review-coverage.mjs';
+import { readReasoningModes } from './reasoning-policy.mjs';
 import {
   findSuppressionKeys,
   inspectGateCheckoutIdentity,
@@ -314,31 +315,24 @@ describe('council model configuration', () => {
 
   // Independence: the validator is not also a reviewer lens, so it audits opinions it did not
   // write. Kept as its own case so a lesion on it is not hidden behind the roster pin above.
-  // AMENDED 2026-10-17 (EHAC-3622): NAMED exceptions, keyed by lens POSITION, so moving the
-  // validator's model onto any other lens still fails here. The check covers the lens's first
-  // attempt AND its one failover retry, because a retry that lands on the validator's model
-  // breaks independence just as a first attempt does.
-  //  - First attempt, Tests: owner ruling ("better than v4 pro ... and more cost effective").
-  //  - Failover, Design: minimax -> v4.1-flash under elek's next-distinct rule. The owner asked
-  //    for lenses to fall back to v4.1-flash, but this crossing has NOT been ruled on as an
-  //    independence exception. It is listed so the gate names it; it must be ruled on before
-  //    this roster ships (EHAC-3622 PR body).
-  // Removing an exception means emptying its list, not widening it.
-  it('keeps every lens off the validator model, first attempt and failover, except as named', () => {
+  // AMENDED 2026-10-17 (EHAC-3622): one NAMED first-attempt exception, keyed by lens POSITION, so
+  // moving the validator's model onto Risk, Design or Operations still fails here. The Tests
+  // exception is an owner ruling ("better than v4 pro ... and more cost effective").
+  // FAILOVER RETRIES ARE DELIBERATELY NOT CHECKED. Owner ruling 2026-10-17 (EHAC-3622), Adam:
+  // "Allow it for any lens." Any lens's one failover retry may land on the validator's model.
+  // Under this roster, Design's does. A failover check would therefore be a gate that cannot
+  // fail, so there is none. What still constrains a failover is the evidence case below: every
+  // target must have live success. Removing the exception means emptying its list, not widening it.
+  it('keeps every lens but Tests off the validator model on its first attempt', () => {
     const roster = stringInputDefault('review_models').split(',').map((model) => model.trim());
     const LENSES = ['risk', 'design', 'tests', 'operations'];
     const SHARES_VALIDATOR_BY_EXCEPTION = ['tests']; // EHAC-3622, owner ruling 2026-10-17
-    const FAILOVER_SHARES_VALIDATOR_PENDING_RULING = ['design']; // EHAC-3622, see above
     const validator = modelIdentity(stringInputDefault('validator_model'));
     const first = LENSES.filter((lens, i) => modelIdentity(roster[i]) === validator);
     const unexcused = first.filter((lens) => !SHARES_VALIDATOR_BY_EXCEPTION.includes(lens));
     expect(unexcused, `lens(es) on the validator model without an exception: ${unexcused.join(', ')}`).toEqual([]);
-    const retry = LENSES.filter((lens, i) => !first.includes(lens) && selectFailoverModel(roster, roster[i]) === validator);
-    const retryUnexcused = retry.filter((lens) => !FAILOVER_SHARES_VALIDATOR_PENDING_RULING.includes(lens));
-    expect(retryUnexcused, `lens(es) whose failover lands on the validator model without an exception: ${retryUnexcused.join(', ')}`).toEqual([]);
-    // Each exception must be live: a stale entry would silently pre-authorise a future crossing.
+    // The exception must be live: a stale entry would silently pre-authorise a future crossing.
     expect(first.filter((lens) => SHARES_VALIDATOR_BY_EXCEPTION.includes(lens))).toEqual(SHARES_VALIDATOR_BY_EXCEPTION);
-    expect(retry.filter((lens) => FAILOVER_SHARES_VALIDATOR_PENDING_RULING.includes(lens))).toEqual(FAILOVER_SHARES_VALIDATOR_PENDING_RULING);
   });
 
   // EHAC-2522 (elek #22, eha-v1.7.0). The validator-review lane fails over ONCE on
@@ -1176,7 +1170,7 @@ describe('the README documents the NOT_REVIEWED allowlist accurately (EHAC-2294)
 
 
 describe('reasoning capability policy reaches every consumer', () => {
-  it('keeps the default reasoning map empty and in step with the council roster', () => {
+  it('keeps the default reasoning map in step with the council roster', () => {
     const modes = JSON.parse(stringInputDefault('openrouter_model_reasoning_modes'));
     const canonical = (id) => id.replace(/^openrouter\//, '');
     const roster = stringInputDefault('review_models').split(',').map((id) => canonical(id.trim()));
@@ -1188,10 +1182,26 @@ describe('reasoning capability policy reaches every consumer', () => {
     // the roster's `openrouter/` spelling (elek and reasoning-policy.mjs both strip it) and the
     // same 12000 budget.
     // AMENDED 2026-10-17 (EHAC-3622): mimo left the roster and its capped entry went with it.
-    // Every remaining council model has named-effort control, so the map is empty. A future
-    // `enabled` model must come back with a measured budget and a pin here.
-    expect(modes).toEqual({});
+    // glm-5.3-flash takes the same form, for runaway reasoning that pi's named thinking does not
+    // bound (see the next case).
+    expect(modes).toEqual({ 'openrouter/z-ai/glm-5.3-flash': { mode: 'enabled', max_tokens: 4000 } });
     expect(Object.keys(modes).filter((id) => !roster.includes(canonical(id)))).toEqual([]);
+  });
+
+  // EHAC-3622 (2026-10-17). glm-5.3-flash's CI failures were reasoning runaway, not routing.
+  // Direct probes on the same OpenRouter account with the 45 KB review prompt:
+  //  - uncapped through pi: 1.9k-15.7k reasoning tokens and 21-269 s, all on GMICloud;
+  //    pi's thinking low still reached 18.7k;
+  //  - reasoning.max_tokens 4000: 4/4 in 13-40 s, 472-1151 reasoning tokens, JSON parsed.
+  // The cap is what keeps glm on the council. So this case reds if the entry is dropped, if its
+  // budget rises above the probed 4000, or if it stops being a per-model budget.
+  it('caps glm-5.3-flash reasoning at no more than the probed 4000 tokens', () => {
+    const modes = readReasoningModes(stringInputDefault('openrouter_model_reasoning_modes'));
+    const glm = modes['z-ai/glm-5.3-flash'];
+    expect(glm, 'glm-5.3-flash has no reasoning cap in openrouter_model_reasoning_modes').toBeTypeOf('object');
+    expect(glm.mode).toBe('enabled');
+    expect(Number.isSafeInteger(glm.max_tokens) && glm.max_tokens > 0, 'cap is not a positive integer').toBe(true);
+    expect(glm.max_tokens, 'glm-5.3-flash cap is above the probed 4000').toBeLessThanOrEqual(4000);
   });
 
   it('forwards the exact action input and the same map to producer and asserter', () => {

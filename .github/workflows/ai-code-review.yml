@@ -135,8 +135,9 @@ on:
         # independence rule: the Tests lens now shares the validator's model. Three distinct
         # models remain, and elek's next-distinct failover (strategy.ts selectFailoverModel)
         # becomes glm -> minimax -> v4.1-flash -> glm. So Design's one failover retry ALSO lands
-        # on the validator's model; that crossing is pending an owner ruling.
-        # workflow-invariants.test.mjs names both crossings and forbids any other.
+        # on the validator's model. OWNER RULING 2026-10-17 (EHAC-3622), Adam: "Allow it for any
+        # lens." Any lens's one failover retry may land on the validator's model. First attempts
+        # stay strict: only Tests may share it (workflow-invariants.test.mjs).
         default: 'openrouter/z-ai/glm-5.3-flash,openrouter/minimax/minimax-m3,openrouter/deepseek/deepseek-v4.1-flash,openrouter/z-ai/glm-5.3-flash'
         description: 'Comma-separated OpenRouter model ids for the council lenses (round-robin assigned).'
       openrouter_model_reasoning_modes:
@@ -154,11 +155,23 @@ on:
         # AMENDED 2026-10-16 (EHAC-2844): the key follows the Design lens to mimo-v2.6-pro, spelt
         # as in the roster (elek and reasoning-policy.mjs both strip `openrouter/`). The budget is
         # carried forward unchanged; mimo-v2.6-pro answered the capped form with HTTP 200.
-        # AMENDED 2026-10-17 (EHAC-3622): the map is empty because mimo has left the roster. Every
-        # remaining council model (glm-5.3-flash, minimax-m3, deepseek-v4.1-flash and the
-        # deepseek-v4-pro-0813 failover) has named-effort control, so all of them run as `effort`. Both elek
-        # and reasoning-policy.mjs read '{}' as "no overrides", and U9 then requires no budget.
-        default: '{}'
+        # AMENDED 2026-10-17 (EHAC-3622): the mimo entry leaves with mimo. glm-5.3-flash gets a
+        # 4000-token cap in the same form. Direct probes (coord session, same OpenRouter account,
+        # the same 45 KB review prompt) found glm's CI failures were REASONING RUNAWAY, not
+        # routing:
+        #  - Uncapped through pi: 1.9k-15.7k reasoning tokens, 21-269 s, all on GMICloud. Pi's
+        #    named thinking does NOT bound it (low reached 18.7k).
+        #  - Capped at reasoning.max_tokens 4000: 4/4 in 13-40 s, 472-1151 reasoning tokens, JSON
+        #    parsed; the routing also moved off GMICloud. At 2000: 3/3 in 24-34 s.
+        # How elek 061c438 applies it (src/openrouter-reasoning.ts):
+        #  - :135-141 resolves this entry and builds the payload;
+        #  - :119-120 sends reasoning.max_tokens = 4000 in place of effort;
+        #  - :110-113 keeps pi's output limit unchanged as max_tokens. That limit is glm's catalog
+        #    maxTokens 943717, clamped to the context window less the prompt (pi-ai 1.1.0
+        #    simple-options.js:5-9, :23), so it is far above cap + answer room.
+        # U9 (reasoning-policy.mjs) fails unless glm's telemetry shows max-tokens at 4000. The
+        # other models are unlisted and stay `effort`.
+        default: '{"openrouter/z-ai/glm-5.3-flash":{"mode":"enabled","max_tokens":4000}}'
         description: 'Canonical OpenRouter model capability map: effort (default), enabled (provider-default reasoning, with the unchanged output limit sent as max_tokens), or {"mode": ..., "max_tokens": N} to cap that model alone.'
       validator_model:
         type: string
