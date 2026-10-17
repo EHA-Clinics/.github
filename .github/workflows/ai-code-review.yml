@@ -302,9 +302,12 @@ on:
         # 0.66:1.98 to its listed 1.32:3.96 (it was budgeted at half price); it now prices the
         # validator-review failover and, with eha-v1.7.0, the one extra reviewer attempt. The
         # mimo-v2.5-pro rate is removed with the model (the orphan-rate invariant requires it).
-        # AMENDED 2026-10-17 (EHAC-3622): the mimo-v2.6-pro rate leaves with the model. Every other
-        # entry stays: v4-pro-0813 still prices the validator-review failover, and v4.1-flash now
-        # prices the Tests lens as well as the validator.
+        # AMENDED 2026-10-17 (EHAC-3622): the mimo-v2.6-pro rate leaves with the model. Under the
+        # owner's final roster every remaining entry is still used:
+        #  - glm-5.3-flash prices risk, tests and operations;
+        #  - minimax-m3 prices design;
+        #  - deepseek-v4-pro-0813 prices the independent audit (advisor_model);
+        #  - deepseek-v4.1-flash prices the validator (synthesis) and the audit-lane failover.
         default: 'openrouter/minimax/minimax-m3=0.30:1.20,openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20,openrouter/z-ai/glm-5.3-flash=0.15:0.50,openrouter/deepseek/deepseek-v4-pro-0813=1.32:3.96'
         description: 'Per-model cost rates as model=inputPerMillion:outputPerMillion, comma-separated.'
       mode:
