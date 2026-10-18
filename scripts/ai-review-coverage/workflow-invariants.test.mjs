@@ -491,7 +491,7 @@ describe('council model configuration', () => {
     };
 
     // Which evidence pins count for a shipped elek pin. One entry per shipped pin, never a
-    // wildcard. A re-pin reds above until its entry is added. An older pin may be carried only
+    // wildcard. A re-pin reds in the loop below until its entry is added. An older pin may be carried only
     // with proof that the lens path did not change:
     //  - 1af0b35 (elek #24, eha-v1.8.0, EHAC-3622 gap 1) is ADDITIVE to the lens path over
     //    061c438. Diffed 2026-10-18: src/review/lens-execution.ts is byte-identical, and the
@@ -515,11 +515,12 @@ describe('council model configuration', () => {
       expect(LIVE_SUCCESS[to].reviewer?.evidence, `${to} has no recorded success as a lens`).toMatch(/run \d{11}/);
       // The current-pin evidence must be FOR the pin the workflow ships, with a run id, so
       // evidence retained from an older elek cannot satisfy it. The only exception is an
-      // EXPLICIT carry entry below.
+      // EXPLICIT carry entry in EVIDENCE_PINS_ACCEPTED_FOR above. Pins compare on their first
+      // 7 characters, so a full SHA recorded as evidence matches as well as a short one.
       const shipped = elekPin.slice(0, 7);
       const accepted = EVIDENCE_PINS_ACCEPTED_FOR[shipped];
       expect(accepted, `no evidence-pin entry for the shipped elek ${shipped}; add one with its lens-path proof`).toBeDefined();
-      expect(accepted, `${to}'s current evidence is not for elek ${elekPin}`).toContain(LIVE_SUCCESS[to].current?.pin);
+      expect(accepted, `${to}'s current evidence is not for elek ${elekPin}`).toContain(String(LIVE_SUCCESS[to].current?.pin ?? '').slice(0, 7));
       expect(LIVE_SUCCESS[to].current.evidence, `${to} has no run id on the current pin`).toMatch(/run \d{11}/);
       expect(['reviewer', 'validator-review']).toContain(LIVE_SUCCESS[to].current.role);
     }
@@ -657,9 +658,10 @@ describe('the elek step matches the verified budget model', () => {
     // clear message beats surprising a PR author.
     expect(match[1]).toBe(ELEK_REF_VERIFIED);
     // EHAC-3622 gap 1: exactly ONE elek step. A second `uses:` at another ref would run elek
-    // code nobody vendored or verified, while the first match above still passed. Comments are
-    // excluded, so pin history in prose cannot trip it.
-    const uses = [...withoutComments(source()).matchAll(/uses: EHA-Clinics\/elek@([0-9a-f]{40})/g)].map((m) => m[1]);
+    // code nobody vendored or verified, while the first match above still passed. The ref is
+    // captured whatever its form (SHA, tag, branch), so `@main` cannot slip past a hex-only
+    // pattern. Comments are excluded, so pin history in prose cannot trip it.
+    const uses = [...withoutComments(source()).matchAll(/uses:\s*EHA-Clinics\/elek@(\S+)/g)].map((m) => m[1]);
     expect(uses, 'the workflow must pin EHA-Clinics/elek in exactly one step').toEqual([ELEK_REF_VERIFIED]);
   });
 
@@ -677,11 +679,28 @@ describe('the elek step matches the verified budget model', () => {
     ).not.toBe(modelIdentity(stringInputDefault('validator_model')));
     const priced = stringInputDefault('cost_rates').split(',').map((entry) => modelIdentity(entry.split('=')[0]));
     expect(priced, 'validator_failover_model has no cost_rates entry').toContain(modelIdentity(failover));
-    const forwards = withoutComments(source())
+    // Forwarded in the elek step's own `with:`, not merely somewhere in the file.
+    const step = withoutComments(source()).match(/uses: EHA-Clinics\/elek@[0-9a-f]{40}[\s\S]*?\n {8}with:\n((?: {10}.*\n| *\n)+)/);
+    expect(step, 'elek step with: block not found').not.toBeNull();
+    const forwards = step[1]
       .split('\n')
       .filter((line) => /^ {10}validator_failover_model: \$\{\{ inputs\.validator_failover_model \}\}\s*$/.test(line));
     expect(forwards, 'the elek step must forward validator_failover_model exactly once').toHaveLength(1);
     expect(failover).toBe('openrouter/deepseek/deepseek-v4-pro-0813');
+  });
+
+  // EHAC-3622 gap 1. elek only runs the synthesis failover when it can MEASURE the job clock
+  // (elek 1af0b35 action.yml validator_failover_model): job_timeout_minutes must reach elek, and
+  // the job must be a Linux runner with no `container:` (the clock is read from the runner's
+  // Runner.Worker process). Lose any of the three and the default is silently inert: every
+  // failed synthesis is still a lost council, behind a configured failover.
+  it('keeps the review job able to run the synthesis failover (Linux, no container, job cap forwarded)', () => {
+    const review = jobBlock(source(), /^ {4}name: AI Code Review \(/);
+    const lines = withoutComments(review.block).split('\n');
+    expect(lines.some((l) => /^ {4}runs-on: ubuntu-/.test(l)), 'the review job must run on an ubuntu runner').toBe(true);
+    expect(lines.filter((l) => /^ {4}container:/.test(l)), 'the review job must not run in a container').toEqual([]);
+    const step = withoutComments(source()).match(/uses: EHA-Clinics\/elek@[0-9a-f]{40}[\s\S]*?\n {8}with:\n((?: {10}.*\n| *\n)+)/);
+    expect(step?.[1] ?? '', 'the elek step must forward job_timeout_minutes').toMatch(/^ {10}job_timeout_minutes: \$\{\{ inputs\.job_timeout_minutes \}\}\s*$/m);
   });
 
   it('gives the elek step `id: review` (Fault 4 — the outputs were unreachable without it)', () => {
