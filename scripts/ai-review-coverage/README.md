@@ -112,11 +112,13 @@ as `jobs.review.outputs.coverage_json`, consumed as `needs.review.outputs.covera
                 "regime": "FULL | SLICES", "slice_ceiling_observed": 3846, "prompt_chars": 52715,
                 "ranking_anomalies": [] },
   "review":   { "conclusion": "success", "input_tokens": 83000, "cost_usd": 0.0496,
-                "actor": "...", "event": "pull_request" },
+                "actor": "...", "event": "pull_request",
+                "findings_count": 3 },                // EHAC-3675; null = not known, never 0
   "models":   { "runs": [ { "role": "reviewer", "lens_id": "risk", "model_label": "...",
                             "conclusion": "success", "failure_class": null,
                             "assigned_model_label": "...", "actual_model_label": "...",
                             "failover_used": false, "attempt_count": 1,
+                            "findings_count": 2,      // EHAC-3675; null = not known, never 0
                             "serving_provider": "Novita", "quantization": null,
                             "native_tokens_reasoning": 1187, "generation_time_ms": 41020,
                             "latency_ms": 890, "reasoning": { "...": "see U9" } } ],
@@ -140,6 +142,16 @@ as `jobs.review.outputs.coverage_json`, consumed as `needs.review.outputs.covera
 ```
 
 It carries **paths, sizes and counts only** — never diff content, never tokens, never secrets.
+
+**Findings counts (EHAC-3675, elek eha-v1.9.0).** `models.runs[].findings_count` copies elek's
+`modelRuns[].findingsCount` (findings in that run's decisive report) and `review.findings_count`
+copies `review.findingsCount` (findings in the synthesized review). elek writes both even when
+the council breaches, so an errored council still shows whether its finished lenses found
+anything. A non-negative integer is copied as is; anything else (absent, `null`, a string, a
+negative or fractional number) is recorded as `null`, which means "not known" (the run failed,
+there was no usable synthesis, or an older elek pin did not report it) and never zero. Both
+fields are additive and `schema` stays `1`, as for the EHAC-2231 and EHAC-2280 fields. Nothing
+in the gate asserts on them yet.
 
 ---
 
