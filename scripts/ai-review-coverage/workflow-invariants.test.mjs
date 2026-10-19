@@ -313,17 +313,11 @@ describe('council model configuration', () => {
     // tests and operations, and minimax takes design. Two reviewer families remain, plus
     // deepseek-v4-pro-0813 as the independent audit (advisor) and deepseek-v4.1-flash as the
     // validator. The collapse this guards against (one model on every lens) still fails.
-    // AMENDED 2026-10-19 (EHAC-3644): deepseek-v4-pro-0813 is now both the advisor and the
-    // validator; the two reviewer families are unchanged.
     expect(new Set(models).size).toBeGreaterThanOrEqual(2);
 
     // AMENDED 2026-10-16 (EHAC-2844, ruling 1): the validator is deepseek-v4.1-flash, with
     // deepseek-v4-pro-0813 as its one validator-review failover (EHAC-2522, below).
-    // AMENDED 2026-10-19 (EHAC-3644): the validator moves back to deepseek-v4-pro-0813. On elek
-    // eha-v1.8.0 the v4.1-flash synthesis failed its first attempt in 4 of 12 eha_care councils
-    // and the v4-pro-0813 failover succeeded all 4. v4.1-flash is now the synthesis failover
-    // (pinned in the final-synthesis case below).
-    expect(stringInputDefault('validator_model')).toBe('openrouter/deepseek/deepseek-v4-pro-0813');
+    expect(stringInputDefault('validator_model')).toBe('openrouter/deepseek/deepseek-v4.1-flash');
   });
 
   // Independence: the validator is not also a reviewer lens, so it audits opinions it did not
@@ -349,16 +343,11 @@ describe('council model configuration', () => {
   // that neither wrote a lens report nor reconciles them. Its one pinned failover must also
   // differ from it: elek refuses to re-ask the model that just failed (strategy.ts:258-263),
   // which would leave the audit lane with no failover at all.
-  // RELAXED 2026-10-19 (EHAC-3644). OWNER RULING 2026-10-19 (EHAC-3644), Adam: "Accept it." The
-  // advisor may share the validator's model (both deepseek-v4-pro-0813), so the
-  // `advisor is the validator model` assertion is dropped. elek 1af0b35 resolveReviewPlan
-  // (src/review/strategy.ts:713-759) still runs the distinct `advisor-independent-audit` lens
-  // whenever advisor_model is set, even when it equals validator_model. The advisor must still
-  // not be a lens model, and its audit-lane failover must still differ from it.
-  it('runs the audit lens on a model that is not a lens model, and fails it over elsewhere', () => {
+  it('runs the audit lens on a model that is neither a lens nor the validator, and fails it over elsewhere', () => {
     const advisor = stringInputDefault('advisor_model');
     const lensModels = stringInputDefault('review_models').split(',').map(modelIdentity);
     expect(lensModels, 'the advisor model is also a lens model').not.toContain(modelIdentity(advisor));
+    expect(modelIdentity(advisor), 'the advisor model is the validator model').not.toBe(modelIdentity(stringInputDefault('validator_model')));
     expect(
       modelIdentity(stringInputDefault('validator_review_failover_model')),
       'the audit-lane failover is the advisor model itself',
@@ -423,9 +412,6 @@ describe('council model configuration', () => {
   // EHAC-2844 (2026-10-16). Rates read from the OpenRouter endpoint listings: v4-pro-0813 was
   // budgeted at HALF its price (0.66:1.98 against 1.32:3.96), so max_cost_usd under-counted the
   // validator; with v4-pro-0813 now the failover, its rate prices the one extra attempt.
-  // AMENDED 2026-10-19 (EHAC-3644): v4-pro-0813's rate prices the advisor and the synthesis
-  // validator; v4.1-flash's prices the synthesis failover, the audit-lane failover and the solo
-  // `model`. The values are unchanged.
   it('prices every council model at its listed OpenRouter rate', () => {
     const rates = stringInputDefault('cost_rates').split(',').map((entry) => entry.trim());
     expect(rates).toContain('openrouter/minimax/minimax-m3=0.30:1.20');
@@ -700,10 +686,7 @@ describe('the elek step matches the verified budget model', () => {
       .split('\n')
       .filter((line) => /^ {10}validator_failover_model: \$\{\{ inputs\.validator_failover_model \}\}\s*$/.test(line));
     expect(forwards, 'the elek step must forward validator_failover_model exactly once').toHaveLength(1);
-    // AMENDED 2026-10-19 (EHAC-3644): the synthesis models swap. v4-pro-0813 is the validator,
-    // and v4.1-flash (8 of 12 eha_care syntheses on eha-v1.8.0 as the first attempt) is its one
-    // failover.
-    expect(failover).toBe('openrouter/deepseek/deepseek-v4.1-flash');
+    expect(failover).toBe('openrouter/deepseek/deepseek-v4-pro-0813');
   });
 
   // EHAC-3622 gap 1. elek only runs the synthesis failover when it can MEASURE the job clock
