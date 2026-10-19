@@ -125,7 +125,8 @@ on:
         # Both were admitted by a key-backed probe through the eha_care repo key and the callers'
         # provider object (data_collection deny, require_parameters true): eha_care #4770, run
         # 38911217929, HTTP 200 on each, with glm-5.3-flash 200 and kimi-k2.7-code 404 as the
-        # controls. v4.1-flash becomes the validator, so no lens shares the validator's model.
+        # controls. v4.1-flash becomes the validator (until 2026-10-19, EHAC-3644: v4-pro-0813 is the
+        # validator again), so no lens shares the validator's model.
         # minimax-m3 supports named-effort reasoning, so no reasoning-modes entry is added.
         # AMENDED 2026-10-17 (EHAC-3622): mimo-v2.6-pro leaves the council. On elek eha-v1.7.0
         # (061c438, 27 councils) it finished design 17/27 (9 timeouts at 900s) and only 1/14 as a
@@ -190,7 +191,22 @@ on:
         # "No API key found for deepseek".
         # AMENDED 2026-10-16 (EHAC-2844, owner ruling 1): the validator moves to
         # deepseek-v4.1-flash (probed 200), and v4-pro-0813 becomes its one failover below.
-        default: 'openrouter/deepseek/deepseek-v4.1-flash'
+        # AMENDED 2026-10-19 (EHAC-3644): the validator moves back to deepseek-v4-pro-0813, and
+        # v4.1-flash becomes its one failover below. On elek eha-v1.8.0, across the 12 eha_care
+        # councils since 2026-10-18T02:10Z, the v4.1-flash synthesis failed its first attempt 4
+        # times:
+        #   - run 39089613326: invalid_output after 84.3 s;
+        #   - run 39089682787: stall at 180.3 s;
+        #   - run 39107939622: stall at 140.6 s;
+        #   - run 39110792240: invalid_output after 88.6 s.
+        # The v4-pro-0813 failover succeeded all 4 (371.6 s, 258.1 s, 230.5 s, 219.3 s).
+        # v4-pro-0813 was the production synthesis model before 2026-10-16: validator 37/37 at
+        # .github c410bfe, and 94 of 102 eha_care syntheses on 2026-10-15 finished within 300 s.
+        # The max_cost_usd estimate does not change: it already prices both models whenever the
+        # failover can run (elek 1af0b35 strategy.ts costEstimateSynthesisModels).
+        # Residual risk: a synthesis TIMEOUT still has no failover. elek retries the synthesis
+        # only on stall or invalid_output.
+        default: 'openrouter/deepseek/deepseek-v4-pro-0813'
         description: 'Model that reconciles and validates lens findings before posting.'
       advisor_model:
         type: string
@@ -203,7 +219,14 @@ on:
         # deepseek-v4-pro-0813 evidence: 75/75 in validator roles at .github c410bfe
         # (validator-review median 490 s, p90 739 s, max 938 s, all within V = 1200 s), 1/1 as the
         # validator-review failover on 061c438, and 672.7 s as the failover in canary run
-        # 39063907146. It is neither the validator nor any lens (workflow-invariants.test.mjs).
+        # 39063907146. Until 2026-10-19 it was neither the validator nor any lens.
+        # AMENDED 2026-10-19 (EHAC-3644): it now shares the validator's model. OWNER RULING
+        # 2026-10-19 (EHAC-3644), Adam: "Accept it." The advisor may run the same model as the
+        # validator (both v4-pro-0813). elek 1af0b35 resolveReviewPlan (strategy.ts:713-759) still
+        # runs the distinct `advisor-independent-audit` lens whenever this input is set, even when
+        # it equals validator_model, so the audit keeps its own lens, budget and failover. It must
+        # still not be a lens model, and validator_review_failover_model must still differ from it
+        # (workflow-invariants.test.mjs).
         default: 'openrouter/deepseek/deepseek-v4-pro-0813'
         description: 'Model for the independent audit (advisor) lens that runs beside the reviewer lenses. Empty reuses validator_model; off, none, false or disabled skip the audit.'
       validator_review_failover_model:
@@ -251,12 +274,19 @@ on:
         # 37/37 at .github c410bfe, and 94 of 102 eha_care syntheses on 2026-10-15 finished
         # within 300 s. elek refuses, at preflight, a value whose last two path segments match
         # validator_model.
-        # CALLER RULE: a caller that overrides validator_model to deepseek-v4-pro-0813 MUST also
+        # AMENDED 2026-10-19 (EHAC-3644): the two models swap. v4-pro-0813 is now validator_model
+        # (it succeeded all 4 failovers on eha-v1.8.0; evidence on validator_model above), and
+        # the failover becomes deepseek-v4.1-flash, which succeeded 8 of those 12 syntheses as
+        # the first attempt. It stays the one failover.
+        # CALLER RULE: a caller that overrides validator_model to deepseek-v4.1-flash MUST also
         # set validator_failover_model ('' or another model) BEFORE re-pinning to this SHA. Otherwise
         # it inherits an identical failover and elek refuses every review at preflight. The
-        # failure is loud, not silent. Census 2026-10-18: 0 of the 27 caller workflow files in
-        # EHA-Clinics and eHealthAfrica override validator_model or this input.
-        default: 'openrouter/deepseek/deepseek-v4-pro-0813'
+        # failure is loud, not silent. Census 2026-10-19 (default branches of every non-archived
+        # repository in EHA-Clinics and eHealthAfrica): 30 caller workflow files in 16
+        # repositories. None overrides validator_model to deepseek-v4.1-flash or sets this
+        # input. One overrides validator_model: eHealthAfrica/planfeld (pinned c69fe14), to
+        # xiaomi/mimo-v2.5-pro, which differs from this default.
+        default: 'openrouter/deepseek/deepseek-v4.1-flash'
         description: 'Model the FINAL synthesis fails over to once, on the same lens reports, when its first attempt ends stall or invalid_output. Empty disables it. Must differ from validator_model (last two path segments). Runs only within the live job clock; needs job_timeout_minutes.'
       validator_run_timeout_seconds:
         type: string
@@ -337,6 +367,14 @@ on:
         #  - minimax-m3 prices design;
         #  - deepseek-v4-pro-0813 prices the independent audit (advisor_model);
         #  - deepseek-v4.1-flash prices the validator (synthesis) and the audit-lane failover.
+        # AMENDED 2026-10-19 (EHAC-3644): the synthesis models swap; the rates are unchanged and
+        # every entry is still used:
+        #  - glm-5.3-flash prices risk, tests and operations;
+        #  - minimax-m3 prices design;
+        #  - deepseek-v4-pro-0813 prices the independent audit (advisor_model) AND the synthesis
+        #    (validator_model);
+        #  - deepseek-v4.1-flash prices the synthesis failover (validator_failover_model), the
+        #    audit-lane failover (validator_review_failover_model) and the solo `model`.
         default: 'openrouter/minimax/minimax-m3=0.30:1.20,openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20,openrouter/z-ai/glm-5.3-flash=0.15:0.50,openrouter/deepseek/deepseek-v4-pro-0813=1.32:3.96'
         description: 'Per-model cost rates as model=inputPerMillion:outputPerMillion, comma-separated.'
       mode:
