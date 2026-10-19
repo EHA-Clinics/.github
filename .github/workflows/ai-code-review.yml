@@ -227,8 +227,14 @@ on:
         # (strategy.ts:252-263). It becomes deepseek-v4.1-flash: 24/27 as validator-review on
         # 061c438, and 4/4 parse OK in a validator-shaped probe. The guard arithmetic is
         # unchanged, because the advisor lane keeps V (role-timeouts.ts).
+        # AMENDED 2026-10-19 (EHAC-3644, elek #25, eha-v1.9.0): max_turns now fails this lane over
+        # too, on the same terms as invalid_output. On 2026-10-19 deepseek-v4-pro-0813 hit max_turns
+        # at 60-61 turns as the advisor on eha_care #4866 (run 39234890907) and eha-care-infra #1206
+        # (run 39243801784). Both were runaway loops with a max idle of ~4 s, so neither stall nor
+        # timeout, and each breached its council. timeout and stall still never fail over here, and
+        # the serial-guard arithmetic above is unchanged.
         default: 'openrouter/deepseek/deepseek-v4.1-flash'
-        description: 'Pinned model the validator-review lane fails over to once when its first attempt ends invalid_output. Empty disables the failover. A pinned failover makes the serial guard require 37 + 3 x run_timeout_seconds when validator_run_timeout_seconds is unset.'
+        description: 'Pinned model the validator-review lane fails over to once when its first attempt ends invalid_output or max_turns. Empty disables the failover. A pinned failover makes the serial guard require 37 + 3 x run_timeout_seconds when validator_run_timeout_seconds is unset.'
       validator_failover_model:
         type: string
         # EHAC-3622 gap 1 (elek #24, eha-v1.8.0). Until now the FINAL synthesis (validator_model)
@@ -241,6 +247,11 @@ on:
         # Both classes belong to the (model, prompt) pair, so a different model is a real remedy.
         # elek re-runs ONLY the synthesis, once, on the same lens reports, and only on stall or
         # invalid_output (never timeout or max_turns).
+        # AMENDED 2026-10-19 (EHAC-3644, elek #25, eha-v1.9.0): max_turns joins stall and
+        # invalid_output. On 2026-10-19 deepseek-v4-pro-0813 hit max_turns at 60-61 turns as the
+        # synthesis on eha_care #4781 (run 39226632625) and eha-care-infra #1205 (runs 39233239224
+        # and 39234047319): runaway loops with a max idle of ~4 s, each breaching a council that had
+        # its lens reports in hand. timeout still never fails over.
         # Its budget is min(V, what the live job clock leaves after a 60 s margin), with a floor
         # of min(300 s, V). The clock is measured from the runner's Runner.Worker start, so it
         # needs job_timeout_minutes (always passed here) and a Linux job with no `container:`
@@ -257,7 +268,7 @@ on:
         # failure is loud, not silent. Census 2026-10-18: 0 of the 27 caller workflow files in
         # EHA-Clinics and eHealthAfrica override validator_model or this input.
         default: 'openrouter/deepseek/deepseek-v4-pro-0813'
-        description: 'Model the FINAL synthesis fails over to once, on the same lens reports, when its first attempt ends stall or invalid_output. Empty disables it. Must differ from validator_model (last two path segments). Runs only within the live job clock; needs job_timeout_minutes.'
+        description: 'Model the FINAL synthesis fails over to once, on the same lens reports, when its first attempt ends stall, invalid_output or max_turns. Empty disables it. Must differ from validator_model (last two path segments). Runs only within the live job clock; needs job_timeout_minutes.'
       validator_run_timeout_seconds:
         type: string
         # EHAC-2833 (2026-09-22): the VALIDATOR roles (validator-review audit lens + final
@@ -846,7 +857,7 @@ jobs:
         # cost_usd / conclusion as outputs at EVERY ref, and all of them were unreachable
         # purely for want of a step id. The coverage measurement below consumes them.
         id: review
-        uses: EHA-Clinics/elek@1af0b35956366951a83723d6f86559f2c949ea0d # Elek #24 eha-v1.8.0 (EHAC-3622): final-synthesis failover (validator_failover_model, stall/invalid_output, live job clock); on top of #19-#23 eha-v1.7.0: pi 1.1.0, source-first fair packing, U4 reviewed-head fields, validator-review invalid_output failover, one-shot lens timeout retry
+        uses: EHA-Clinics/elek@dc50801eca55e9b7641f91e1aff9770e8df6cab3 # Elek #25 eha-v1.9.0 (EHAC-3644, EHAC-3675): max_turns failover for the advisor and the final synthesis, the turn budget stated in the system prompt, modelRuns[].findingsCount and review.findingsCount; on top of #24 eha-v1.8.0: final-synthesis failover (validator_failover_model, live job clock); on top of #19-#23 eha-v1.7.0: pi 1.1.0, source-first fair packing, U4 reviewed-head fields, validator-review invalid_output failover, one-shot lens timeout retry
         with:
           # pi's native openrouter adapter — elek's tested path. The OpenAI-compatible
           # Databricks AI Gateway (provider: openai) hung pi indefinitely on tool-enabled
@@ -1018,7 +1029,7 @@ jobs:
           REVIEW_COST_USD: ${{ steps.review.outputs.cost_usd }}
           # The LITERAL pinned SHA, not an expression: this is what makes branch U1 detect a
           # future elek bump that forgets to re-verify elek-prompt-budget.mjs.
-          ELEK_REF: 1af0b35956366951a83723d6f86559f2c949ea0d
+          ELEK_REF: dc50801eca55e9b7641f91e1aff9770e8df6cab3
           REQUESTED_STRATEGY: ${{ inputs.review_strategy }}
           ACTOR_FILTER: ${{ inputs.actor_filter }}
           # EHAC-2103: the CONFIGURED council, so the coverage record can put what we asked for

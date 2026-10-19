@@ -361,7 +361,8 @@ describe('council model configuration', () => {
   });
 
   // EHAC-2522 (elek #22, eha-v1.7.0). The validator-review lane fails over ONCE on
-  // invalid_output to a pinned model. elek's own default is empty (no failover), so the real
+  // invalid_output (and, since elek #25 eha-v1.9.0, EHAC-3644, on max_turns) to a pinned
+  // model. elek's own default is empty (no failover), so the real
   // default lives here, and it only works if the elek step forwards it.
   it('defaults and forwards the validator-review failover model', () => {
     const failover = stringInputDefault('validator_review_failover_model');
@@ -498,8 +499,16 @@ describe('council model configuration', () => {
     //    lens functions in strategy.ts (selectFailoverModel, resolveLensRetry,
     //    resolveReviewPlan) are unchanged; strategy.ts has additions only. The only existing
     //    code that changed is run.ts's final-synthesis attempt and its cost estimate.
+    //  - dc50801 (elek #25, eha-v1.9.0, EHAC-3644) leaves the REVIEWER failover path as it was
+    //    at 1af0b35, and so carries the same evidence. Diffed 2026-10-19: lens-execution.ts
+    //    changed one doc comment only; selectFailoverModel and resolveReviewPlan are unchanged;
+    //    in resolveLensRetry only the validator-review branch moved (max_turns joins
+    //    invalid_output for the pinned failover), and the reviewer branch below it is unchanged.
+    //    One change does reach reviewer lenses: pi.ts appends a sentence stating the turn budget
+    //    to every review system prompt. It changes no model assignment or failover target.
     const EVIDENCE_PINS_ACCEPTED_FOR = {
       '1af0b35': ['1af0b35', '061c438'],
+      dc50801: ['dc50801', '1af0b35', '061c438'],
     };
 
     const roster = stringInputDefault('review_models').split(',');
@@ -668,7 +677,8 @@ describe('the elek step matches the verified budget model', () => {
   // EHAC-3622 gap 1 (elek #24, eha-v1.8.0). The FINAL synthesis fails over once, on stall or
   // invalid_output, to validator_failover_model. eha_care runs 39038897722 (stall), and
   // 39037993447 and 39080982632 (invalid_output), each lost a council whose every lens was
-  // healthy. The failover only helps if it is a DIFFERENT model: elek refuses a same-identity
+  // healthy. elek #25 (eha-v1.9.0, EHAC-3644) adds max_turns to those classes. The failover
+  // only helps if it is a DIFFERENT model: elek refuses a same-identity
   // value at preflight, which would turn every council red. It must be priced, or max_cost_usd
   // under-counts it. And it must reach elek, or the default is inert.
   it('fails the final synthesis over to a distinct, priced model that elek actually receives', () => {
