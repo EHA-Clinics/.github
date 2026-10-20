@@ -151,6 +151,16 @@ export const REVIEWER_ROLES = Object.freeze(['reviewer']);
 export const VALIDATOR_ROLES = Object.freeze(['validator', 'validator-review']);
 
 /**
+ * A findings count as elek reports it (EHAC-3675, elek eha-v1.9.0): a non-negative integer is
+ * copied; anything else (absent, null, a string, a negative or fractional number) is null.
+ * Deliberately stricter than the Number() coercion used for token counts: a count that elek did
+ * not report as a count must not turn into one here, and least of all into 0.
+ */
+function findingsCountOf(value) {
+  return Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+/**
  * Derive the per-lens model record from elek's `review_summary_json.modelRuns[]` (EHAC-2162,
  * EHAC-2103).
  *
@@ -231,6 +241,11 @@ export function deriveModels(summary, env = {}) {
           : null,
     failover_used: typeof r?.failoverUsed === 'boolean' ? r.failoverUsed : null,
     attempt_count: Number.isFinite(Number(r?.attemptCount)) ? Number(r.attemptCount) : null,
+    // EHAC-3675 (elek eha-v1.9.0). How many findings this run's decisive report held, recorded
+    // so an ERRORED council still shows whether its finished lenses found anything. ADDITIVE and
+    // null-safe like the block above, and schema stays 1. null means "not known" (the run
+    // failed, its output was not a review, or an older pin did not report it), never zero.
+    findings_count: findingsCountOf(r?.findingsCount),
     // EHAC-2280 (AC #1). WHAT ACTUALLY SERVED THIS RUN. All ADDITIVE and all null-safe, in the
     // same idiom as the EHAC-2231 block above: a record produced by an older elek pin, or by a
     // run that did not go through OpenRouter, simply carries nulls, and nothing downstream may
@@ -720,6 +735,10 @@ export function buildCoverage({ diffText, env = {}, context = {}, inventoryCap =
       failure_message: typeof summary?.review?.failureMessage === 'string' && summary.review.failureMessage !== ''
         ? summary.review.failureMessage
         : null,
+      // EHAC-3675 (elek eha-v1.9.0). Findings in the synthesized review. Additive; schema stays
+      // 1. null means "not known" (no usable synthesis, or an older pin), never zero: a failed
+      // synthesis posts generic text, and reading that as 0 would say "no findings".
+      findings_count: findingsCountOf(summary?.review?.findingsCount),
     },
     models,
     rollup: attribution.rollup,
@@ -798,6 +817,7 @@ function unknownRecord(reasons, { env = {}, context = {} } = {}) {
       terminal_reason: null,
       skip_reason: null,
       failure_message: null,
+      findings_count: null,
     },
     // Shape-consistent with buildCoverage so the asserter never has to special-case which
     // producer path emitted the record. A null `runs` means "not measured", which the

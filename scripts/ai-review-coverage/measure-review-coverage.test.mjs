@@ -954,3 +954,65 @@ describe('deriveModels — OpenRouter serving-endpoint capture (EHAC-2280)', () 
     expect(runs[2].generation_time_ms).toBeNull();
   });
 });
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════════
+ * EHAC-3675 (elek eha-v1.9.0) — findings counts per run and for the synthesized review.
+ * ═══════════════════════════════════════════════════════════════════════════════════════════ */
+describe('findings counts are copied from elek, and null means "not known" (EHAC-3675)', () => {
+  // Shaped as elek dc50801 emits it: modelRuns[].findingsCount is a number or null, written
+  // even when the council later breaches.
+  const runWith = (lensId, findingsCount) => ({
+    role: 'reviewer',
+    lensId,
+    modelLabel: 'openrouter/z-ai/glm-5.3-flash',
+    conclusion: 'success',
+    findingsCount,
+  });
+
+  it("copies a lens run's findingsCount: 2 stays 2, and 0 stays 0 (never null)", () => {
+    const runs = deriveModels({ modelRuns: [runWith('risk', 2), runWith('design', 0)] }).runs;
+    expect(runs.map((r) => r.findings_count)).toEqual([2, 0]);
+    // "the lens found nothing" and "we do not know" are different facts; a falsy check merges them.
+    expect(runs[1].findings_count).not.toBeNull();
+  });
+
+  it('records null when the run carries no findingsCount (an older pin, or elek said null)', () => {
+    const legacy = { role: 'reviewer', lensId: 'risk', modelLabel: 'm', conclusion: 'failure' };
+    const runs = deriveModels({ modelRuns: [legacy, runWith('design', null)] }).runs;
+    expect(runs[0]).toHaveProperty('findings_count');
+    expect(runs.map((r) => r.findings_count)).toEqual([null, null]);
+  });
+
+  it('refuses anything that is not a non-negative integer rather than coercing it', () => {
+    const junk = ['2', -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, true, { n: 1 }, [3]];
+    const runs = deriveModels({ modelRuns: junk.map((v, i) => runWith(`l${i}`, v)) }).runs;
+    expect(runs.map((r) => r.findings_count)).toEqual(junk.map(() => null));
+  });
+
+  const coverageWithReview = (review) =>
+    buildCoverage({
+      diffText: read('small-complete.diff'),
+      env: healthyEnv({
+        REVIEW_SUMMARY_JSON: JSON.stringify({ ...JSON.parse(promptBudgetSummary()), review }),
+      }),
+      context: healthyContext({ changedFilesApi: 2 }),
+    });
+
+  it('copies review.findingsCount into the review block, 0 included', () => {
+    expect(coverageWithReview({ findingsCount: 3 }).review.findings_count).toBe(3);
+    expect(coverageWithReview({ findingsCount: 0 }).review.findings_count).toBe(0);
+  });
+
+  it('records review.findings_count as null when elek reports none, or reports junk', () => {
+    const absent = coverageWithReview({ terminalReason: 'completed' });
+    expect(absent.review).toHaveProperty('findings_count');
+    expect(absent.review.findings_count).toBeNull();
+    expect(coverageWithReview({ findingsCount: null }).review.findings_count).toBeNull();
+    expect(coverageWithReview({ findingsCount: -2 }).review.findings_count).toBeNull();
+    expect(coverageWithReview({ findingsCount: '4' }).review.findings_count).toBeNull();
+    // The always-emittable UNKNOWN record keeps the same shape.
+    const unknown = buildCoverage({ diffText: undefined, env: {}, context: {} });
+    expect(unknown.review).toHaveProperty('findings_count');
+    expect(unknown.review.findings_count).toBeNull();
+  });
+});
