@@ -32,9 +32,10 @@ const healthy = (runId, createdAt) =>
 
 describe('computeLensFailures', () => {
   it('alerts when one lens fails in two councils inside 24h', () => {
+    // Deliberately NOT newest-first: the reader must order the hits itself.
     const entries = [
-      council('run-1', '2026-10-27T10:00:00Z', [attempt('tests', 'failure', { failure_class: 'timeout' }), attempt('risk', 'success')]),
       council('run-2', '2026-10-27T14:00:00Z', [attempt('tests', 'failure', { failure_class: 'runaway' }), attempt('risk', 'success')]),
+      council('run-1', '2026-10-27T10:00:00Z', [attempt('tests', 'failure', { failure_class: 'timeout' }), attempt('risk', 'success')]),
       healthy('run-3', '2026-10-27T18:00:00Z'),
     ];
     const report = computeLensFailures(entries);
@@ -43,7 +44,14 @@ describe('computeLensFailures', () => {
     expect(report.alerts[0].lens).toBe('tests');
     expect(report.alerts[0].failures).toBe(2);
     expect(report.alerts[0].failure_classes).toEqual(['runaway', 'timeout']);
-    expect(renderMarkdown(report)).toContain('| tests | **2** |');
+    // Ordered independently of the input order.
+    expect(report.alerts[0].first_seen).toBe('2026-10-27T10:00:00Z');
+    expect(report.alerts[0].last_seen).toBe('2026-10-27T14:00:00Z');
+    expect(report.alerts[0].latest_run).toBe('run-2');
+    const markdown = renderMarkdown(report);
+    expect(markdown).toContain('| tests | **2** |');
+    // The de-duplication marker the workflow greps for.
+    expect(markdown).toContain('<!-- lens-alert lens=tests last-run=run-2 -->');
   });
 
   it('stays quiet for a single failure, and for failures outside the window', () => {
@@ -80,6 +88,27 @@ describe('computeLensFailures', () => {
       council('run-2', '2026-10-27T14:00:00Z', [{ ...attempt('tests', 'failure'), role: 'validator' }]),
     ];
     expect(computeLensFailures(entries).alerts).toEqual([]);
+  });
+
+  it('bounds the window at the anchor when `now` is supplied', () => {
+    const entries = [
+      council('run-1', '2026-10-27T10:00:00Z', [attempt('tests', 'failure')]),
+      council('run-2', '2026-10-27T23:00:00Z', [attempt('tests', 'failure')]),
+    ];
+    // Anchored at noon: run-1 is inside 24h, run-2 is in the future and excluded.
+    const report = computeLensFailures(entries, { now: '2026-10-27T12:00:00Z' });
+    expect(report.alerts).toEqual([]);
+    expect(report.inspected).toBe(1);
+  });
+
+  it('never emits an unsafe lens id into the issue path', () => {
+    const entries = [
+      council('run-1', '2026-10-27T10:00:00Z', [attempt('tests; rm -rf /', 'failure')]),
+      council('run-2', '2026-10-27T14:00:00Z', [attempt('tests; rm -rf /', 'failure')]),
+    ];
+    const report = computeLensFailures(entries);
+    expect(report.alerts[0].lens).toBe('invalid-lens-id');
+    expect(renderMarkdown(report)).not.toContain('rm -rf');
   });
 
   it('refuses to report over an empty sample', () => {

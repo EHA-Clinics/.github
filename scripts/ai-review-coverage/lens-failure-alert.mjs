@@ -29,6 +29,8 @@ import { classifyEntry, attemptsOf } from './read-coverage-streak.mjs';
 export const DEFAULT_WINDOW_HOURS = 24;
 export const DEFAULT_THRESHOLD = 2;
 export const DEFAULT_LIMIT = 20;
+/** Lens ids reach an issue title and a shell loop; anything else is not a lens id. */
+export const LENS_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 /**
  * Count decisive reviewer-lens failures per lens inside the rolling window.
@@ -60,7 +62,11 @@ export function computeLensFailures(entries, options = {}) {
   const anchor = now ?? newest;
   const sinceMs = new Date(anchor).getTime() - windowHours * 3_600_000;
   const since = new Date(sinceMs).toISOString();
-  const inWindow = councils.filter((entry) => new Date(entry.created_at).getTime() >= sinceMs);
+  const anchorMs = new Date(anchor).getTime();
+  const inWindow = councils.filter((entry) => {
+    const at = new Date(entry.created_at).getTime();
+    return at >= sinceMs && at <= anchorMs;
+  });
 
   /** lens_id -> failures in the window */
   const failures = new Map();
@@ -70,7 +76,8 @@ export function computeLensFailures(entries, options = {}) {
     const decisive = new Map();
     for (const attempt of entry.attempts) {
       if (attempt.role && attempt.role !== 'reviewer') continue;
-      const lens = attempt.lens_id ?? 'unknown';
+      const rawLens = attempt.lens_id ?? 'unknown';
+      const lens = LENS_ID.test(rawLens) ? rawLens : 'invalid-lens-id';
       const previous = decisive.get(lens);
       if (previous === undefined || (attempt.attempt ?? 1) >= (previous.attempt ?? 1)) {
         decisive.set(lens, attempt);
@@ -89,14 +96,17 @@ export function computeLensFailures(entries, options = {}) {
     }
   }
 
+  for (const hits of failures.values()) hits.sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0));
+
   const alerts = [...failures.entries()]
     .filter(([, hits]) => hits.length >= threshold)
     .map(([lens, hits]) => ({
       lens,
       failures: hits.length,
-      first_seen: hits[hits.length - 1].created_at,
-      last_seen: hits[0].created_at,
+      first_seen: hits[0].created_at,
+      last_seen: hits[hits.length - 1].created_at,
       runs: hits,
+      latest_run: hits[hits.length - 1].run_id,
       failure_classes: [...new Set(hits.map((hit) => hit.failure_class))].sort(),
     }))
     .sort((a, b) => b.failures - a.failures || a.lens.localeCompare(b.lens));
@@ -137,6 +147,7 @@ export function renderMarkdown(report) {
       lines.push(`- \`${run.run_id}\` ${run.created_at} — ${run.failure_class}${run.workflow ? ` (${run.workflow})` : ''}`);
     }
     lines.push('', '</details>');
+    lines.push('', `<!-- lens-alert lens=${alert.lens} last-run=${alert.latest_run} -->`);
   }
   return `${lines.join('\n')}\n`;
 }

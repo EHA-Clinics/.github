@@ -66,41 +66,64 @@ jobs:
       - name: Read coverage entries
         env:
           GH_TOKEN: ${{ github.token }}
+          LIMIT: ${{ inputs.limit }}
+          COUNCIL_WORKFLOWS: ${{ inputs.workflows }}
         run: |
           set -euo pipefail
           node .ai-review-gate/scripts/ai-review-coverage/read-coverage-streak.mjs \
             --repo "$GITHUB_REPOSITORY" \
-            --limit "${{ inputs.limit }}" \
-            --workflows "${{ inputs.workflows }}" \
+            --limit "$LIMIT" \
+            --workflows "$COUNCIL_WORKFLOWS" \
             --entries "$RUNNER_TEMP/entries.json"
 
       - name: Compute lens failures
         id: alert
+        env:
+          WINDOW_HOURS: ${{ inputs.window_hours }}
+          THRESHOLD: ${{ inputs.threshold }}
         run: |
           set -euo pipefail
           node .ai-review-gate/scripts/ai-review-coverage/lens-failure-alert.mjs \
             --entries "$RUNNER_TEMP/entries.json" \
-            --window-hours "${{ inputs.window_hours }}" \
-            --threshold "${{ inputs.threshold }}" \
+            --window-hours "$WINDOW_HOURS" \
+            --threshold "$THRESHOLD" \
             --markdown "$RUNNER_TEMP/alert.md" \
             --github-output
 
       # One tracking issue per lens: an existing open issue is commented on, so a
       # repeating failure builds a timeline instead of a pile of issues.
+      # Every value that reaches a shell here comes from env or the file, never
+      # from inline `${{ }}` interpolation: the lens id is artifact-derived and
+      # this job holds issues:write. The script already restricts ids to
+      # [A-Za-z0-9_-], and the case guard repeats it at the boundary.
+      #
+      # De-duplication: the report carries a `<!-- lens-alert lens=… last-run=… -->`
+      # marker. An open issue that already contains the marker for the newest
+      # failing run is not commented again, so a quiet period cannot re-alert the
+      # same failures on every scheduled run.
       - name: Raise or update the tracking issue
         if: steps.alert.outputs.alert == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          LENSES: ${{ steps.alert.outputs.lenses }}
         run: |
           set -euo pipefail
           while IFS= read -r lens; do
             [ -n "$lens" ] || continue
+            case "$lens" in
+              *[!A-Za-z0-9_-]*) echo "skip non-id lens: ${lens}"; continue ;;
+            esac
             title="AI council lens alert: ${lens}"
+            marker=$(grep -oE "<!-- lens-alert lens=${lens} last-run=[^ ]+ -->" "$RUNNER_TEMP/alert.md" | head -1 || true)
             number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"${title}\"" \
-              --json number,title --jq ".[] | select(.title == \"${title}\") | .number" | head -1 || true)
+              --json number,title --jq --arg title "$title" '.[] | select(.title == $title) | .number' | head -1 || true)
             if [ -n "$number" ]; then
+              if [ -n "$marker" ] && gh issue view "$number" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments[].body' | grep -qF "$marker"; then
+                echo "already reported: ${marker}"
+                continue
+              fi
               gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/alert.md"
             else
               gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$RUNNER_TEMP/alert.md"
             fi
-          done < <(printf '%s' "${{ steps.alert.outputs.lenses }}" | tr ',' '\n')
+          done < <(printf '%s' "$LENSES" | tr ',' '\n')
