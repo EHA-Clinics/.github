@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeLensFailures, renderMarkdown } from './lens-failure-alert.mjs';
+import { computeLensFailures, parseArgs, renderMarkdown } from './lens-failure-alert.mjs';
 
 const attempt = (lens, conclusion, extra = {}) => ({
   lens_id: lens,
@@ -109,6 +109,20 @@ describe('computeLensFailures', () => {
     const report = computeLensFailures(entries);
     expect(report.alerts[0].lens).toBe('invalid-lens-id');
     expect(renderMarkdown(report)).not.toContain('rm -rf');
+  });
+
+  it('parses the CLI contract and refuses malformed flags', () => {
+    const defaults = parseArgs(['--entries', 'entries.json']);
+    expect(defaults).toMatchObject({ entries: 'entries.json', windowHours: 24, threshold: 2, githubOutput: false });
+    expect(parseArgs(['--entries', 'e.json', '--window-hours', '12', '--threshold', '3', '--github-output'])).toMatchObject({
+      windowHours: 12,
+      threshold: 3,
+      githubOutput: true,
+    });
+    expect(() => parseArgs([])).toThrow(/--entries is required/);
+    expect(() => parseArgs(['--entries', 'e.json', '--window-hours', '0'])).toThrow(/positive number/);
+    expect(() => parseArgs(['--entries', 'e.json', '--threshold', '1.5'])).toThrow(/positive integer/);
+    expect(() => parseArgs(['--entries', 'e.json', '--nope'])).toThrow(/unknown flag/);
   });
 
   it('refuses to report over an empty sample', () => {

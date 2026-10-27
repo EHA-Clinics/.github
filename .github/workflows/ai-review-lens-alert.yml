@@ -115,10 +115,14 @@ jobs:
             esac
             title="AI council lens alert: ${lens}"
             marker=$(grep -oE "<!-- lens-alert lens=${lens} last-run=[^ ]+ -->" "$RUNNER_TEMP/alert.md" | head -1 || true)
-            number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"${title}\"" \
-              --json number,title --jq --arg title "$title" '.[] | select(.title == $title) | .number' | head -1 || true)
+            # `--arg` is a jq flag, not a `gh --jq` one: a failure here used to be
+            # swallowed and every alert created a duplicate issue.
+            issues=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"${title}\"" --json number,title)
+            number=$(jq -r --arg title "$title" '.[] | select(.title == $title) | .number' <<<"$issues" | head -1)
             if [ -n "$number" ]; then
-              if [ -n "$marker" ] && gh issue view "$number" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments[].body' | grep -qF "$marker"; then
+              # The marker lands in the issue BODY on creation and in comments on
+              # later runs; check both or the first repeat duplicates itself.
+              if [ -n "$marker" ] && gh issue view "$number" --repo "$GITHUB_REPOSITORY" --json body,comments --jq '.body, (.comments[].body)' | grep -qF "$marker"; then
                 echo "already reported: ${marker}"
                 continue
               fi
