@@ -288,11 +288,19 @@ describe('council model configuration', () => {
     // to glm-5.3-flash. v4.1-flash failed the canary Tests lens with invalid_output (run
     // 39063907146), and a direct probe showed it leaves its final JSON in the reasoning channel
     // at every cap.
+    // AMENDED 2026-10-27 (DL-20261023-405, canary evidence): the roster is inverted. A
+    // 54-council diagnosis put 17/54 councils degraded with final lens failures operations 7,
+    // risk 6, tests 6, design 0; every failing lens ran glm-5.3-flash. A three-council canary on
+    // a #5115-shaped input ran minimax-m3 on all four lenses: 12/12 lens runs succeeded on
+    // attempt 1, no failover, no failure class. MiniMax M3 now takes Risk, Tests and Operations.
+    // GLM keeps only Design because the roster must stay four entries with at least two reviewer
+    // families and no other in-roster model may be a lens (V4.1 Flash is the validator, V4 Pro
+    // 0813 the advisor). Failover now crosses families.
     expect(models).toEqual([
-      'openrouter/z-ai/glm-5.3-flash',
       'openrouter/minimax/minimax-m3',
       'openrouter/z-ai/glm-5.3-flash',
-      'openrouter/z-ai/glm-5.3-flash',
+      'openrouter/minimax/minimax-m3',
+      'openrouter/minimax/minimax-m3',
     ]);
 
     // Exactly four. Lens binding is positional over a fixed four-lens catalog

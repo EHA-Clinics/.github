@@ -142,10 +142,23 @@ on:
         # moves to glm-5.3-flash. In canary run 39063907146, v4.1-flash failed its first Tests
         # attempt as invalid_output. Coord's direct probe then showed it writes its final JSON
         # into the reasoning channel and leaves the content empty, at every reasoning cap, and it
-        # runs 50-107 turns on a multi-turn lens. glm now takes risk, tests and operations
-        # (capped at 4000, below), minimax takes design, and the failover chain is
-        # glm -> minimax -> glm. No lens shares the validator's model.
-        default: 'openrouter/z-ai/glm-5.3-flash,openrouter/minimax/minimax-m3,openrouter/z-ai/glm-5.3-flash,openrouter/z-ai/glm-5.3-flash'
+        # runs 50-107 turns on a multi-turn lens.
+        # AMENDED 2026-10-27 (DL-20261023-405): the roster above was reversed after the
+        # 54-council diagnosis -- minimax-m3 takes risk, tests and operations, glm keeps only
+        # design. The 4000-token cap below still applies, now to the one design run. No lens
+        # shares the validator's model.
+        # AMENDED 2026-10-27 (DL-20261023-405, canary evidence). The 54-council diagnosis found
+        # 17/54 degraded with final lens failures operations 7, risk 6, tests 6, design 0; every
+        # failing lens ran glm-5.3-flash, whose multi-turn runaways never trip the stall watchdog.
+        # A three-council canary on a #5115-shaped input ran minimax-m3 on all four lenses:
+        # 12/12 lens runs succeeded on attempt 1, no failover, no failure class ($0.2333 total).
+        # GLM keeps ONLY Design here. That is a capacity compromise, not a claim that design is
+        # glm-safe: the invariant requires at least two reviewer families and exactly four
+        # entries, and no in-roster model besides glm can be a lens (v4.1-flash is the validator,
+        # v4-pro-0813 the advisor). Failover therefore crosses families: minimax -> glm and
+        # glm -> minimax. The retry model and its budget are elek PR 2; until that lands a failed
+        # minimax lens retries on glm at the currently halved 450 s budget.
+        default: 'openrouter/minimax/minimax-m3,openrouter/z-ai/glm-5.3-flash,openrouter/minimax/minimax-m3,openrouter/minimax/minimax-m3'
         description: 'Comma-separated OpenRouter model ids for the council lenses (round-robin assigned).'
       openrouter_model_reasoning_modes:
         type: string
@@ -344,8 +357,8 @@ on:
         # mimo-v2.5-pro rate is removed with the model (the orphan-rate invariant requires it).
         # AMENDED 2026-10-17 (EHAC-3622): the mimo-v2.6-pro rate leaves with the model. Under the
         # owner's final roster every remaining entry is still used:
-        #  - glm-5.3-flash prices risk, tests and operations;
-        #  - minimax-m3 prices design;
+        #  - minimax-m3 prices risk, tests and operations (roster amended 2026-10-27);
+        #  - glm-5.3-flash prices design;
         #  - deepseek-v4-pro-0813 prices the independent audit (advisor_model);
         #  - deepseek-v4.1-flash prices the validator (synthesis) and the audit-lane failover.
         default: 'openrouter/minimax/minimax-m3=0.30:1.20,openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20,openrouter/z-ai/glm-5.3-flash=0.15:0.50,openrouter/deepseek/deepseek-v4-pro-0813=1.32:3.96'
