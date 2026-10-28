@@ -753,12 +753,13 @@ jobs:
                       --jq '[.head.sha, (.head.repo.full_name // "")] | @tsv')" || true
           head_sha="$(printf '%s' "$pr_tsv" | cut -f1)"
           head_repo="$(printf '%s' "$pr_tsv" | cut -s -f2)"
-          if [ "$(printf '%s' "$head_repo" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')" ]; then
-            echo "::error::Refusing a council on a fork pull request (head repository '${head_repo:-unknown}', base '${GITHUB_REPOSITORY}'): councils run only on branches of this repository (DL-20261023-460). A maintainer who has read the diff can run one: see 'Fork pull requests' in the EHA-Clinics/.github README."
-            exit 1
-          fi
           if ! printf '%s' "$head_sha" | grep -Eq '^[0-9a-f]{40}$'; then
             echo "::error::Could not resolve the PR head SHA; refusing to review a guessed tree."
+            exit 1
+          fi
+          # Only a successful read can say "fork"; a failed one is reported as a failed read above.
+          if [ "$(printf '%s' "$head_repo" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')" ]; then
+            echo "::error::Refusing a council on a fork pull request (head repository '${head_repo:-unknown}', base '${GITHUB_REPOSITORY}'): councils run only on branches of this repository (DL-20261023-460). A maintainer who has read the diff can run one: see 'Fork pull requests' in the EHA-Clinics/.github README."
             exit 1
           fi
           echo "ref=refs/pull/${PR_NUMBER}/head" >> "$GITHUB_OUTPUT"

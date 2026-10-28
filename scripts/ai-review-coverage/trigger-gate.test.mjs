@@ -186,11 +186,25 @@ describe('the fork-PR trigger gate runs the shipped step', () => {
     expect(r.outputs).toBe('');
   });
 
-  it('FAILS CLOSED when the pull request cannot be read', () => {
+  it('FAILS CLOSED when the pull request cannot be read, and says so rather than "fork"', () => {
     const r = runGate({ event: 'pull_request', pr: pull(BASE), apiFails: true });
     expect(r.status).not.toBe(0);
     expect(r.outputs).toBe('');
+    expect(r.log).toMatch(/::error::Could not resolve the PR head/);
+    expect(r.log).not.toMatch(/fork/i);
   });
+
+  it.each(['', 'abc', 'A'.repeat(40), `${'a'.repeat(40)}\n`, 'null'])(
+    'REFUSES a same-repository PR whose head SHA reads as %j',
+    (sha) => {
+      const pr = pull(BASE);
+      pr.head.sha = sha;
+      const r = runGate({ event: 'pull_request', pr });
+      expect(r.status).not.toBe(0);
+      expect(r.outputs).toBe('');
+      expect(r.log).toMatch(/::error::Could not resolve the PR head/);
+    },
+  );
 
   it('leaves a non-PR run alone: no API read, no ref, no refusal', () => {
     const r = runGate({ event: 'workflow_dispatch', isPr: 'false', prNumber: '', pr: pull('someone/x') });
@@ -231,7 +245,7 @@ describe('the gate is wired where it can act', () => {
 
 describe('a PR cannot plant the gate-script directory', () => {
   /** Run the shipped assert step in a scratch git repo whose tree is `files`. */
-  function runAssert(files) {
+  function runAssert(files, expectedSha) {
     const dir = mkdtempSync(join(tmpdir(), 'trigger-gate-tree-'));
     dirs.push(dir);
     const git = (...args) => spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
@@ -248,13 +262,19 @@ describe('a PR cannot plant the gate-script directory', () => {
     const result = spawnSync('bash', ['-c', run], {
       cwd: dir,
       encoding: 'utf8',
-      env: { PATH: process.env.PATH, EXPECTED_SHA: sha },
+      env: { PATH: process.env.PATH, EXPECTED_SHA: expectedSha ?? sha },
     });
     return { status: result.status, log: `${result.stdout}${result.stderr}` };
   }
 
   it('passes an ordinary tree', () => {
     expect(runAssert({ 'src/a.ts': 'x\n' }).status).toBe(0);
+  });
+
+  it('REFUSES a workspace whose HEAD is not the head the API reported', () => {
+    const r = runAssert({ 'src/a.ts': 'x\n' }, 'b'.repeat(40));
+    expect(r.status).not.toBe(0);
+    expect(r.log).toMatch(/::error::Workspace HEAD [0-9a-f]{40} is not the PR head b{40}/);
   });
 
   it('REFUSES a tree carrying .ai-review-gate/, which the gate scripts are checked out into', () => {
