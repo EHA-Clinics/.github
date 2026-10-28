@@ -689,11 +689,61 @@ jobs:
     # ceiling has to clear.
     timeout-minutes: ${{ inputs.job_timeout_minutes }}
     steps:
+      # DL-20261023-445 cause 2. With no `ref:`, an `issue_comment` run (every `@ai-review`
+      # council) checked out the DEFAULT branch, so elek's read/grep/find/ls tools, rooted at
+      # the workspace, read BASE: a file the PR adds did not exist for any lens, and a file it
+      # modifies showed its old content (eha_care #5129, run 40613682758: "checkout is at
+      # base"). The diff itself was right (elek diffs origin/<head>); only the tools were blind.
+      #
+      # The head is resolved from the API, checked out through refs/pull/N/head (works for
+      # same-repo and fork PRs alike), and asserted equal before anything reads it; a PR that
+      # moves between the two fails closed rather than reviewing a different commit.
+      #
+      # THREAT NOTE (pull-request content in a job holding OPENROUTER_API_KEY): no step after
+      # this checkout may EXECUTE workspace content. elek runs from its own action path and its
+      # tools are read-only; the coverage gate scripts come from job.workflow_sha, never the
+      # workspace. Keep it that way: no npm/pnpm/node/bash of a workspace path in this job.
+      - name: Resolve PR head
+        id: pr_head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+          IS_PR: ${{ github.event.pull_request.number != '' || github.event.issue.pull_request.url != '' || inputs.pr_number != '' }}
+        run: |
+          set -euo pipefail
+          if [ "${IS_PR}" != "true" ] || [ -z "${PR_NUMBER:-}" ]; then
+            echo "Not a pull request; workspace stays on the event ref."
+            exit 0
+          fi
+          case "$PR_NUMBER" in (*[!0-9]*|'') echo "::error::PR number is not numeric"; exit 1;; esac
+          head_sha="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha')"
+          if ! printf '%s' "$head_sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::Could not resolve the PR head SHA; refusing to review a guessed tree."
+            exit 1
+          fi
+          echo "ref=refs/pull/${PR_NUMBER}/head" >> "$GITHUB_OUTPUT"
+          echo "sha=${head_sha}" >> "$GITHUB_OUTPUT"
+
       - name: Checkout PR
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Empty (not a PR) keeps the previous default.
+          ref: ${{ steps.pr_head.outputs.ref }}
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Assert the workspace is the reviewed head
+        if: steps.pr_head.outputs.sha != ''
+        env:
+          EXPECTED_SHA: ${{ steps.pr_head.outputs.sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          if [ "$actual" != "$EXPECTED_SHA" ]; then
+            echo "::error::Workspace HEAD ${actual} is not the PR head ${EXPECTED_SHA} (the PR moved, or the checkout fell back); failing closed."
+            exit 1
+          fi
+          echo "Workspace HEAD is the PR head ${actual}."
 
       # EHAC-2060 — turn "the review did not apply" from an ABSENT check into a GREEN one.
       #
