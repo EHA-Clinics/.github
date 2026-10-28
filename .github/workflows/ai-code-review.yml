@@ -703,12 +703,24 @@ jobs:
       # this checkout may EXECUTE workspace content. elek runs from its own action path and its
       # tools are read-only; the coverage gate scripts come from job.workflow_sha, never the
       # workspace. Keep it that way: no npm/pnpm/node/bash of a workspace path in this job.
+      #
+      # DL-20261023-460 trigger gate, decided HERE, before anything of the PR is on disk:
+      #   - the PR head repository must be the base repository. A fork PR (or a deleted fork,
+      #     whose head.repo reads null) is refused and the job fails closed. A maintainer who has
+      #     read the diff may still run one: see "Fork pull requests" in README.md.
+      #   - a comment trigger counts only from author_association OWNER, MEMBER or COLLABORATOR,
+      #     compared exactly. It is read from the event payload, which GitHub writes.
+      #   - an event this gate does not name (pull_request_target included) is refused, not guessed.
+      # A refusal is an error, never a skip: a skipped council would read as "not reviewed",
+      # which a caller may treat as acceptable; a red one cannot be mistaken for a review.
       - name: Resolve PR head
         id: pr_head
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
           IS_PR: ${{ github.event.pull_request.number != '' || github.event.issue.pull_request.url != '' || inputs.pr_number != '' }}
+          EVENT_NAME: ${{ github.event_name }}
+          COMMENT_ASSOCIATION: ${{ github.event.comment.author_association }}
         run: |
           set -euo pipefail
           if [ "${IS_PR}" != "true" ] || [ -z "${PR_NUMBER:-}" ]; then
@@ -716,7 +728,31 @@ jobs:
             exit 0
           fi
           case "$PR_NUMBER" in (*[!0-9]*|'') echo "::error::PR number is not numeric"; exit 1;; esac
-          head_sha="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha')"
+
+          case "$EVENT_NAME" in
+            pull_request|workflow_dispatch) ;;
+            issue_comment|pull_request_review_comment)
+              case "$COMMENT_ASSOCIATION" in
+                OWNER|MEMBER|COLLABORATOR) ;;
+                *)
+                  echo "::error::Refusing a council triggered by a comment from author_association '${COMMENT_ASSOCIATION}': only OWNER, MEMBER or COLLABORATOR may trigger one (DL-20261023-460)."
+                  exit 1 ;;
+              esac ;;
+            *)
+              echo "::error::Refusing a council on event '${EVENT_NAME}': the trigger gate admits only pull_request, workflow_dispatch and PR comments (DL-20261023-460)."
+              exit 1 ;;
+          esac
+
+          # One read for the head SHA and the head repository, so both describe the same PR state.
+          # `|| true`: a failed read leaves both empty, and the checks below fail closed on that.
+          pr_tsv="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+                      --jq '[.head.sha, (.head.repo.full_name // "")] | @tsv')" || true
+          head_sha="$(printf '%s' "$pr_tsv" | cut -f1)"
+          head_repo="$(printf '%s' "$pr_tsv" | cut -s -f2)"
+          if [ "$(printf '%s' "$head_repo" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')" ]; then
+            echo "::error::Refusing a council on a fork pull request (head repository '${head_repo:-unknown}', base '${GITHUB_REPOSITORY}'): councils run only on branches of this repository (DL-20261023-460). A maintainer who has read the diff can run one: see 'Fork pull requests' in the EHA-Clinics/.github README."
+            exit 1
+          fi
           if ! printf '%s' "$head_sha" | grep -Eq '^[0-9a-f]{40}$'; then
             echo "::error::Could not resolve the PR head SHA; refusing to review a guessed tree."
             exit 1
@@ -741,6 +777,13 @@ jobs:
           actual="$(git rev-parse HEAD)"
           if [ "$actual" != "$EXPECTED_SHA" ]; then
             echo "::error::Workspace HEAD ${actual} is not the PR head ${EXPECTED_SHA} (the PR moved, or the checkout fell back); failing closed."
+            exit 1
+          fi
+          # The coverage gate scripts are checked out into .ai-review-gate later in this job. A PR
+          # that ships that path (a directory, a file or a symlink) is refused, so nothing from the
+          # head can stand where the gate's own scripts are expected.
+          if [ -e .ai-review-gate ] || [ -L .ai-review-gate ]; then
+            echo "::error::The pull request tree contains .ai-review-gate, the path this job reserves for its own gate scripts; failing closed."
             exit 1
           fi
           echo "Workspace HEAD is the PR head ${actual}."

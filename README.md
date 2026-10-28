@@ -164,6 +164,28 @@ The `max_cost_usd` guardrail bounds each review. Actual spend varies with diff s
 - Workflows run with least privilege: `contents: read`, `pull-requests: write` only.
 - The AI reviewer cannot approve, merge, or close PRs (structural guarantee via the MCP server).
 - Only the secret **name** `OPENROUTER_API_KEY` is referenced here; no secret value ever appears in a workflow or this README.
+- The review job checks out the **PR head** (`refs/pull/N/head`) and asserts it is the head the API reported, on every event, so the reviewers' tools read the code under review (DL-20261023-445). A `pull_request` run therefore reviews the head and no longer the merge ref. A PR tree that carries `.ai-review-gate`, the path reserved for the gate scripts, is refused.
+
+### Fork pull requests
+
+The head is checked out into a job that holds `OPENROUTER_API_KEY`, so the first step of the review job refuses untrusted triggers before anything of the PR is on disk (DL-20261023-460). Each refusal fails the job with an `::error::` that names the reason; it is never reported as a skip.
+
+| Trigger | Runs when |
+|---------|-----------|
+| `pull_request`, `workflow_dispatch` | the PR head repository is the base repository |
+| `issue_comment`, `pull_request_review_comment` | as above, **and** the comment's `author_association` is exactly `OWNER`, `MEMBER` or `COLLABORATOR` |
+| any other event on a PR (including `pull_request_target`) | never |
+
+A pull request from a fork, or from a deleted fork, is refused on every event. A maintainer who has **read the whole diff** and accepts running it in a job with the review secret can review it from a branch of the base repository:
+
+```bash
+gh pr checkout <N>                                   # fetches the fork head
+git push origin HEAD:refs/heads/review/fork-pr-<N>   # a branch the base repository owns
+gh pr create --draft --base <base> --head review/fork-pr-<N> --title "review: fork PR #<N>"
+# mark it ready (or comment @ai-review on it), read the council, then close it and delete the branch
+```
+
+The copy is reviewed under the maintainer's own write access, which is the point: the decision to trust that code was made by someone who read it.
 
 ## See Also
 
