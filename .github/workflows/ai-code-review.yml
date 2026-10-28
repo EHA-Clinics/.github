@@ -703,6 +703,10 @@ jobs:
       # this checkout may EXECUTE workspace content. elek runs from its own action path and its
       # tools are read-only; the coverage gate scripts come from job.workflow_sha, never the
       # workspace. Keep it that way: no npm/pnpm/node/bash of a workspace path in this job.
+      # One indirect path was found and closed (DL-20261023-460 audit): tsx, which runs elek,
+      # reads tsconfig.json from the working directory, so a planted `paths` alias could swap
+      # elek's own imports for PR code. "Pin elek's tsconfig" + TSX_TSCONFIG_PATH close it. Any
+      # tool added to this job must be checked for the same cwd-config lookup.
       #
       # DL-20261023-460 trigger gate, decided HERE, before anything of the PR is on disk:
       #   - the PR head repository must be the base repository. A fork PR (or a deleted fork,
@@ -954,6 +958,32 @@ jobs:
             echo "No changed file matches ${SCOPE_PATHS} — reporting NOT_REVIEWED, not skipping the check."
           fi
 
+      - name: Pin elek's tsconfig
+        # DL-20261023-460 audit (b). elek's action runs `tsx run.ts` with the workspace (the PR
+        # head) as its working directory, and tsx reads tsconfig.json from there by default. A PR
+        # that plants a tsconfig with a `paths` alias for, say, @actions/core would have elek
+        # import PR code in a job holding OPENROUTER_API_KEY. The elek step below points
+        # TSX_TSCONFIG_PATH at this file instead: elek's own compilerOptions (elek tsconfig.json at
+        # the pinned SHA), with nothing path-relative (no paths, baseUrl, extends or file lists).
+        # Same condition as the elek step, so it exists whenever elek runs.
+        if: steps.scope.outputs.in_scope == 'true'
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/elek-tsconfig.json" <<'JSON'
+          {
+            "compilerOptions": {
+              "target": "ES2022",
+              "module": "ESNext",
+              "moduleResolution": "bundler",
+              "strict": true,
+              "esModuleInterop": true,
+              "forceConsistentCasingInFileNames": true,
+              "skipLibCheck": true
+            }
+          }
+          JSON
+          echo "elek tsconfig pinned at $RUNNER_TEMP/elek-tsconfig.json"
+
       - name: AI Code Review via OpenRouter
         # EHAC-2060: conditional on the STEP, never on the job — the coverage job must still
         # run and still publish a verdict. `needs.review.result` stays `success`.
@@ -1070,6 +1100,8 @@ jobs:
           # Emergency compatibility switch only. The current action installs the committed
           # lockfile and local adapter; callers should leave this at its supported default, 0.
           ELEK_DISABLE_MCP: ${{ inputs.disable_mcp }}
+          # Written by "Pin elek's tsconfig" above. tsx would otherwise read the PR's tsconfig.json.
+          TSX_TSCONFIG_PATH: ${{ runner.temp }}/elek-tsconfig.json
 
       - name: Checkout coverage gate scripts
         # Placed AFTER elek so this extra directory is never in view of elek's read/grep

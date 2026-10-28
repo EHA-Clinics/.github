@@ -271,3 +271,111 @@ describe('a PR cannot plant the gate-script directory', () => {
     expect(runAssert({ '.ai-review-gate': { symlink: '/nonexistent' } }).status).not.toBe(0);
   });
 });
+
+/**
+ * elek runs `tsx run.ts` with the PR head as its working directory, and tsx reads
+ * tsconfig.json from the working directory by default. A planted `paths` alias would then
+ * redirect elek's OWN imports to PR code, inside a job holding OPENROUTER_API_KEY (DL-460
+ * audit, finding (b)). The control: a step writes a gate-owned tsconfig into RUNNER_TEMP and
+ * the elek step points TSX_TSCONFIG_PATH at it.
+ *
+ * Proven with the tsx elek pins (4.22.4, exact, also this repo's devDependency): a fixture
+ * "action" imports @actions/core, a fixture "workspace" plants a tsconfig that aliases it to
+ * workspace code. The positive control shows the plant redirects with no control in place,
+ * so a green here cannot mean "the plant never worked".
+ */
+describe('elek never takes its tsconfig from the PR', () => {
+  const TSX = join(import.meta.dirname, '..', '..', 'node_modules', '.bin', 'tsx');
+  const ELEK_STEP = 'AI Code Review via OpenRouter';
+  const PIN_STEP = "Pin elek's tsconfig";
+
+  /** The TSX_TSCONFIG_PATH the elek step sets, with only `${{ runner.temp }}` resolved. */
+  function elekTsconfigPath(runnerTemp) {
+    const { env } = stepScriptOrUses(source(), ELEK_STEP);
+    const m = env.match(/^ {10}TSX_TSCONFIG_PATH: (.+)$/m);
+    if (!m) return null;
+    return m[1].replace('${{ runner.temp }}', runnerTemp);
+  }
+
+  /** Like stepScript, but for a `uses:` step: the whole step text as `env`. */
+  function stepScriptOrUses(text, name) {
+    const lines = text.split('\n');
+    const start = lines.findIndex((line) => line === `      - name: ${name}`);
+    if (start < 0) throw new Error(`step "${name}" not found`);
+    let end = start + 1;
+    while (end < lines.length && !/^ {6}- /.test(lines[end]) && !/^ {2}\S/.test(lines[end])) end++;
+    return { env: lines.slice(start, end).join('\n') };
+  }
+
+  /** Build the fixture and run the action's run.ts from the workspace, as elek's step does. */
+  function runElekLike(tsconfigPath) {
+    const dir = mkdtempSync(join(tmpdir(), 'elek-tsconfig-'));
+    dirs.push(dir);
+    const action = join(dir, 'action');
+    const ws = join(dir, 'ws');
+    const core = join(action, 'node_modules', '@actions', 'core');
+    for (const d of [join(action, 'src'), core, ws]) spawnSync('mkdir', ['-p', d]);
+    writeFileSync(join(action, 'src', 'run.ts'), 'import { who } from "@actions/core";\nconsole.log(who());\n');
+    writeFileSync(join(core, 'package.json'), '{"name":"@actions/core","type":"module","main":"index.js"}');
+    writeFileSync(join(core, 'index.js'), 'export const who = () => "genuine";\n');
+    writeFileSync(
+      join(ws, 'tsconfig.json'),
+      JSON.stringify({ compilerOptions: { baseUrl: '.', paths: { '@actions/core': ['./planted.ts'] } } }),
+    );
+    writeFileSync(join(ws, 'planted.ts'), 'export const who = () => "PLANTED";\n');
+    const env = { PATH: process.env.PATH, HOME: process.env.HOME };
+    if (tsconfigPath) env.TSX_TSCONFIG_PATH = tsconfigPath;
+    const r = spawnSync(TSX, [join(action, 'src', 'run.ts')], { cwd: ws, encoding: 'utf8', env });
+    return `${r.stdout}${r.stderr}`.trim();
+  }
+
+  /** Run the shipped pin step; returns RUNNER_TEMP. */
+  function runPinStep() {
+    const temp = mkdtempSync(join(tmpdir(), 'runner-temp-'));
+    dirs.push(temp);
+    const { run } = stepScript(source(), PIN_STEP);
+    const r = spawnSync('bash', ['-c', run], { encoding: 'utf8', env: { PATH: process.env.PATH, RUNNER_TEMP: temp } });
+    expect(r.status, `${r.stdout}${r.stderr}`).toBe(0);
+    return temp;
+  }
+
+  it('positive control: with no control, a planted paths alias DOES redirect elek imports', () => {
+    expect(runElekLike(null)).toBe('PLANTED');
+  });
+
+  it('with the shipped step and the shipped env, elek resolves its genuine dependency', () => {
+    const temp = runPinStep();
+    const path = elekTsconfigPath(temp);
+    expect(path, 'the elek step sets no TSX_TSCONFIG_PATH').not.toBeNull();
+    expect(existsSync(path), `${path} was not written by the pin step`).toBe(true);
+    expect(runElekLike(path)).toBe('genuine');
+  });
+
+  it('writes only elek compilerOptions: no paths, baseUrl, extends or file lists', () => {
+    const temp = runPinStep();
+    const config = JSON.parse(readFileSync(elekTsconfigPath(temp), 'utf8'));
+    expect(Object.keys(config)).toEqual(['compilerOptions']);
+    expect(config.compilerOptions).toEqual({
+      target: 'ES2022',
+      module: 'ESNext',
+      moduleResolution: 'bundler',
+      strict: true,
+      esModuleInterop: true,
+      forceConsistentCasingInFileNames: true,
+      skipLibCheck: true,
+    });
+  });
+
+  it('pins the tsconfig before elek runs, under the same condition as elek', () => {
+    const steps = source()
+      .split('\n')
+      .filter((line) => /^ {6}- name: /.test(line))
+      .map((line) => line.replace(/^ {6}- name: /, ''));
+    expect(steps.indexOf(PIN_STEP)).toBeGreaterThan(-1);
+    expect(steps.indexOf(PIN_STEP)).toBe(steps.indexOf(ELEK_STEP) - 1);
+    const cond = /^ {8}if: (.+)$/m;
+    expect(stepScriptOrUses(source(), PIN_STEP).env.match(cond)?.[1]).toBe(
+      stepScriptOrUses(source(), ELEK_STEP).env.match(cond)?.[1],
+    );
+  });
+});
