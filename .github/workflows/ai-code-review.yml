@@ -994,7 +994,7 @@ jobs:
         # cost_usd / conclusion as outputs at EVERY ref, and all of them were unreachable
         # purely for want of a step id. The coverage measurement below consumes them.
         id: review
-        uses: EHA-Clinics/elek@dc50801eca55e9b7641f91e1aff9770e8df6cab3 # Elek #25 eha-v1.9.0 (EHAC-3644, EHAC-3675): max_turns failover for the advisor and the final synthesis, the turn budget stated in the system prompt, modelRuns[].findingsCount and review.findingsCount; on top of #24 eha-v1.8.0: final-synthesis failover (validator_failover_model, live job clock); on top of #19-#23 eha-v1.7.0: pi 1.1.0, source-first fair packing, U4 reviewed-head fields, validator-review invalid_output failover, one-shot lens timeout retry
+        uses: EHA-Clinics/elek@0e3dfd02af316d264f2c99c489598b9682500a19 # Elek #26-#31, untagged main: #26 full-budget distinct-model retries (a timeout retry gets min(R, remaining) instead of R/2; provider_transient moves to a DISTINCT model) and first_turn_timeout_seconds (default 0 = disabled); #27 clears every high audit advisory in the review runtime; #28 a lens whose every tool call failed is `tool_access`, not a clean pass; #29 prompt usage recorded over every turn, cache included (promptUsage telemetry); #30 packs the Tests lens's prompt tests-first (leadTier, the packer moved); #31 elek compiles with its own tsconfig (--tsconfig), never the workspace's; on top of #25 eha-v1.9.0: max_turns failover for the advisor and the final synthesis, the turn budget in the system prompt, modelRuns[].findingsCount; on top of #24 eha-v1.8.0: final-synthesis failover; on top of #19-#23 eha-v1.7.0: pi 1.1.0, source-first fair packing, U4 reviewed-head fields, validator-review invalid_output failover, one-shot lens timeout retry
         with:
           # pi's native openrouter adapter — elek's tested path. The OpenAI-compatible
           # Databricks AI Gateway (provider: openai) hung pi indefinitely on tool-enabled
@@ -1168,7 +1168,7 @@ jobs:
           REVIEW_COST_USD: ${{ steps.review.outputs.cost_usd }}
           # The LITERAL pinned SHA, not an expression: this is what makes branch U1 detect a
           # future elek bump that forgets to re-verify elek-prompt-budget.mjs.
-          ELEK_REF: dc50801eca55e9b7641f91e1aff9770e8df6cab3
+          ELEK_REF: 0e3dfd02af316d264f2c99c489598b9682500a19
           REQUESTED_STRATEGY: ${{ inputs.review_strategy }}
           ACTOR_FILTER: ${{ inputs.actor_filter }}
           # EHAC-2103: the CONFIGURED council, so the coverage record can put what we asked for

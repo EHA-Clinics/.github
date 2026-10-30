@@ -353,7 +353,13 @@ describe('assertion 4 — no surviving restatement, defined mechanically', () =>
     expect(constants).not.toContain(80_000); // the deleted full-diff threshold
     // eha-v1.7.0 (EHAC-2844): the fair packer dropped the uniform slice-cap constants 40, 240
     // and 1_200; 64_000 (the per-file cap, ruling 5) and the budget constants remain.
-    expect(constants).toEqual([120, 140, 700, 8_000, 64_000, 320_000, 540_000, 700_000, 2_700_000]);
+    // 0e3dfd02 (elek #30) adds FOUR numbers that are not packing constants: its leadTier doc
+    // comment names the incident it fixes — 43 test files, 90 changed files, eha_care 5129 and
+    // council run 40613682758. The derivation reads the source mechanically, comments included,
+    // so they join the forbidden set; that is correct rather than noise (a number the wrapper
+    // restates is restated wherever it came from) and the KNOWN-GOOD control below still passes,
+    // i.e. the wrapper restates none of them. The packer's CONSTANTS are unchanged by #30.
+    expect(constants).toEqual([43, 90, 120, 140, 700, 5_129, 8_000, 64_000, 320_000, 540_000, 700_000, 2_700_000, 40_613_682_758]);
     expect(constants).toContain(64_000); // the per-file cap: no budget raise (ruling 5)
     for (const caption of UPSTREAM_CAPTIONS) {
       expect(read(VENDORED), `caption not found upstream: ${caption}`).toContain(caption);

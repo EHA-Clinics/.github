@@ -514,9 +514,26 @@ describe('council model configuration', () => {
     //    invalid_output for the pinned failover), and the reviewer branch below it is unchanged.
     //    One change does reach reviewer lenses: pi.ts appends a sentence stating the turn budget
     //    to every review system prompt. It changes no model assignment or failover target.
+    //  - 0e3dfd02 (elek #26-#31, untagged main) carries the same evidence again. Diffed
+    //    2026-10-29 (dc50801...0e3dfd02: six commits, 22 files): in src/review/strategy.ts
+    //    selectFailoverModel, resolveLensRetry, resolveReviewPlan and distinctModels are
+    //    BYTE-IDENTICAL, and src/review/lens-execution.ts only passes promptUsage through and
+    //    turns an all-tools-errored run into `tool_access`. No model assignment and no roster
+    //    derivation changed. What DID change is retry BUDGET and classification, prompt order,
+    //    telemetry and the compiler config: #26 gives the one timeout retry the full
+    //    min(R, remaining) instead of R/2 and moves provider_transient from same-model to
+    //    NEXT-DISTINCT-MODEL (runaway and tool_access are new retryable classes on the same
+    //    target) — those targets are the same two roster models this chain computes, glm and
+    //    minimax, each with recorded evidence below, so no new target enters the set and no
+    //    new evidence is claimed; #28's first_turn_timeout_seconds defaults to 0 (disabled);
+    //    #30 packs the Tests lens tests-first (a prompt order, not a model); #29 adds promptUsage
+    //    telemetry; #31 makes elek pass --tsconfig to tsx. A caller-visible note: the timeout
+    //    retry's new full budget is bounded by the live job clock and the existing 2R guard, so
+    //    this workflow's job_timeout_minutes arithmetic does not change.
     const EVIDENCE_PINS_ACCEPTED_FOR = {
       '1af0b35': ['1af0b35', '061c438'],
       dc50801: ['dc50801', '1af0b35', '061c438'],
+      '0e3dfd0': ['dc50801', '1af0b35', '061c438'],
     };
 
     const roster = stringInputDefault('review_models').split(',');
