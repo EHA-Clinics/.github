@@ -1,0 +1,133 @@
+# AI Review Lens Alert — raises an issue when one council lens keeps failing.
+#
+# WHY. The 2026-10-27 diagnosis (DL-20261023-401) found 17/54 councils degraded
+# while the daily model-health probe stayed green. Each individual council still
+# reported a verdict, and `max_degraded_lenses: 1` tolerates one failed lens as
+# "degraded" — so a lens that fails twice in a day leaves no trace a human would
+# notice. This reader surfaces exactly that pattern from the coverage records.
+#
+# HOW IT RUNS. Like the streak reader, the artifacts live on the CALLING
+# repository's runs and `actions: read` on a private repository is only granted
+# to that repository's own token. So this is a reusable workflow the consumer
+# schedules (daily), and it reads `${{ github.repository }}` with the consumer's
+# token. No cross-repo secret exists.
+#
+# OBSERVABILITY, NOT A GATE. Finding failures exits 0 and opens/updates one
+# issue per lens. A non-zero exit is reserved for FAULTS: no readable council
+# records in the window (an "all clear" over an empty sample would be a check
+# that cannot fail).
+name: AI Review Lens Alert
+
+on:
+  workflow_call:
+    inputs:
+      limit:
+        type: string
+        default: '20'
+        description: 'Newest N caller runs to inspect, merged across the listed workflows.'
+      window_hours:
+        type: string
+        default: '24'
+        description: 'Rolling window, in hours, anchored on the newest council record.'
+      threshold:
+        type: string
+        default: '2'
+        description: 'Failures of one lens inside the window that raise the alert.'
+      workflows:
+        type: string
+        default: 'ai-code-review.yml,ai-review-on-demand.yml'
+        description: 'Comma-separated caller workflow files whose runs carry the ai-review-coverage artifact.'
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+jobs:
+  alert:
+    name: AI Review Lens Alert
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # The reader is checked out from the CALLED workflow's own commit, the same
+      # identity contract the coverage gate uses: the code reviewed is the code
+      # that runs, and a caller cannot pin the workflow to one revision and
+      # execute another.
+      - name: Checkout coverage gate scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .ai-review-gate
+          sparse-checkout: scripts/ai-review-coverage
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Read coverage entries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LIMIT: ${{ inputs.limit }}
+          COUNCIL_WORKFLOWS: ${{ inputs.workflows }}
+        run: |
+          set -euo pipefail
+          node .ai-review-gate/scripts/ai-review-coverage/read-coverage-streak.mjs \
+            --repo "$GITHUB_REPOSITORY" \
+            --limit "$LIMIT" \
+            --workflows "$COUNCIL_WORKFLOWS" \
+            --entries "$RUNNER_TEMP/entries.json"
+
+      - name: Compute lens failures
+        id: alert
+        env:
+          WINDOW_HOURS: ${{ inputs.window_hours }}
+          THRESHOLD: ${{ inputs.threshold }}
+        run: |
+          set -euo pipefail
+          node .ai-review-gate/scripts/ai-review-coverage/lens-failure-alert.mjs \
+            --entries "$RUNNER_TEMP/entries.json" \
+            --window-hours "$WINDOW_HOURS" \
+            --threshold "$THRESHOLD" \
+            --markdown "$RUNNER_TEMP/alert.md" \
+            --github-output
+
+      # One tracking issue per lens: an existing open issue is commented on, so a
+      # repeating failure builds a timeline instead of a pile of issues.
+      # Every value that reaches a shell here comes from env or the file, never
+      # from inline `${{ }}` interpolation: the lens id is artifact-derived and
+      # this job holds issues:write. The script already restricts ids to
+      # [A-Za-z0-9_-], and the case guard repeats it at the boundary.
+      #
+      # De-duplication: the report carries a `<!-- lens-alert lens=… last-run=… -->`
+      # marker. An open issue that already contains the marker for the newest
+      # failing run is not commented again, so a quiet period cannot re-alert the
+      # same failures on every scheduled run.
+      - name: Raise or update the tracking issue
+        if: steps.alert.outputs.alert == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LENSES: ${{ steps.alert.outputs.lenses }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r lens; do
+            [ -n "$lens" ] || continue
+            case "$lens" in
+              *[!A-Za-z0-9_-]*) echo "skip non-id lens: ${lens}"; continue ;;
+            esac
+            title="AI council lens alert: ${lens}"
+            marker=$(grep -oE "<!-- lens-alert lens=${lens} last-run=[^ ]+ -->" "$RUNNER_TEMP/alert.md" | head -1 || true)
+            # `--arg` is a jq flag, not a `gh --jq` one: a failure here used to be
+            # swallowed and every alert created a duplicate issue.
+            issues=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"${title}\"" --json number,title)
+            number=$(jq -r --arg title "$title" '.[] | select(.title == $title) | .number' <<<"$issues" | head -1)
+            if [ -n "$number" ]; then
+              # The marker lands in the issue BODY on creation and in comments on
+              # later runs; check both or the first repeat duplicates itself.
+              if [ -n "$marker" ] && gh issue view "$number" --repo "$GITHUB_REPOSITORY" --json body,comments --jq '.body, (.comments[].body)' | grep -qF "$marker"; then
+                echo "already reported: ${marker}"
+                continue
+              fi
+              gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/alert.md"
+            else
+              gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$RUNNER_TEMP/alert.md"
+            fi
+          done < <(printf '%s' "$LENSES" | tr ',' '\n')
