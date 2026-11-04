@@ -296,6 +296,9 @@ describe('council model configuration', () => {
     // GLM keeps only Design because the roster must stay four entries with at least two reviewer
     // families and no other in-roster model may be a lens (V4.1 Flash is the validator, V4 Pro
     // 0813 the advisor). Failover now crosses families.
+    // EHAC-4082 / DL-684: M3.1 Flash failed all three physical lens attempts in
+    // run 41812032952. Restore M3, proven on all three lenses in run 41717236932;
+    // Design stays GLM Flash, while GLM 5.3 remains the new independent advisor.
     expect(models).toEqual([
       'openrouter/minimax/minimax-m3',
       'openrouter/z-ai/glm-5.3-flash',
@@ -365,7 +368,7 @@ describe('council model configuration', () => {
       .filter((line) => /^ {10}advisor_model: \$\{\{ inputs\.advisor_model \}\}\s*$/.test(line));
     expect(forwards, 'the elek step must forward advisor_model exactly once').toHaveLength(1);
     // The pin comes LAST so the independence assertions above are what a lesion reds on.
-    expect(advisor).toBe('openrouter/deepseek/deepseek-v4-pro-0813');
+    expect(advisor).toBe('openrouter/z-ai/glm-5.3');
   });
 
   // EHAC-2522 (elek #22, eha-v1.7.0). The validator-review lane fails over ONCE on
@@ -413,6 +416,16 @@ describe('council model configuration', () => {
     }
   });
 
+  it('uses GLM 5.3 for synthesis failover and no retired or prohibited OpenRouter model (EHAC-4082)', () => {
+    expect(stringInputDefault('validator_failover_model')).toBe('openrouter/z-ai/glm-5.3');
+    for (const input of ['model', 'review_models', 'validator_model', 'advisor_model',
+      'validator_review_failover_model', 'validator_failover_model', 'cost_rates',
+      'openrouter_model_reasoning_modes']) {
+      expect(stringInputDefault(input), input).not.toMatch(/openrouter\/(?:google|openai|anthropic)\//);
+      expect(stringInputDefault(input), input).not.toContain('deepseek-v4-pro');
+    }
+  });
+
   it('budgets GLM 5.3 Flash at the conservative standard rate', () => {
     const rates = stringInputDefault('cost_rates').split(',');
     expect(rates).toContain('openrouter/z-ai/glm-5.3-flash=0.15:0.50');
@@ -420,12 +433,13 @@ describe('council model configuration', () => {
 
   // EHAC-2844 (2026-10-16). Rates read from the OpenRouter endpoint listings: v4-pro-0813 was
   // budgeted at HALF its price (0.66:1.98 against 1.32:3.96), so max_cost_usd under-counted the
-  // validator; with v4-pro-0813 now the failover, its rate prices the one extra attempt.
-  it('prices every council model at its listed OpenRouter rate', () => {
+  // validator. EHAC-4082 replaces that model with GLM 5.3; new model prices use the
+  // upper public endpoint rates observed 2026-11-04, so premium routes remain budgeted.
+  it('prices every council model, including the new conservative endpoint ceilings', () => {
     const rates = stringInputDefault('cost_rates').split(',').map((entry) => entry.trim());
-    expect(rates).toContain('openrouter/minimax/minimax-m3=0.30:1.20');
+    expect(rates).toContain('openrouter/minimax/minimax-m3=0.60:2.40');
     expect(rates).toContain('openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20');
-    expect(rates).toContain('openrouter/deepseek/deepseek-v4-pro-0813=1.32:3.96');
+    expect(rates).toContain('openrouter/z-ai/glm-5.3=2.80:8.80');
     expect(rates.some((entry) => entry.includes('mimo-v2.5-pro'))).toBe(false);
   });
 
@@ -485,17 +499,17 @@ describe('council model configuration', () => {
     const elekPin = withoutComments(source()).match(/uses: EHA-Clinics\/elek@([0-9a-f]{40})/)?.[1];
     expect(elekPin, 'elek pin not found in the workflow').toBeDefined();
 
-    // From the eha_care council records of 2026-10-16/17. `reviewer` is the pin where the model
-    // last succeeded as a lens. `current` is its success on elek 061c438, in any role.
+    // EHAC-4082 / DL-684: actual run 41717236932 succeeded on all four reviewer
+    // lenses at the shipped Elek 0e3dfd02. No failed M3.1 Flash attempt is reused as M3 proof.
     // Only failover TARGETS need an entry. Under the final roster those are glm and minimax.
     const LIVE_SUCCESS = {
       'z-ai/glm-5.3-flash': {
-        reviewer: { pin: '061c438', evidence: 'risk/operations 40/54 first, tests retry 5/5; run 39042921885' },
-        current: { pin: '061c438', role: 'reviewer', evidence: 'run 39042921885' },
+        reviewer: { pin: '0e3dfd0', evidence: 'design success; run 41717236932' },
+        current: { pin: '0e3dfd0', role: 'reviewer', evidence: 'run 41717236932' },
       },
       'minimax/minimax-m3': {
-        reviewer: { pin: '061c438', evidence: 'tests 22/27 first, design retry 7/9; run 39042921885' },
-        current: { pin: '061c438', role: 'reviewer', evidence: 'run 39042921885' },
+        reviewer: { pin: '0e3dfd0', evidence: 'risk, tests and operations success; run 41717236932' },
+        current: { pin: '0e3dfd0', role: 'reviewer', evidence: 'run 41717236932' },
       },
     };
 
@@ -533,7 +547,7 @@ describe('council model configuration', () => {
     const EVIDENCE_PINS_ACCEPTED_FOR = {
       '1af0b35': ['1af0b35', '061c438'],
       dc50801: ['dc50801', '1af0b35', '061c438'],
-      '0e3dfd0': ['dc50801', '1af0b35', '061c438'],
+      '0e3dfd0': ['0e3dfd0', 'dc50801', '1af0b35', '061c438'],
     };
 
     const roster = stringInputDefault('review_models').split(',');
@@ -544,7 +558,7 @@ describe('council model configuration', () => {
       expect(to, `${from} has no distinct failover model`).toBeDefined();
       expect(
         LIVE_SUCCESS[to],
-        `${from} fails over to ${to}, which has no recorded live success on elek 061c438`,
+        `${from} fails over to ${to}, which has no recorded live success for elek ${elekPin}`,
       ).toBeDefined();
       expect(LIVE_SUCCESS[to].reviewer?.evidence, `${to} has no recorded success as a lens`).toMatch(/run \d{11}/);
       // The current-pin evidence must be FOR the pin the workflow ships, with a run id, so
@@ -721,7 +735,7 @@ describe('the elek step matches the verified budget model', () => {
       .split('\n')
       .filter((line) => /^ {10}validator_failover_model: \$\{\{ inputs\.validator_failover_model \}\}\s*$/.test(line));
     expect(forwards, 'the elek step must forward validator_failover_model exactly once').toHaveLength(1);
-    expect(failover).toBe('openrouter/deepseek/deepseek-v4-pro-0813');
+    expect(failover).toBe('openrouter/z-ai/glm-5.3');
   });
 
   // EHAC-3622 gap 1. elek only runs the synthesis failover when it can MEASURE the job clock
