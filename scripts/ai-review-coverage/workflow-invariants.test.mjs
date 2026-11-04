@@ -296,13 +296,14 @@ describe('council model configuration', () => {
     // GLM keeps only Design because the roster must stay four entries with at least two reviewer
     // families and no other in-roster model may be a lens (V4.1 Flash is the validator, V4 Pro
     // 0813 the advisor). Failover now crosses families.
-    // EHAC-4082 (2026-11-04): replace only the three MiniMax slots with M3.1 Flash;
-    // Design stays GLM Flash, while GLM 5.3 becomes the independent advisor.
+    // EHAC-4082 / DL-684: M3.1 Flash failed all three physical lens attempts in
+    // run 41812032952. Restore M3, proven on all three lenses in run 41717236932;
+    // Design stays GLM Flash, while GLM 5.3 remains the new independent advisor.
     expect(models).toEqual([
-      'openrouter/minimax/minimax-m3.1-flash',
+      'openrouter/minimax/minimax-m3',
       'openrouter/z-ai/glm-5.3-flash',
-      'openrouter/minimax/minimax-m3.1-flash',
-      'openrouter/minimax/minimax-m3.1-flash',
+      'openrouter/minimax/minimax-m3',
+      'openrouter/minimax/minimax-m3',
     ]);
 
     // Exactly four. Lens binding is positional over a fixed four-lens catalog
@@ -436,7 +437,7 @@ describe('council model configuration', () => {
   // upper public endpoint rates observed 2026-11-04, so premium routes remain budgeted.
   it('prices every council model, including the new conservative endpoint ceilings', () => {
     const rates = stringInputDefault('cost_rates').split(',').map((entry) => entry.trim());
-    expect(rates).toContain('openrouter/minimax/minimax-m3.1-flash=0.15:0.60');
+    expect(rates).toContain('openrouter/minimax/minimax-m3=0.60:2.40');
     expect(rates).toContain('openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20');
     expect(rates).toContain('openrouter/z-ai/glm-5.3=2.80:8.80');
     expect(rates.some((entry) => entry.includes('mimo-v2.5-pro'))).toBe(false);
@@ -498,17 +499,17 @@ describe('council model configuration', () => {
     const elekPin = withoutComments(source()).match(/uses: EHA-Clinics\/elek@([0-9a-f]{40})/)?.[1];
     expect(elekPin, 'elek pin not found in the workflow').toBeDefined();
 
-    // From the eha_care council records of 2026-10-16/17. `reviewer` is the pin where the model
-    // last succeeded as a lens. `current` is its success on elek 061c438, in any role.
+    // EHAC-4082 / DL-684: actual run 41717236932 succeeded on all four reviewer
+    // lenses at the shipped Elek 0e3dfd02. No failed M3.1 Flash attempt is reused as M3 proof.
     // Only failover TARGETS need an entry. Under the final roster those are glm and minimax.
     const LIVE_SUCCESS = {
       'z-ai/glm-5.3-flash': {
-        reviewer: { pin: '061c438', evidence: 'risk/operations 40/54 first, tests retry 5/5; run 39042921885' },
-        current: { pin: '061c438', role: 'reviewer', evidence: 'run 39042921885' },
+        reviewer: { pin: '0e3dfd0', evidence: 'design success; run 41717236932' },
+        current: { pin: '0e3dfd0', role: 'reviewer', evidence: 'run 41717236932' },
       },
       'minimax/minimax-m3': {
-        reviewer: { pin: '061c438', evidence: 'tests 22/27 first, design retry 7/9; run 39042921885' },
-        current: { pin: '061c438', role: 'reviewer', evidence: 'run 39042921885' },
+        reviewer: { pin: '0e3dfd0', evidence: 'risk, tests and operations success; run 41717236932' },
+        current: { pin: '0e3dfd0', role: 'reviewer', evidence: 'run 41717236932' },
       },
     };
 
@@ -546,7 +547,7 @@ describe('council model configuration', () => {
     const EVIDENCE_PINS_ACCEPTED_FOR = {
       '1af0b35': ['1af0b35', '061c438'],
       dc50801: ['dc50801', '1af0b35', '061c438'],
-      '0e3dfd0': ['dc50801', '1af0b35', '061c438'],
+      '0e3dfd0': ['0e3dfd0', 'dc50801', '1af0b35', '061c438'],
     };
 
     const roster = stringInputDefault('review_models').split(',');
@@ -574,8 +575,8 @@ describe('council model configuration', () => {
     // Fixed lens order plus next-distinct means each lens's fallback follows from the roster
     // order. A per-lens fallback choice (for example glm -> v4.1-flash) would need an elek change.
     expect(chain).toEqual({
-      'z-ai/glm-5.3-flash': 'minimax/minimax-m3.1-flash',
-      'minimax/minimax-m3.1-flash': 'z-ai/glm-5.3-flash',
+      'z-ai/glm-5.3-flash': 'minimax/minimax-m3',
+      'minimax/minimax-m3': 'z-ai/glm-5.3-flash',
     });
   });
 

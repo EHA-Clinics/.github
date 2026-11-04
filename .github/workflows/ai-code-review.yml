@@ -47,7 +47,7 @@ on:
         # `model-ignored-by-guardrail` on every request. Leaving it as the single-strategy default
         # would have left a dead model armed for any non-council run.
         default: 'openrouter/deepseek/deepseek-v4.1-flash'
-        description: 'OpenRouter model id (e.g., openrouter/deepseek/deepseek-v4.1-flash, openrouter/minimax/minimax-m3.1-flash)'
+        description: 'OpenRouter model id (e.g., openrouter/deepseek/deepseek-v4.1-flash, openrouter/minimax/minimax-m3)'
       trigger_phrase:
         type: string
         default: '@ai-review'
@@ -101,14 +101,13 @@ on:
         description: 'elek review strategy. council = multi-lens review + validator reconciliation.'
       review_models:
         type: string
-        # EHAC-4082 (owner cost policy, 2026-11-04): MiniMax M3.1 Flash replaces M3 in
-        # Risk, Tests and Operations. GLM 5.3 Flash remains Design, with its existing cap.
-        # Exactly four entries in lens order and two reviewer families remain. Next-distinct
-        # reviewer failover crosses MiniMax M3.1 Flash <-> GLM 5.3 Flash; it does not use the
-        # independent advisor (GLM 5.3) or validator (DeepSeek V4.1 Flash) as a first attempt.
-        # Admission probes: MiniMax 41807821608, GLM 5.3 41807703255. These single-turn probes
-        # are route evidence only; live Elek lens evidence is required by workflow-invariants.
-        default: 'openrouter/minimax/minimax-m3.1-flash,openrouter/z-ai/glm-5.3-flash,openrouter/minimax/minimax-m3.1-flash,openrouter/minimax/minimax-m3.1-flash'
+        # EHAC-4082 / DL-20261023-684: restore proven MiniMax M3 on Risk, Tests and
+        # Operations after M3.1 Flash failed all three physical lens attempts in canary
+        # 41812032952. M3 succeeded on all three lenses in run 41717236932, on this same
+        # Elek 0e3dfd02. GLM 5.3 Flash remains Design with its existing 4000-token cap.
+        # Exactly four entries and two reviewer families remain; next-distinct failover
+        # crosses M3 <-> GLM Flash. Advisor GLM 5.3 and validator DeepSeek V4.1 stay distinct.
+        default: 'openrouter/minimax/minimax-m3,openrouter/z-ai/glm-5.3-flash,openrouter/minimax/minimax-m3,openrouter/minimax/minimax-m3'
         description: 'Comma-separated OpenRouter model ids for the council lenses (round-robin assigned).'
       openrouter_model_reasoning_modes:
         type: string
@@ -141,7 +140,7 @@ on:
         #    simple-options.js:5-9, :23), so it is far above cap + answer room.
         # U9 (reasoning-policy.mjs) fails unless glm's telemetry shows max-tokens at 4000. The
         # other models are unlisted and stay `effort`.
-        # EHAC-4082: MiniMax M3.1 Flash and GLM 5.3 support named effort in OpenRouter's
+        # EHAC-4082: MiniMax M3 and GLM 5.3 support named effort in OpenRouter's
         # 2026-11-04 model metadata. Leave them unlisted (effort); preserve Design's cap.
         default: '{"openrouter/z-ai/glm-5.3-flash":{"mode":"enabled","max_tokens":4000}}'
         description: 'Canonical OpenRouter model capability map: effort (default), enabled (provider-default reasoning, with the unchanged output limit sent as max_tokens), or {"mode": ..., "max_tokens": N} to cap that model alone.'
@@ -163,7 +162,8 @@ on:
         # audit. It is distinct from both GLM 5.3 Flash (Design) and the DeepSeek V4.1 Flash
         # validator. The audit keeps its existing validator-review budget and one pinned
         # failover to DeepSeek V4.1 Flash; no role timeout or retry policy changes.
-        # Admission probe 41807703255 succeeded; the ONE canary verifies council-role use.
+        # Actual advisor-role proof: run 41812032952, success in 14 turns / 81.1 seconds.
+        # Its reviewer quorum failed; do not call that run a successful council.
         default: 'openrouter/z-ai/glm-5.3'
         description: 'Model for the independent audit (advisor) lens that runs beside the reviewer lenses. Empty reuses validator_model; off, none, false or disabled skip the audit.'
       validator_review_failover_model:
@@ -282,15 +282,15 @@ on:
         type: string
         # EHAC-4082: explicit rates keep new model ids in elek's cost estimate instead of
         # allowing an unknown model to count as zero. USD per million uncached input/output.
-        # OpenRouter public endpoint metadata, fetched 2026-11-04: MiniMax M3.1 Flash's
-        # highest listed rates across 13 endpoints are 0.15:0.60; GLM 5.3's across 48 endpoints
+        # OpenRouter public endpoint metadata, fetched 2026-11-04: MiniMax M3's
+        # highest listed rates across 13 endpoints are 0.60:2.40; GLM 5.3's across 48 endpoints
         # are 2.80:8.80 (including premium routes). Use these conservative ceilings rather than
         # the catalog's lowest/promotional endpoint. This is an estimate, not a provider lock.
-        # sources: /api/v1/models/minimax/minimax-m3.1-flash/endpoints and
+        # sources: /api/v1/models/minimax/minimax-m3/endpoints and
         # /api/v1/models/z-ai/glm-5.3/endpoints on openrouter.ai.
         # Existing DeepSeek V4.1 Flash and GLM 5.3 Flash rates stay unchanged. No orphan rate
-        # remains for the removed MiniMax M3 or DeepSeek V4 Pro 0813.
-        default: 'openrouter/minimax/minimax-m3.1-flash=0.15:0.60,openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20,openrouter/z-ai/glm-5.3-flash=0.15:0.50,openrouter/z-ai/glm-5.3=2.80:8.80'
+        # remains for failed M3.1 Flash or removed DeepSeek V4 Pro 0813.
+        default: 'openrouter/minimax/minimax-m3=0.60:2.40,openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20,openrouter/z-ai/glm-5.3-flash=0.15:0.50,openrouter/z-ai/glm-5.3=2.80:8.80'
         description: 'Per-model cost rates as model=inputPerMillion:outputPerMillion, comma-separated.'
       mode:
         type: string
