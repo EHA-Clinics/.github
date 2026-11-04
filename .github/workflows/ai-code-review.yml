@@ -1,7 +1,7 @@
 # EHA Clinics - AI Code Review Reusable Workflow
 # Uses elek (model-agnostic AI code review) via OpenRouter (pi's native adapter).
 #
-# Council strategy: a multi-lens review (4 read-only lenses) with deepseek-v4-pro as the
+# Council strategy: a multi-lens review (4 read-only lenses) with deepseek-v4.1-flash as the
 # validator that reconciles findings before posting. Cost is bounded by max_cost_usd
 # using per-model cost_rates.
 # Structural safety: elek's MCP server only exposes create_inline_comment and
@@ -47,7 +47,7 @@ on:
         # `model-ignored-by-guardrail` on every request. Leaving it as the single-strategy default
         # would have left a dead model armed for any non-council run.
         default: 'openrouter/deepseek/deepseek-v4.1-flash'
-        description: 'OpenRouter model id (e.g., openrouter/deepseek/deepseek-v4.1-flash, openrouter/minimax/minimax-m3)'
+        description: 'OpenRouter model id (e.g., openrouter/deepseek/deepseek-v4.1-flash, openrouter/minimax/minimax-m3.1-flash)'
       trigger_phrase:
         type: string
         default: '@ai-review'
@@ -101,64 +101,14 @@ on:
         description: 'elek review strategy. council = multi-lens review + validator reconciliation.'
       review_models:
         type: string
-        # EHAC-2466 — GLM 5.3 Flash is a distinct-model Operations lens trial. Keeping the
-        # three established models in their existing positions makes the comparison observable
-        # without changing the Risk, Design, or Tests lanes. It replaces the Operations lane's
-        # previous round-robin model, so the number of executions and validation semantics stay
-        # unchanged; DeepSeek V4 Pro remains the validator.
-        # AMENDED 2026-09-11 (EHAC-2634): the Tests lane moves deepseek-v4-flash -> deepseek-v4.1-flash.
-        # The Tests entry carries the explicit `openrouter/` provider prefix: elek resolves the
-        # provider from the spec's first segment, and the new model has no bundled native-provider
-        # entry, so a bare `deepseek/...` spec fails with "No API key found for deepseek" — observed
-        # on eha_care #4105 and eha-care-infra #727. Risk, Design, Operations and the validator are
-        # unchanged; V4.1-Flash supports named-effort reasoning, so no reasoning-modes entry is added.
-        # AMENDED 2026-09-20 (EHAC-2635): the Risk lane moves deepseek-v4-pro -> glm-5.3-flash.
-        # The floating v4-pro alias is retired: it resolves to the April build, is subject to
-        # DeepSeek's silent V4.1 reroute, and the workspace guardrail now carries it in
-        # ignored_models, so it 404s on every request (measured on two repositories,
-        # 2026-09-19T22:12Z). Risk and Operations deliberately share glm-5.3-flash on cost
-        # grounds — see the distinct-model invariant in workflow-invariants.test.mjs, relaxed in
-        # the same change. glm-5.3-flash supports named-effort reasoning, so no reasoning-modes
-        # entry is added.
-        # AMENDED 2026-10-16 (EHAC-2844, owner ruling 1): Design moves xiaomi/mimo-v2.5-pro ->
-        # openrouter/xiaomi/mimo-v2.6-pro and Tests moves deepseek-v4.1-flash -> minimax-m3.
-        # Both were admitted by a key-backed probe through the eha_care repo key and the callers'
-        # provider object (data_collection deny, require_parameters true): eha_care #4770, run
-        # 38911217929, HTTP 200 on each, with glm-5.3-flash 200 and kimi-k2.7-code 404 as the
-        # controls. v4.1-flash becomes the validator, so no lens shares the validator's model.
-        # minimax-m3 supports named-effort reasoning, so no reasoning-modes entry is added.
-        # AMENDED 2026-10-17 (EHAC-3622): mimo-v2.6-pro leaves the council. On elek eha-v1.7.0
-        # (061c438, 27 councils) it finished design 17/27 (9 timeouts at 900s) and only 1/14 as a
-        # failover retry. Design moves to minimax-m3 (design retries 7/9). Tests moves back to
-        # deepseek-v4.1-flash, on the owner's choice ("better than v4 pro ... and more cost
-        # effective"; tests 34/38 at .github c410bfe). That is a NAMED EXCEPTION to the
-        # independence rule: the Tests lens now shares the validator's model. Three distinct
-        # models remain, and elek's next-distinct failover (strategy.ts selectFailoverModel)
-        # becomes glm -> minimax -> v4.1-flash -> glm. So Design's one failover retry ALSO lands
-        # on the validator's model. OWNER RULING 2026-10-17 (EHAC-3622), Adam: "Allow it for any
-        # lens." Any lens's one failover retry may land on the validator's model. That ruling
-        # stands, though no chain hits it under the roster below.
-        # AMENDED 2026-10-17 (EHAC-3622, owner's final roster: "glm tests + v4-pro audit"): Tests
-        # moves to glm-5.3-flash. In canary run 39063907146, v4.1-flash failed its first Tests
-        # attempt as invalid_output. Coord's direct probe then showed it writes its final JSON
-        # into the reasoning channel and leaves the content empty, at every reasoning cap, and it
-        # runs 50-107 turns on a multi-turn lens.
-        # AMENDED 2026-10-27 (DL-20261023-405): the roster above was reversed after the
-        # 54-council diagnosis -- minimax-m3 takes risk, tests and operations, glm keeps only
-        # design. The 4000-token cap below still applies, now to the one design run. No lens
-        # shares the validator's model.
-        # AMENDED 2026-10-27 (DL-20261023-405, canary evidence). The 54-council diagnosis found
-        # 17/54 degraded with final lens failures operations 7, risk 6, tests 6, design 0; every
-        # failing lens ran glm-5.3-flash, whose multi-turn runaways never trip the stall watchdog.
-        # A three-council canary on a #5115-shaped input ran minimax-m3 on all four lenses:
-        # 12/12 lens runs succeeded on attempt 1, no failover, no failure class ($0.2333 total).
-        # GLM keeps ONLY Design here. That is a capacity compromise, not a claim that design is
-        # glm-safe: the invariant requires at least two reviewer families and exactly four
-        # entries, and no in-roster model besides glm can be a lens (v4.1-flash is the validator,
-        # v4-pro-0813 the advisor). Failover therefore crosses families: minimax -> glm and
-        # glm -> minimax. The retry model and its budget are elek PR 2; until that lands a failed
-        # minimax lens retries on glm at the currently halved 450 s budget.
-        default: 'openrouter/minimax/minimax-m3,openrouter/z-ai/glm-5.3-flash,openrouter/minimax/minimax-m3,openrouter/minimax/minimax-m3'
+        # EHAC-4082 (owner cost policy, 2026-11-04): MiniMax M3.1 Flash replaces M3 in
+        # Risk, Tests and Operations. GLM 5.3 Flash remains Design, with its existing cap.
+        # Exactly four entries in lens order and two reviewer families remain. Next-distinct
+        # reviewer failover crosses MiniMax M3.1 Flash <-> GLM 5.3 Flash; it does not use the
+        # independent advisor (GLM 5.3) or validator (DeepSeek V4.1 Flash) as a first attempt.
+        # Admission probes: MiniMax 41807821608, GLM 5.3 41807703255. These single-turn probes
+        # are route evidence only; live Elek lens evidence is required by workflow-invariants.
+        default: 'openrouter/minimax/minimax-m3.1-flash,openrouter/z-ai/glm-5.3-flash,openrouter/minimax/minimax-m3.1-flash,openrouter/minimax/minimax-m3.1-flash'
         description: 'Comma-separated OpenRouter model ids for the council lenses (round-robin assigned).'
       openrouter_model_reasoning_modes:
         type: string
@@ -191,6 +141,8 @@ on:
         #    simple-options.js:5-9, :23), so it is far above cap + answer room.
         # U9 (reasoning-policy.mjs) fails unless glm's telemetry shows max-tokens at 4000. The
         # other models are unlisted and stay `effort`.
+        # EHAC-4082: MiniMax M3.1 Flash and GLM 5.3 support named effort in OpenRouter's
+        # 2026-11-04 model metadata. Leave them unlisted (effort); preserve Design's cap.
         default: '{"openrouter/z-ai/glm-5.3-flash":{"mode":"enabled","max_tokens":4000}}'
         description: 'Canonical OpenRouter model capability map: effort (default), enabled (provider-default reasoning, with the unchanged output limit sent as max_tokens), or {"mode": ..., "max_tokens": N} to cap that model alone.'
       validator_model:
@@ -207,17 +159,12 @@ on:
         description: 'Model that reconciles and validates lens findings before posting.'
       advisor_model:
         type: string
-        # EHAC-3622 (2026-10-17, owner's final roster: "glm tests + v4-pro audit"). elek's
-        # independent audit lens (advisor) runs in parallel with the reviewer lenses. When this is
-        # empty, elek reuses validator_model there (action.yml@061c438 advisor_model: "If omitted,
-        # the validator model is reused"). Setting it gives elek strategy.ts:584-587, :614-620 a
-        # distinct `advisor-independent-audit` lens with role "validator-review", so it keeps the
-        # validator-review budget (V) and the pinned failover below.
-        # deepseek-v4-pro-0813 evidence: 75/75 in validator roles at .github c410bfe
-        # (validator-review median 490 s, p90 739 s, max 938 s, all within V = 1200 s), 1/1 as the
-        # validator-review failover on 061c438, and 672.7 s as the failover in canary run
-        # 39063907146. It is neither the validator nor any lens (workflow-invariants.test.mjs).
-        default: 'openrouter/deepseek/deepseek-v4-pro-0813'
+        # EHAC-4082 (2026-11-04): GLM 5.3 replaces DeepSeek V4 Pro 0813 as the independent
+        # audit. It is distinct from both GLM 5.3 Flash (Design) and the DeepSeek V4.1 Flash
+        # validator. The audit keeps its existing validator-review budget and one pinned
+        # failover to DeepSeek V4.1 Flash; no role timeout or retry policy changes.
+        # Admission probe 41807703255 succeeded; the ONE canary verifies council-role use.
+        default: 'openrouter/z-ai/glm-5.3'
         description: 'Model for the independent audit (advisor) lens that runs beside the reviewer lenses. Empty reuses validator_model; off, none, false or disabled skip the audit.'
       validator_review_failover_model:
         type: string
@@ -271,16 +218,12 @@ on:
         # (true of the review job). It is outside the serial guard (still 3637 s <= 3900 s for
         # eha_care) because it only spends what the live clock provably leaves. The max_cost_usd
         # estimate prices it at this model's rates whenever it can run.
-        # deepseek-v4-pro-0813 was the production synthesis model before 2026-10-16: validator
-        # 37/37 at .github c410bfe, and 94 of 102 eha_care syntheses on 2026-10-15 finished
-        # within 300 s. elek refuses, at preflight, a value whose last two path segments match
-        # validator_model.
-        # CALLER RULE: a caller that overrides validator_model to deepseek-v4-pro-0813 MUST also
-        # set validator_failover_model ('' or another model) BEFORE re-pinning to this SHA. Otherwise
-        # it inherits an identical failover and elek refuses every review at preflight. The
-        # failure is loud, not silent. Census 2026-10-18: 0 of the 27 caller workflow files in
-        # EHA-Clinics and eHealthAfrica override validator_model or this input.
-        default: 'openrouter/deepseek/deepseek-v4-pro-0813'
+        # EHAC-4082 (2026-11-04): the synthesis failover moves from DeepSeek V4 Pro 0813 to
+        # GLM 5.3, also used by the independent audit. The primary validator remains DeepSeek
+        # V4.1 Flash. elek refuses an identical validator/failover pair at preflight.
+        # CALLER RULE: a caller overriding validator_model to GLM 5.3 must also choose a
+        # different validator_failover_model (or disable it) before re-pinning.
+        default: 'openrouter/z-ai/glm-5.3'
         description: 'Model the FINAL synthesis fails over to once, on the same lens reports, when its first attempt ends stall, invalid_output or max_turns. Empty disables it. Must differ from validator_model (last two path segments). Runs only within the live job clock; needs job_timeout_minutes.'
       validator_run_timeout_seconds:
         type: string
@@ -337,31 +280,17 @@ on:
         # exists for the worst case, not the typical one.
       cost_rates:
         type: string
-        # EHAC-2466: GLM 5.3 Flash is budgeted conservatively at its standard $0.15/$0.50
-        # per-million-token rates rather than the lower introductory OpenRouter promotion.
-        # DeepSeek V4 Pro resolves natively; the remaining entries are explicit fallbacks for
-        # models whose pricing elek may not resolve from the provider.
-        # AMENDED 2026-09-11 (EHAC-2634): V4.1 Flash replaces V4 Flash in the Tests lane, budgeted at
-        # OpenRouter's standard 0.30/1.20 rates — conservative against DeepSeek first-party
-        # off-peak pricing (0.003 cache-hit / 0.15 / 0.60), same posture as the GLM entry. The key
-        # mirrors the roster's explicit `openrouter/` prefix.
-        # AMENDED 2026-09-20 (EHAC-2635): V4 Pro 0813 needs an explicit entry. BUILTIN_RATES in
-        # elek keys `deepseek/deepseek-v4-pro` and its openrouter/ twin, but not the dated
-        # snapshot, and an unpriced model resolves to source "unknown" and $0 — which
-        # selectReviewPlanWithinBudget then FILTERS OUT of the figure compared against
-        # max_cost_usd, so the cap would silently stop counting the validator.
-        # AMENDED 2026-10-16 (EHAC-2844): rates from the OpenRouter endpoint listings. mimo-v2.6-pro
-        # 0.435:0.87 and minimax-m3 0.30:1.20 for the new lenses; v4-pro-0813 CORRECTED from
-        # 0.66:1.98 to its listed 1.32:3.96 (it was budgeted at half price); it now prices the
-        # validator-review failover and, with eha-v1.7.0, the one extra reviewer attempt. The
-        # mimo-v2.5-pro rate is removed with the model (the orphan-rate invariant requires it).
-        # AMENDED 2026-10-17 (EHAC-3622): the mimo-v2.6-pro rate leaves with the model. Under the
-        # owner's final roster every remaining entry is still used:
-        #  - minimax-m3 prices risk, tests and operations (roster amended 2026-10-27);
-        #  - glm-5.3-flash prices design;
-        #  - deepseek-v4-pro-0813 prices the independent audit (advisor_model);
-        #  - deepseek-v4.1-flash prices the validator (synthesis) and the audit-lane failover.
-        default: 'openrouter/minimax/minimax-m3=0.30:1.20,openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20,openrouter/z-ai/glm-5.3-flash=0.15:0.50,openrouter/deepseek/deepseek-v4-pro-0813=1.32:3.96'
+        # EHAC-4082: explicit rates keep new model ids in elek's cost estimate instead of
+        # allowing an unknown model to count as zero. USD per million uncached input/output.
+        # OpenRouter public endpoint metadata, fetched 2026-11-04: MiniMax M3.1 Flash's
+        # highest listed rates across 13 endpoints are 0.15:0.60; GLM 5.3's across 48 endpoints
+        # are 2.80:8.80 (including premium routes). Use these conservative ceilings rather than
+        # the catalog's lowest/promotional endpoint. This is an estimate, not a provider lock.
+        # sources: /api/v1/models/minimax/minimax-m3.1-flash/endpoints and
+        # /api/v1/models/z-ai/glm-5.3/endpoints on openrouter.ai.
+        # Existing DeepSeek V4.1 Flash and GLM 5.3 Flash rates stay unchanged. No orphan rate
+        # remains for the removed MiniMax M3 or DeepSeek V4 Pro 0813.
+        default: 'openrouter/minimax/minimax-m3.1-flash=0.15:0.60,openrouter/deepseek/deepseek-v4.1-flash=0.30:1.20,openrouter/z-ai/glm-5.3-flash=0.15:0.50,openrouter/z-ai/glm-5.3=2.80:8.80'
         description: 'Per-model cost rates as model=inputPerMillion:outputPerMillion, comma-separated.'
       mode:
         type: string
